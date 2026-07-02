@@ -113,7 +113,7 @@ packages:
   "engines": { "node": ">=20" },
   "scripts": {
     "build": "tsc --build",
-    "typecheck": "tsc --build --dry --force || tsc -b",
+    "typecheck": "tsc -b",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint ."
@@ -633,9 +633,9 @@ Assert structural tokens **outside changed hunks** are byte-identical (§5). v0.
 
 Tables per §3.2: `transactions`, `memories`, `memory_tags`, `approvals`, `conflicts` (empty). Open DB with WAL off for v0.1 (WAL is v1.0) — but enabling WAL now is harmless; keep default.
 
-- [ ] **Step 1: Failing tests** — open in-memory DB, create schema; `recordTransaction(row)` then `getTransaction(id)` round-trips; `insertMemory` + `addTags` + `queryMemories({entity})`; `markMemoryStatus(id, "reverted")`.
+- [ ] **Step 1: Failing tests** — open in-memory DB, create schema; `recordTransaction(row)` then `getTransaction(id)` round-trips; `insertMemory` + `addTags` + `queryMemories({entity})`; `markMemoryStatus(id, "reverted")`; **`insertApproval(row)` + `getApproval(id)` + `listApprovals("pending")` + `setApprovalState(id, state)`** (the broker's propose_edit path in Task 2.7 writes approval rows through the Journal directly; the Approvals class in Task 3.4 is a higher-level API over these).
 - [ ] **Step 2: FAIL**
-- [ ] **Step 3: Implement** `openJournal(dbPath)` running `CREATE TABLE IF NOT EXISTS ...` DDL, and a `Journal` class exposing typed methods. Use parameterized statements only.
+- [ ] **Step 3: Implement** `openJournal(dbPath)` running `CREATE TABLE IF NOT EXISTS ...` DDL, and a `Journal` class exposing typed methods (transactions, memories, tags, approvals). Use parameterized statements only.
 - [ ] **Step 4: PASS** — [ ] **Step 5: Commit** `feat(core): SQLite journal schema and access`
 
 ### Task 2.7: Broker pipeline (create / revise / forget)
@@ -660,7 +660,7 @@ Wire the stages. `Broker` takes `{ vaultRoot, git, journal, manifest, config }`.
 **Files:** Create `packages/core/src/broker/undo.ts`; Tests alongside.
 
 - [ ] **Step 1: Failing tests:**
-  - `undoTransaction(txnId)`: git revert restores prior bytes exactly; affected memory row → `reverted`; original txn → `reverted`; a new `op:'revert'` row (status `applied`) recorded; `recall` no longer returns the memory.
+  - `undoTransaction(txnId)`: git revert restores prior bytes exactly; affected memory row → `reverted`; original txn → `reverted`; a new `op:'revert'` row (status `applied`) recorded. **Assert the memory is gone via `journal.queryMemories` / the memory row status** (recall does not exist yet — the recall-level "no longer returns the memory" assertion lives in the e2e, Task 7.1 step 5).
   - dirty revert (later commit touched same file) → REVERT_CONFLICT; working tree + journal untouched.
   - `undoSession(sessionId)`: reverts that session's commits in reverse chronological order.
 - [ ] **Step 2: FAIL**
@@ -672,9 +672,9 @@ Wire the stages. `Broker` takes `{ vaultRoot, git, journal, manifest, config }`.
 
 **Files:** Create `packages/core/src/broker/reconcile.ts`; Tests alongside.
 
-- [ ] **Step 1: Failing test** — simulate a `ledger:` commit with no matching journal row (insert commit, skip journal); `reconcile()` detects and inserts the missing transaction row from commit metadata.
+- [ ] **Step 1: Failing test** — simulate a `ledger:` commit with no matching journal row (make a `ledger:` commit, skip journal.record); `reconcile()` detects the commit whose `commit_sha` is absent from `transactions` and inserts a repaired row.
 - [ ] **Step 2: FAIL**
-- [ ] **Step 3: Implement** — scan recent `ledger:` commits (parse structured message for txn/op/session), diff against `transactions`, repair.
+- [ ] **Step 3: Implement** — the original txn id was never persisted (that's the crash gap), so **match on `commit_sha`**: list recent `ledger:` commits from `git log`, find those whose sha is not in `transactions`, and reconstruct a row — `op`, `session`, and `memory_id` parsed from the structured message, `commit_sha` from the log, and a **freshly minted txn id** (injected id-generator). Path recovery is limited to the basename in the message (acceptable for v0.1 per §3.4; note it in a comment). This complements `reindex` (3.6): reconcile repairs the narrow commit-without-journal-row gap; reindex rebuilds the whole journal from scratch.
 - [ ] **Step 4: PASS**
 - [ ] **Step 5: Commit** `feat(core): startup reconcile for commit/journal crash gap`
 
