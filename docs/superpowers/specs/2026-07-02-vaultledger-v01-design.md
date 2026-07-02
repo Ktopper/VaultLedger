@@ -112,7 +112,29 @@ by a hash of the vault's absolute path.
 The journal is the **index for `recall`**: structured queries by entity, tag,
 status, recency, and limit. No embeddings in v0.1.
 
-### 3.3 Startup reconcile (crash safety)
+### 3.3 The journal is a disposable index — rebuildable from the vault
+
+> **Review fix (main):** the journal directory is resolved by vault ID (§3.1) so
+> machine B finds the *right* directory — but the journal itself does **not**
+> sync, so on a second machine (or after deleting the journal) that directory is
+> empty and `recall` would return nothing even though the vault carries every
+> memory. This is cheap to fix because the source of truth already lives in
+> synced artifacts: **provenance frontmatter** lives in the agent-zone notes and
+> **transaction history** lives in Git.
+>
+> Provide **`ledger reindex`**, which rebuilds the journal from the vault:
+> - walk the agent zone, parse each note's `ledger:` frontmatter → rebuild the
+>   `memories` and `memory_tags` rows;
+> - walk `ledger:` commits in Git history → rebuild the `transactions` rows.
+>
+> Reindex **auto-triggers** when a known vault ID (present in
+> `.ledger/config.json`) resolves to a **missing or empty** journal — so machine
+> B self-heals on first use with no user action. This also formalizes the
+> architecture: **the vault + Git are the source of truth; the SQLite journal is
+> a disposable performance index.** Covered by a test that deletes the journal
+> and asserts `recall` returns the same memories after auto-reindex.
+
+### 3.4 Startup reconcile (crash safety)
 
 > **Review fix #5:** there is a crash gap between `gitCommit` and
 > `journal.record`. Structured commit messages carry the txn id, memory id, and
@@ -200,7 +222,8 @@ frontmatter → `gitCommit` → `journal.record`.
 ### 5.1 Rejection codes
 
 `FORBIDDEN_ZONE`, `STALE_HASH`, `PATCH_TOO_LARGE`, `SYNTAX_BREAK`, `NOT_FOUND`,
-`TARGET_EXISTS` (create onto an existing path), `APPROVAL_REQUIRED`.
+`TARGET_EXISTS` (create onto an existing path), `APPROVAL_REQUIRED`,
+`REVERT_CONFLICT` (undo cannot cleanly revert — see §5.3).
 
 ### 5.2 Git identity
 
@@ -221,6 +244,17 @@ frontmatter → `gitCommit` → `journal.record`.
 > beliefs that were rolled back — precisely the failure the product exists to
 > prevent. This is an explicit e2e assertion (success criterion step 5).
 
+**Revert conflicts.** `git revert` of an older transaction can conflict when a
+later commit touched the same file. Behavior:
+
+> **Review fix:** a dirty revert **aborts cleanly** (`git revert --abort`, no
+> partial working-tree state, no journal mutation) and returns `REVERT_CONFLICT`;
+> the target transaction is **flagged for manual resolution** rather than
+> force-applied. `undoSession` reverts its commits in **reverse chronological
+> order** to minimize conflicts. Covered by a test that mutates a file after a
+> transaction, then asserts undo of the earlier transaction returns
+> `REVERT_CONFLICT` and leaves the working tree and journal untouched.
+
 ---
 
 ## 6. Memory store & lifecycle (Prompt 4)
@@ -235,7 +269,9 @@ frontmatter → `gitCommit` → `journal.record`.
 - **`forget()`** → `forget` op (tombstone → `Agent/Archive/`,
   `status = forgotten`). Git retains history; never hard-deleted.
 - **TTL sweep** → scratch older than config TTL (default 14 days) → archived;
-  emit staleness flags for working memories unreferenced for N days.
+  emit staleness flags for working memories unreferenced for N days. There is no
+  daemon in v0.1: the sweep triggers **lazily at CLI and MCP-server startup**
+  (and can be run on demand). Later milestones may add a scheduled sweep.
 - **Approval queue** → SQLite `approvals` table + core API
   (`list` / `approve` / `reject`). Approving **re-runs the held operation
   through the broker** (does not blind-apply a stored diff) — but through the
@@ -299,8 +335,11 @@ folders**; only `.ledger/` is written, and only after explicit confirmation.
 - `ledger status` — zones, pending approvals, last 10 transactions.
 - `ledger approve [id]` — interactive queue with colored diffs (`diff` lib);
   approving re-runs through the broker (surfaces `STALE_HASH` per §6.3).
-- `ledger undo <txn|session>` — journal-compensated revert (§5.3).
+- `ledger undo <txn|session>` — journal-compensated revert (§5.3); surfaces
+  `REVERT_CONFLICT` on a dirty revert.
 - `ledger log [--entity X] [--session Y]` — journal-indexed history.
+- `ledger reindex` — rebuild the journal from vault frontmatter + Git history
+  (§3.3); also auto-triggered when a known vault's journal is missing/empty.
 
 Journal lives in the app-support dir keyed by vault ID (§3.1), never in the
 vault.
@@ -329,8 +368,11 @@ checkpoint after each package.
   - zone resolution incl. overlap/exclusion/override cases;
   - broker happy path, `STALE_HASH`, `FORBIDDEN_ZONE`, `PATCH_TOO_LARGE`,
     `SYNTAX_BREAK`, `TARGET_EXISTS`, undo chains, **journal compensation on
-    undo**, **stale-approval on approve**;
+    undo**, **`REVERT_CONFLICT` on a dirty revert** (working tree + journal
+    untouched), **stale-approval on approve**;
   - each lifecycle transition and each rejection;
+  - **`reindex` rebuilds an identical journal** after the journal is deleted
+    (recall returns the same memories via auto-reindex);
   - scanner produces expected profile + writes nothing to user folders;
   - startup reconcile repairs a simulated commit-without-journal-row.
 - **`cli`** / **`mcp-server`** — thin integration tests.
