@@ -73,6 +73,11 @@ export function openJournal(dbPath: string): Database.Database {
   // processes. ":memory:" databases can't use WAL (no file to write a -wal
   // sidecar next to), so this is skipped for those — existing in-memory tests
   // stay on the default journal mode, unaffected.
+  //
+  // WAL leaves `-wal`/`-shm` sidecar files beside journal.db. Harmless here:
+  // the journal is disposable (rebuilt by reindex/ensureJournal from the vault
+  // + git), so an orphaned `-wal` from an unclean shutdown recovers on the
+  // next open, and a deleted journal.db just triggers a fresh reindex.
   if (dbPath !== ":memory:") {
     db.pragma("journal_mode = WAL");
   }

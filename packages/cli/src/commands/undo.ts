@@ -28,7 +28,17 @@ export async function undoCommand(
 ): Promise<UndoCommandResult> {
   const out = opts.out ?? console.log;
   const ctx = await loadContext(vaultDir, deps);
-  const undoDeps = { git: ctx.git, journal: ctx.journal, now: ctx.now, genId: ctx.genId };
+  // Thread the shared vault lock so `ledger undo` mutually excludes with the
+  // MCP server / `ledger serve` mid-mutation (design §3 lists undo* among the
+  // entry points the cross-process lock must cover). Without lockDir here,
+  // undo's git revert + journal writes could race their commit.
+  const undoDeps = {
+    git: ctx.git,
+    journal: ctx.journal,
+    now: ctx.now,
+    genId: ctx.genId,
+    lockDir: ctx.lockDir,
+  };
   try {
     if (target.startsWith(SESSION_PREFIX)) {
       const sessionId = target.slice(SESSION_PREFIX.length);

@@ -240,7 +240,22 @@ export class MemoryStore {
     );
   }
 
-  /** Archive the memory's file (tombstone) and mark its journal row forgotten. */
+  /**
+   * Archive the memory's file (tombstone) and mark its journal row forgotten.
+   *
+   * Concurrency note (design §12, accepted v0.2 limitation): forget is TWO
+   * broker calls — `flipFrontmatterStatus` (a locked revise commit) then
+   * `broker.archive` (a locked move commit). Each individually acquires and
+   * holds the cross-process vault lock, so neither races another process's
+   * git/journal writes; but the two are NOT jointly atomic — a concurrent
+   * reader can observe the intermediate state (status=forgotten in the file,
+   * note not yet moved to Agent/Archive). That intermediate state is
+   * transient and self-heals: the next reindex recovers the correct
+   * status/path from disk. NOT wrapped in a single outer lock on purpose —
+   * the inner broker calls already take the lock and proper-lockfile is
+   * non-reentrant, so an outer acquire would deadlock; single-commit atomic
+   * forget is left to a future milestone.
+   */
   async forget(input: ForgetInput): Promise<void> {
     const mem = this.journal.getMemory(input.id);
     if (!mem) {
