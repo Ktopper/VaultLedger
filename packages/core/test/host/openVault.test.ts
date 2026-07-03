@@ -184,4 +184,52 @@ describe("openVault", () => {
     expect(memRowCount2).toBe(memRowCount1);
     expect(memRowCount1).toBe(1);
   });
+
+  test("concurrent startup reindex converges (two openVault racing an empty journal -> no duplicate rows)", async () => {
+    vault = await makeTestVault();
+    const { now, genId } = makeClock();
+
+    // Seed 3 agent-zone memory notes with valid ledger frontmatter + their
+    // `ledger:` commits, but leave the journal untouched (no context has been
+    // opened yet against this fresh temp HOME, so journal.db does not exist
+    // for this vaultId) — BOTH racing opens must rebuild it via ensureJournal.
+    const git = new LedgerGit(vault.vaultDir);
+    mkdirSync(join(vault.vaultDir, "Agent", "Memory"), { recursive: true });
+    const seedIds = ["mem_c1", "mem_c2", "mem_c3"];
+    for (const id of seedIds) {
+      writeFileSync(
+        join(vault.vaultDir, "Agent", "Memory", `${id}.md`),
+        seedNoteBody(id, `# Seeded memory ${id}\n`),
+        "utf8",
+      );
+      await git.commitFile(`Agent/Memory/${id}.md`, `ledger: create ${id}.md seed-session`);
+    }
+
+    // Same vaultRoot + same env => same journalPath + same lockDir: these two
+    // opens genuinely race ensureJournal/reconcile against the one journal.db
+    // under WAL, simulating `ledger serve` + the MCP server starting at once.
+    const [ctx1, ctx2] = await Promise.all([
+      openVault(vault.vaultDir, { now, genId, env: vault.env }),
+      openVault(vault.vaultDir, { now, genId, env: vault.env }),
+    ]);
+
+    try {
+      const memRows1 = ctx1.journal.queryMemories({ limit: 1000 });
+      expect(memRows1).toHaveLength(seedIds.length);
+      expect(new Set(memRows1.map((m) => m.id)).size).toBe(seedIds.length);
+
+      const memRows2 = ctx2.journal.queryMemories({ limit: 1000 });
+      expect(memRows2).toHaveLength(seedIds.length);
+
+      const txns = ctx1.journal.listTransactions({ limit: 1000 });
+      const shas = txns.map((t) => t.commit_sha).filter((s): s is string => s !== null);
+      // No duplicate transaction rows for the same commit sha: the set of
+      // shas is exactly as large as the list of shas.
+      expect(new Set(shas).size).toBe(shas.length);
+      expect(shas.length).toBeGreaterThanOrEqual(seedIds.length);
+    } finally {
+      ctx1.close();
+      ctx2.close();
+    }
+  });
 });
