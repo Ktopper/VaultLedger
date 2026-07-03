@@ -49,6 +49,139 @@ vaultledger/
 - Rollback of any transaction or entire session via `git revert`, with the
   memory journal kept consistent.
 
+## 2-minute walkthrough (v0.1)
+
+This walks through the exact commands and tool calls that make up the v0.1
+governed-write loop: init a vault, wire an agent to it over MCP, remember and
+recall a fact, check status, approve a queued edit, and undo a transaction.
+(This is also, almost verbatim, what `packages/mcp-server/test/v01-gate.e2e.test.ts`
+asserts end-to-end — the "2-minute walkthrough" and the release gate are the
+same loop.)
+
+**1. Install and build**
+
+```sh
+corepack enable pnpm
+pnpm install
+pnpm build
+```
+
+This builds `@vaultledger/core`, `@vaultledger/cli` (the `ledger` bin), and
+`@vaultledger/mcp-server` (the `vaultledger-mcp` bin) via `tsc --build`.
+
+**2. Initialize a vault**
+
+```sh
+ledger init /absolute/path/to/your/vault --yes
+```
+
+Without `--yes`, `init` only *scans* the vault (note/link counts, detected
+folders, a proposed zone manifest) and prints what it would do — no writes at
+all. With `--yes`, it writes exactly two things: `.ledger/config.json` (a
+generated vault id + config) and `.ledger/permissions.yaml` (the zone
+manifest: `trusted` / `agent` / `scratch` / `excluded` globs), and runs `git
+init` if the vault isn't already a git repo. Every other file in the vault —
+your existing notes — is left byte-for-byte untouched; `.ledger/` (plus the
+agent zone it points at, typically `Agent/`) is VaultLedger's only footprint.
+
+**3. Wire an agent to it over MCP**
+
+Point an MCP-capable client at the built server binary, passing the vault as
+`--vault`. See [`packages/mcp-server/examples/mcp.json`](packages/mcp-server/examples/mcp.json):
+
+```json
+{
+  "mcpServers": {
+    "vaultledger": { "command": "vaultledger-mcp", "args": ["--vault", "/absolute/path/to/your/vault"] }
+  }
+}
+```
+
+`vaultledger-mcp` resolves to `packages/mcp-server/dist/index.js` (its `bin`
+entry) once the package is installed/linked; if you're running straight out
+of this repo without a global link, point `command` at
+`node` and `args` at `["<repo>/packages/mcp-server/dist/index.js", "--vault", "..."]`
+instead. The server exposes 7 tools: `memory_recall`, `memory_remember`,
+`memory_revise`, `memory_promote`, `memory_forget`, `vault_propose_edit`, and
+`ledger_status`.
+
+**4. Remember, then recall**
+
+An agent calls `memory_remember` with the fact it wants to keep:
+
+```json
+{ "content": "Nova's launch target is Q4.", "entity": "nova", "reason": "user shared a deadline", "tags": ["deadline"] }
+```
+
+This lands immediately as a new scratch-status note under `Agent/Memory/`,
+stamped with provenance frontmatter (id, session, reason, timestamp) and
+committed to git as `ledger: create ...`. Any session — including a later one,
+after the agent's context resets — recovers it with `memory_recall`:
+
+```json
+{ "entity": "nova" }
+```
+
+which returns the memory with its original provenance intact (it still says
+which session created it, not whoever's asking).
+
+**5. Propose a trusted-zone edit**
+
+Writes to the *trusted* zone (ordinary vault notes, not the agent zone) are
+never applied directly — `vault_propose_edit` always queues them for human
+approval:
+
+```json
+{ "path": "Projects/Nova.md", "patch": "<unified diff>", "expected_hash": "sha256:...", "reason": "assign an owner" }
+```
+
+The file is untouched on disk until a human approves it.
+
+**6. Check status**
+
+```sh
+ledger status /absolute/path/to/your/vault
+```
+
+Prints the zone manifest, the count of pending approvals, and the most recent
+transactions (op, path, status) from the journal.
+
+**7. Approve the queued edit**
+
+```sh
+ledger approve /absolute/path/to/your/vault            # list pending approvals with rendered diffs
+ledger approve /absolute/path/to/your/vault --id <id>  # apply the queued patch (or --reject to discard it)
+```
+
+**8. Undo**
+
+```sh
+ledger undo /absolute/path/to/your/vault <txnId>          # revert one transaction (git revert + journal update)
+ledger undo /absolute/path/to/your/vault session:<sessionId>  # revert every applied transaction for a session
+```
+
+`ledger log /absolute/path/to/your/vault` lists transactions (with `--entity`
+/ `--session` / `--limit` filters) if you need to find a `<txnId>` to undo.
+
+## Architecture (v0.1)
+
+- [`packages/core`](packages/core) — the broker: zone resolution, patch-level
+  edits with hash checks, the SQLite journal + reindex/reconcile, the memory
+  store (remember/revise/promote/forget), recall, the TTL sweep, the approval
+  queue, and undo (`git revert` + journal compensation). Everything else is a
+  thin adapter over this package.
+- [`packages/cli`](packages/cli) — the `ledger` bin: `init`, `status`, `log`,
+  `reindex`, `approve`, `undo`, each a thin wrapper over a testable command
+  function in `packages/cli/src/commands/`.
+- [`packages/mcp-server`](packages/mcp-server) — the `vaultledger-mcp` bin: the
+  7 MCP tools listed above, wired over stdio via the official MCP SDK.
+- [`packages/obsidian-plugin`](packages/obsidian-plugin) — the v0.2 review
+  surface (not yet built).
+
+For the full design and the plan this was built from, see
+[`docs/superpowers/specs/2026-07-02-vaultledger-v01-design.md`](docs/superpowers/specs/2026-07-02-vaultledger-v01-design.md)
+and [`docs/superpowers/plans/2026-07-02-vaultledger-v01.md`](docs/superpowers/plans/2026-07-02-vaultledger-v01.md).
+
 ## Stack
 
 TypeScript throughout (Node MCP server + write broker; Obsidian plugin; SQLite

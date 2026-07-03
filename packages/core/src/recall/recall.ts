@@ -1,6 +1,6 @@
 import type { Journal, QueryMemoriesFilters } from "../journal/journal.js";
 
-export interface RecallFilters extends QueryMemoriesFilters {}
+export type RecallFilters = QueryMemoriesFilters;
 
 /** A memory as returned by `recall`, with its tags attached. */
 export interface RecallResult {
