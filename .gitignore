@@ -27,3 +27,6 @@ coverage/
 # Local-only planning docs (kept private, not published)
 evaluation.md
 build-prompts.md
+
+# Stray editor/harness temp files
+_tmp_*
