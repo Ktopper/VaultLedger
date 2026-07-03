@@ -268,6 +268,17 @@ later commit touched the same file. Behavior:
 
 ## 6. Memory store & lifecycle (Prompt 4)
 
+> **Status source-of-truth invariant (WU3b review fix):** a memory's `status`
+> lives in both the note's `ledger:` frontmatter and the journal `memories.status`
+> row, and `reindex` rebuilds the journal *from the file* (§3.3: vault + Git are
+> the source of truth). Therefore **every status transition writes the file's
+> frontmatter through the broker**, not just the journal row — otherwise the
+> change is silently lost on a journal rebuild. `promote` (scratch→working) and
+> approved `promote` (working→canonical) flip `ledger.status` in the note via a
+> broker `revise` (audited, committed); `forget` flips it to `forgotten` as part
+> of the archive move. The journal row updates in the same operation and stays a
+> pure cache of what the files say.
+
 - **`remember()`** → `create` op into the agent zone, provenance frontmatter,
   `status = scratch`.
 - **`revise()`** → `revise` op; bumps provenance (`created`/`reason`), links
