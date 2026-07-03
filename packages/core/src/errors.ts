@@ -12,6 +12,11 @@ export const RejectionCode = {
   // conflict) or NOT_FOUND (no such transaction at all). Neither of those
   // codes fit this case, so it gets its own.
   ALREADY_REVERTED: "ALREADY_REVERTED",
+  // v0.1 addition (Phase 3a, memory store promote()): a memory status
+  // transition outside the two supported in v0.1 (scratch->working auto,
+  // working->canonical via approval). None of the existing codes describe
+  // "this state change isn't allowed", so it gets its own.
+  INVALID_TRANSITION: "INVALID_TRANSITION",
 } as const;
 
 export type RejectionCode = (typeof RejectionCode)[keyof typeof RejectionCode];
@@ -26,6 +31,7 @@ const RETRIABLE: Record<RejectionCode, boolean> = {
   APPROVAL_REQUIRED: true,
   REVERT_CONFLICT: false,
   ALREADY_REVERTED: false,
+  INVALID_TRANSITION: false,
 };
 
 export interface Rejection {

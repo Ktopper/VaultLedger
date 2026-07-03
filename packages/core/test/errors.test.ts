@@ -44,4 +44,10 @@ describe("BrokerError", () => {
     const err = new BrokerError("FORBIDDEN_ZONE", "forbidden but flagged retriable", true);
     expect(err.retriable).toBe(true);
   });
+
+  test("INVALID_TRANSITION exists in the rejection code set and defaults to non-retriable", () => {
+    expect(RejectionCode.INVALID_TRANSITION).toBe("INVALID_TRANSITION");
+    const err = new BrokerError("INVALID_TRANSITION", "unsupported status transition");
+    expect(err.retriable).toBe(false);
+  });
 });
