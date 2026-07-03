@@ -1,3 +1,4 @@
+import matter from "gray-matter";
 import { BrokerError } from "../errors.js";
 import type { Journal, TransactionRow } from "../journal/journal.js";
 import type { LedgerGit } from "./git.js";
@@ -11,8 +12,12 @@ export interface UndoDeps {
 
 /**
  * Revert a single applied transaction: `git revert` its commit, then
- * atomically (a) mark the original transaction 'reverted', (b) mark its
- * linked memory (if any) 'reverted', and (c) insert a new op='revert'
+ * atomically (a) mark the original transaction 'reverted', (b) re-derive its
+ * linked memory's status (if any) from the FILE at HEAD (source of truth,
+ * spec §6.0) — 'reverted' if the note is now gone (an originating create was
+ * undone), otherwise whatever status the note's restored `ledger:`
+ * frontmatter declares (a content revise or promote status-flip was undone,
+ * and the memory stays live in recall) — and (c) insert a new op='revert'
  * transaction row that is the exact hash mirror of the original (before <->
  * after swapped) — design §5.3.
  *
@@ -41,6 +46,51 @@ export async function undoTransaction(
   // the journal must not be touched, so this runs before any journal write.
   const revertSha = await git.revertCommit(txn.commit_sha);
 
+  // Re-derive the linked memory's status from the FILE — the source of
+  // truth per spec §6.0 — rather than blindly marking it 'reverted'.
+  // `MemoryStore.revise()` (and status flips like promote) link every
+  // content-edit transaction to its memory, so blindly reverting the memory
+  // status here would make a live, correct memory silently vanish from
+  // `recall` on every routine revise-undo. Only a reverted *create* actually
+  // removes the file, and that's the one case that should end in 'reverted'.
+  //
+  // Computed BEFORE the runInTransaction block below: `fileAtHead` is async
+  // (goes through git) and `runInTransaction` (better-sqlite3) is
+  // synchronous, so the async read + parse must happen first and the result
+  // applied synchronously inside the transaction.
+  let derivedMemoryStatus: string | undefined;
+  if (txn.memory_id) {
+    const mem = journal.getMemory(txn.memory_id);
+    if (mem) {
+      const fileAtHead = await git.fileAtHead(mem.path);
+      if (fileAtHead === null) {
+        // The note is gone (an originating create was reverted) — the
+        // belief's file no longer exists, so recall should drop it.
+        derivedMemoryStatus = "reverted";
+      } else {
+        // The note still exists (a content revise or a promote status-flip
+        // was reverted) — read whatever status git already restored into
+        // the frontmatter and keep the memory live with that status. If the
+        // frontmatter can't be parsed, leave derivedMemoryStatus undefined
+        // so the status is left UNCHANGED below: losing a live memory from
+        // recall is the worse failure than a possibly-stale status.
+        try {
+          const parsed = matter(fileAtHead);
+          const ledger = parsed.data.ledger;
+          const status =
+            ledger && typeof ledger === "object"
+              ? (ledger as Record<string, unknown>).status
+              : undefined;
+          if (typeof status === "string" && status.length > 0) {
+            derivedMemoryStatus = status;
+          }
+        } catch {
+          // Malformed frontmatter: fail safe, leave status unchanged.
+        }
+      }
+    }
+  }
+
   const revertTxnId = genId("txn");
   const revertRow: TransactionRow = {
     id: revertTxnId,
@@ -58,8 +108,8 @@ export async function undoTransaction(
 
   journal.runInTransaction(() => {
     journal.setTransactionStatus(txnId, "reverted");
-    if (txn.memory_id) {
-      journal.setMemoryStatus(txn.memory_id, "reverted");
+    if (txn.memory_id && derivedMemoryStatus !== undefined) {
+      journal.setMemoryStatus(txn.memory_id, derivedMemoryStatus);
     }
     journal.recordTransaction(revertRow);
   });
