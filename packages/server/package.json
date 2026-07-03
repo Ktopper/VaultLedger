@@ -11,5 +11,5 @@
     "fastify": "^5.0.0",
     "diff": "^7.0.0"
   },
-  "devDependencies": { "@types/diff": "^6.0.0" }
+  "devDependencies": { "@types/diff": "^6.0.0", "yaml": "^2.5.0" }
 }

@@ -2,12 +2,18 @@ import { describe, expect, test } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { buildBridge } from "../src/app.js";
 
-/** Task 2.1 doesn't need a real vault — buildBridge only needs a ctx-shaped
- * object whose fields the auth/loopback preHandler doesn't touch. We stub
- * the minimum surface; later tasks (2.2+) will build real VaultContext
- * fixtures once routes actually read from it. */
+/** Task 2.1's auth/loopback preHandler doesn't touch the vault context at
+ * all — it short-circuits before any route handler runs. The one exception
+ * is the "success" case, which does fall through to the real /status
+ * handler (fleshed out in Task 2.2), so this stub supplies just enough
+ * VaultContext shape for that handler not to crash; the read-route tests in
+ * read.test.ts are what actually exercise /status against a real vault. */
 function fakeCtx(): Parameters<typeof buildBridge>[0] {
-  return {} as Parameters<typeof buildBridge>[0];
+  return {
+    manifest: { zones: { trusted: [], agent: [], scratch: [], excluded: [] }, mode: "assisted" },
+    approvals: { list: () => [] },
+    journal: { listTransactions: () => [] },
+  } as unknown as Parameters<typeof buildBridge>[0];
 }
 
 const TOKEN = "test-token-123";
@@ -53,7 +59,6 @@ describe("buildBridge auth + loopback guard", () => {
       headers: { host: "127.0.0.1:51789", authorization: `Bearer ${TOKEN}` },
     });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ ok: true });
     await app.close();
   });
 });

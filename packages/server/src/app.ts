@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
-import type { VaultContext } from "@vaultledger/core";
+import { findStale, recall, type VaultContext } from "@vaultledger/core";
+import { renderApprovalDiff } from "./render.js";
 
 const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
 
@@ -86,9 +87,45 @@ export function buildBridge(ctx: VaultContext, token: string): FastifyInstance {
   });
 
   app.get("/status", async () => {
-    return { ok: true };
+    return {
+      zones: ctx.manifest.zones,
+      mode: ctx.manifest.mode,
+      pendingApprovals: ctx.approvals.list().length,
+      recentTransactions: ctx.journal.listTransactions({ limit: 10 }),
+    };
   });
 
-  void ctx;
+  app.get("/approvals", async () => {
+    return ctx.approvals.list().map((row) => ({
+      ...row,
+      diff: renderApprovalDiff(row.held_operation),
+    }));
+  });
+
+  app.get("/transactions", async (req: FastifyRequest) => {
+    const query = req.query as { session?: string; entity?: string; limit?: string };
+    const limit = query.limit !== undefined ? Number.parseInt(query.limit, 10) : 20;
+    return ctx.journal.listTransactions({
+      session: query.session,
+      entity: query.entity,
+      limit,
+    });
+  });
+
+  app.get("/memories", async (req: FastifyRequest) => {
+    const query = req.query as { entity?: string; status?: string; tag?: string };
+    return recall(ctx.journal, { entity: query.entity, status: query.status, tag: query.tag }, ctx.now);
+  });
+
+  app.get("/staleness", async () => {
+    const workingMemories = ctx.journal.queryMemories({ status: "working" });
+    const staleIds = new Set(findStale(workingMemories, ctx.now, ctx.config.stalenessDays));
+    return workingMemories.filter((m) => staleIds.has(m.id));
+  });
+
+  app.get("/conflicts", async () => {
+    return [];
+  });
+
   return app;
 }
