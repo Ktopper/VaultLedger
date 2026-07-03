@@ -16,3 +16,6 @@ export * from "./broker/reconcile.js";
 export * from "./config.js";
 export * from "./recall/recall.js";
 export * from "./memory/store.js";
+export * from "./approvals/queue.js";
+export * from "./memory/ttl.js";
+export * from "./memory/reindex.js";
