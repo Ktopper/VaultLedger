@@ -71,6 +71,16 @@ export class Journal {
     this.db = db;
   }
 
+  /**
+   * Run several Journal calls as a single atomic SQLite transaction (used by
+   * undo's journal compensation: mark the original transaction reverted,
+   * mark its memory reverted, and insert the new revert-transaction row all
+   * together, so a crash mid-sequence can't leave the journal half-updated).
+   */
+  runInTransaction<T>(fn: () => T): T {
+    return this.db.transaction(fn)();
+  }
+
   // ---------------------------------------------------------------------
   // Transactions
   // ---------------------------------------------------------------------

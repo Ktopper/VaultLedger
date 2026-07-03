@@ -34,6 +34,12 @@ describe("BrokerError", () => {
     expect(err.retriable).toBe(false);
   });
 
+  test("ALREADY_REVERTED exists in the rejection code set and defaults to non-retriable", () => {
+    expect(RejectionCode.ALREADY_REVERTED).toBe("ALREADY_REVERTED");
+    const err = new BrokerError("ALREADY_REVERTED", "already reverted");
+    expect(err.retriable).toBe(false);
+  });
+
   test("explicit retriable overrides the default", () => {
     const err = new BrokerError("FORBIDDEN_ZONE", "forbidden but flagged retriable", true);
     expect(err.retriable).toBe(true);

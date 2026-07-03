@@ -7,6 +7,11 @@ export const RejectionCode = {
   TARGET_EXISTS: "TARGET_EXISTS",
   APPROVAL_REQUIRED: "APPROVAL_REQUIRED",
   REVERT_CONFLICT: "REVERT_CONFLICT",
+  // v0.1 addition (Phase 2c, undo): distinguishes "this transaction was
+  // already reverted" from a true REVERT_CONFLICT (a git-level merge
+  // conflict) or NOT_FOUND (no such transaction at all). Neither of those
+  // codes fit this case, so it gets its own.
+  ALREADY_REVERTED: "ALREADY_REVERTED",
 } as const;
 
 export type RejectionCode = (typeof RejectionCode)[keyof typeof RejectionCode];
@@ -20,6 +25,7 @@ const RETRIABLE: Record<RejectionCode, boolean> = {
   TARGET_EXISTS: false,
   APPROVAL_REQUIRED: true,
   REVERT_CONFLICT: false,
+  ALREADY_REVERTED: false,
 };
 
 export interface Rejection {

@@ -304,3 +304,49 @@ describe("Journal approvals", () => {
     expect(got?.resolved_at).toBe("2026-07-02T00:00:00.000Z");
   });
 });
+
+describe("Journal.runInTransaction", () => {
+  test("commits all writes performed inside the callback", () => {
+    const j = makeJournal();
+    j.insertApproval({
+      id: "appr_tx",
+      held_operation: "{}",
+      zone: "trusted",
+      reason: null,
+      session: "session-a",
+      state: "pending",
+      created_at: "2026-07-01T00:00:00.000Z",
+      resolved_at: null,
+    });
+
+    j.runInTransaction(() => {
+      j.setApprovalState("appr_tx", "approved", "2026-07-02T00:00:00.000Z");
+    });
+
+    expect(j.getApproval("appr_tx")?.state).toBe("approved");
+  });
+
+  test("rolls back all writes performed inside the callback if it throws", () => {
+    const j = makeJournal();
+    j.insertApproval({
+      id: "appr_tx2",
+      held_operation: "{}",
+      zone: "trusted",
+      reason: null,
+      session: "session-a",
+      state: "pending",
+      created_at: "2026-07-01T00:00:00.000Z",
+      resolved_at: null,
+    });
+
+    expect(() =>
+      j.runInTransaction(() => {
+        j.setApprovalState("appr_tx2", "approved", "2026-07-02T00:00:00.000Z");
+        throw new Error("boom");
+      }),
+    ).toThrow("boom");
+
+    // The state change must NOT have been committed.
+    expect(j.getApproval("appr_tx2")?.state).toBe("pending");
+  });
+});
