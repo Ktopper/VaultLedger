@@ -10,3 +10,6 @@ export * from "./broker/lint.js";
 export * from "./broker/git.js";
 export * from "./journal/db.js";
 export * from "./journal/journal.js";
+export * from "./broker/broker.js";
+export * from "./broker/undo.js";
+export * from "./broker/reconcile.js";
