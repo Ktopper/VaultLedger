@@ -247,11 +247,26 @@ revert — see §5.3), `ALREADY_REVERTED` (undo of a transaction already reverte
 
 > **Review fix #3:** `git revert` fixes files but the `memories`/`transactions`
 > rows still describe the pre-revert world. Undo MUST also compensate the
-> journal: mark the affected memory row `reverted` (so `recall` stops returning
-> it), set the original transaction `status = reverted`, and record the revert
-> as its **own** `op = 'revert'` transaction row. Without this, `recall` returns
-> beliefs that were rolled back — precisely the failure the product exists to
-> prevent. This is an explicit e2e assertion (success criterion step 5).
+> journal: set the original transaction `status = reverted`, and record the
+> revert as its **own** `op = 'revert'` transaction row.
+>
+> **Memory-status compensation (final-review fix): re-derive from the file, do
+> not blind-set `reverted`.** After the revert, the memory's journal status is
+> re-derived from the source of truth — the file (§6.0):
+> - if the note no longer exists at HEAD (an originating `create` was reverted)
+>   → mark the memory `reverted` so `recall` stops returning a belief whose file
+>   is gone;
+> - if the note still exists (a content `revise` or a `promote` status-flip was
+>   reverted) → set the memory row to the status now in the note's `ledger:`
+>   frontmatter (git already restored it), keeping a still-true belief **live in
+>   recall**.
+>
+> Blindly marking the memory `reverted` on *any* linked transaction was a bug:
+> undoing a routine content edit made a live, correct memory silently vanish
+> from `recall` — the exact failure the product exists to prevent, in the
+> opposite direction. This is covered by an explicit test (undo a revise →
+> `recall` still returns the memory) alongside the create-undo e2e assertion
+> (success criterion step 5).
 
 **Revert conflicts.** `git revert` of an older transaction can conflict when a
 later commit touched the same file. Behavior:
