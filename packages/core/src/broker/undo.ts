@@ -1,6 +1,7 @@
 import matter from "gray-matter";
 import { BrokerError } from "../errors.js";
 import type { Journal, TransactionRow } from "../journal/journal.js";
+import { withVaultLock } from "../concurrency/lock.js";
 import type { LedgerGit } from "./git.js";
 
 export interface UndoDeps {
@@ -8,6 +9,10 @@ export interface UndoDeps {
   journal: Journal;
   now: () => string;
   genId: (prefix: string) => string;
+  /** When set, acquires the shared cross-process vault lock (see
+   * concurrency/lock.ts) around the undo. Opt-in: unset leaves behavior
+   * unchanged for existing single-process callers/tests. */
+  lockDir?: string;
 }
 
 /**
@@ -26,6 +31,24 @@ export interface UndoDeps {
  * resolves successfully.
  */
 export async function undoTransaction(
+  deps: UndoDeps,
+  txnId: string,
+): Promise<{ revertSha: string; revertTxnId: string }> {
+  if (deps.lockDir !== undefined) {
+    return withVaultLock(deps.lockDir, () => runUndoTransaction(deps, txnId));
+  }
+  return runUndoTransaction(deps, txnId);
+}
+
+/**
+ * The actual undo-one-transaction work, factored out of `undoTransaction` so
+ * `undoSession` can call it directly WITHOUT re-acquiring the vault lock per
+ * transaction — `undoSession` already holds the lock for its whole run (see
+ * below), and `proper-lockfile` locks are not reentrant within a process, so
+ * acquiring it again per-transaction from inside an already-locked session
+ * would self-deadlock until the outer lock's `stale` timeout lapsed.
+ */
+async function runUndoTransaction(
   deps: UndoDeps,
   txnId: string,
 ): Promise<{ revertSha: string; revertTxnId: string }> {
@@ -132,14 +155,24 @@ export async function undoSession(
   deps: UndoDeps,
   sessionId: string,
 ): Promise<Array<{ txnId: string; revertSha: string }>> {
-  const candidates = deps.journal
-    .listTransactions({ session: sessionId })
-    .filter((t) => t.status === "applied" && t.op !== "revert");
+  const run = async (): Promise<Array<{ txnId: string; revertSha: string }>> => {
+    const candidates = deps.journal
+      .listTransactions({ session: sessionId })
+      .filter((t) => t.status === "applied" && t.op !== "revert");
 
-  const results: Array<{ txnId: string; revertSha: string }> = [];
-  for (const txn of candidates) {
-    const { revertSha } = await undoTransaction(deps, txn.id);
-    results.push({ txnId: txn.id, revertSha });
+    const results: Array<{ txnId: string; revertSha: string }> = [];
+    for (const txn of candidates) {
+      // Calls the lock-free core directly (not the exported `undoTransaction`)
+      // — the lock for this whole session-undo is already held below, and
+      // re-acquiring it per-transaction would self-deadlock (see
+      // `runUndoTransaction`'s doc comment).
+      const { revertSha } = await runUndoTransaction(deps, txn.id);
+      results.push({ txnId: txn.id, revertSha });
+    }
+    return results;
+  };
+  if (deps.lockDir !== undefined) {
+    return withVaultLock(deps.lockDir, run);
   }
-  return results;
+  return run();
 }

@@ -16,6 +16,7 @@ import { hashBytes, hashFile } from "./hash.js";
 import { applyPatch } from "./patch.js";
 import { assertStructurePreserved } from "./lint.js";
 import { formatMessage, type LedgerGit } from "./git.js";
+import { withVaultLock } from "../concurrency/lock.js";
 
 const DEFAULT_PATCH_THRESHOLD = 0.5;
 
@@ -46,6 +47,13 @@ export interface BrokerOptions {
   now: () => string;
   genId: (prefix: string) => string;
   patchThreshold?: number;
+  /** When set, every mutating broker operation (apply's create/revise/
+   * propose_edit and archive) acquires the shared cross-process vault lock
+   * rooted at this directory (see concurrency/lock.ts) before running its
+   * body. Opt-in: unset (the v0.1 default) leaves behavior byte-for-byte
+   * unchanged — no lock acquired, no lockfile created — so every existing
+   * single-process caller/test is unaffected. */
+  lockDir?: string;
 }
 
 type CreateOp = Extract<ProposedOperation, { op: "create" }>;
@@ -68,6 +76,7 @@ export class Broker {
   private readonly now: () => string;
   private readonly genId: (prefix: string) => string;
   private readonly patchThreshold: number;
+  private readonly lockDir: string | undefined;
   // Memoized realpath of the vault root (fix 3). Computed lazily rather
   // than in the constructor because some callers construct a Broker before
   // the vault directory necessarily exists on disk; realpathSync on a
@@ -82,28 +91,35 @@ export class Broker {
     this.now = opts.now;
     this.genId = opts.genId;
     this.patchThreshold = opts.patchThreshold ?? DEFAULT_PATCH_THRESHOLD;
+    this.lockDir = opts.lockDir;
   }
 
   async apply(op: ProposedOperation, opts?: { approved?: boolean }): Promise<ApplyResult> {
-    switch (op.op) {
-      case "create":
-        return this.applyCreate(op);
-      case "revise":
-        return this.applyRevise(op, opts?.approved ?? false);
-      case "propose_edit":
-        return this.applyProposeEdit(op);
-      case "promote":
-      case "forget":
-        throw new BrokerError(
-          "NOT_FOUND",
-          `op '${op.op}' operates on a memory id and must be resolved to a path by the ` +
-            `memory store before reaching the broker (use Broker.archive() for forget)`,
-        );
-      default: {
-        const exhaustive: never = op;
-        throw new BrokerError("SYNTAX_BREAK", `unknown op: ${JSON.stringify(exhaustive)}`);
+    const run = async (): Promise<ApplyResult> => {
+      switch (op.op) {
+        case "create":
+          return this.applyCreate(op);
+        case "revise":
+          return this.applyRevise(op, opts?.approved ?? false);
+        case "propose_edit":
+          return this.applyProposeEdit(op);
+        case "promote":
+        case "forget":
+          throw new BrokerError(
+            "NOT_FOUND",
+            `op '${op.op}' operates on a memory id and must be resolved to a path by the ` +
+              `memory store before reaching the broker (use Broker.archive() for forget)`,
+          );
+        default: {
+          const exhaustive: never = op;
+          throw new BrokerError("SYNTAX_BREAK", `unknown op: ${JSON.stringify(exhaustive)}`);
+        }
       }
+    };
+    if (this.lockDir !== undefined) {
+      return withVaultLock(this.lockDir, run);
     }
+    return run();
   }
 
   /**
@@ -113,6 +129,19 @@ export class Broker {
    * `forget` operates on a memory id at the store layer, not a path.
    */
   async archive(
+    fromRel: string,
+    toRel: string,
+    session: string,
+    reason: string,
+  ): Promise<AppliedResult> {
+    const run = async (): Promise<AppliedResult> => this.doArchive(fromRel, toRel, session, reason);
+    if (this.lockDir !== undefined) {
+      return withVaultLock(this.lockDir, run);
+    }
+    return run();
+  }
+
+  private async doArchive(
     fromRel: string,
     toRel: string,
     session: string,
