@@ -5,7 +5,10 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
-  "scripts": { "build": "tsc -b" },
-  "dependencies": {},
-  "devDependencies": {}
+  "scripts": { "build": "node esbuild.config.mjs", "test": "vitest run" },
+  "dependencies": { "@vaultledger/core": "workspace:*" },
+  "devDependencies": {
+    "obsidian": "^1.7.2",
+    "esbuild": "^0.24.0"
+  }
 }
