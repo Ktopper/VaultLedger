@@ -7,3 +7,6 @@ export * from "./errors.js";
 export * from "./broker/hash.js";
 export * from "./broker/patch.js";
 export * from "./broker/lint.js";
+export * from "./broker/git.js";
+export * from "./journal/db.js";
+export * from "./journal/journal.js";
