@@ -1,0 +1,260 @@
+import { afterEach, describe, expect, test } from "vitest";
+import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createPatch } from "diff";
+import {
+  DEFAULT_LEDGER_CONFIG,
+  LedgerGit,
+  hashFile,
+  mintVaultId,
+  openVault,
+  permissionsPath,
+  readConfig,
+  vaultLockDir,
+  writeConfig,
+} from "@vaultledger/core";
+import { startBridge, type RunningBridge } from "@vaultledger/server";
+import { BridgeClient, BridgeUnavailableError } from "../src/bridgeClient.js";
+
+const RAW_MANIFEST = `version: 1
+mode: assisted
+zones:
+  trusted:
+    - "**"
+  agent:
+    - "Agent/**"
+  scratch:
+    - "Agent/Scratch/**"
+  excluded:
+    - "Private/**"
+overrides: []
+`;
+
+function makeClock(): { now: () => string; genId: (prefix: string) => string } {
+  let tick = 0;
+  let counter = 0;
+  return {
+    now: () => {
+      tick += 1;
+      return new Date(2026, 0, 1, 0, 0, tick).toISOString();
+    },
+    genId: (prefix: string) => {
+      counter += 1;
+      return `${prefix}_${counter}`;
+    },
+  };
+}
+
+interface TestVault {
+  vaultDir: string;
+  homeDir: string;
+  env: NodeJS.ProcessEnv;
+  cleanup: () => void;
+}
+
+/** A minimal but real VaultLedger vault on disk + a temp HOME, mirroring
+ * packages/server/test/helpers.ts's makeTestVault — reimplemented locally so
+ * the plugin package doesn't reach into another package's test-only files. */
+async function makeTestVault(rand: () => string = () => "test1234"): Promise<TestVault> {
+  const vaultDir = mkdtempSync(join(tmpdir(), "vl-plugin-vault-"));
+  const homeDir = mkdtempSync(join(tmpdir(), "vl-plugin-home-"));
+
+  mkdirSync(join(vaultDir, "Notes"), { recursive: true });
+  writeFileSync(join(vaultDir, "Notes", "trusted.md"), "# Trusted note\n\nSome content.\n", "utf8");
+
+  const git = new LedgerGit(vaultDir);
+  await git.init();
+
+  mkdirSync(join(vaultDir, ".ledger"), { recursive: true });
+  writeFileSync(permissionsPath(vaultDir), RAW_MANIFEST, "utf8");
+  writeConfig(vaultDir, { ...DEFAULT_LEDGER_CONFIG, vaultId: mintVaultId(rand) });
+
+  const env = { HOME: homeDir } as NodeJS.ProcessEnv;
+  return {
+    vaultDir,
+    homeDir,
+    env,
+    cleanup: () => {
+      rmSync(vaultDir, { recursive: true, force: true });
+      rmSync(homeDir, { recursive: true, force: true });
+    },
+  };
+}
+
+const TOKEN = "test-token-abc123";
+
+let vault: TestVault | undefined;
+let bridge: RunningBridge | undefined;
+
+afterEach(async () => {
+  if (bridge) {
+    await bridge.close();
+    bridge = undefined;
+  }
+  if (vault) {
+    vault.cleanup();
+    vault = undefined;
+  }
+});
+
+describe("BridgeClient", () => {
+  test("status() and memories() return typed data from a live bridge", async () => {
+    vault = await makeTestVault();
+    const clock = makeClock();
+    bridge = await startBridge(vault.vaultDir, { token: TOKEN, now: clock.now, genId: clock.genId, env: vault.env });
+
+    const client = new BridgeClient(`http://127.0.0.1:${bridge.port}`, TOKEN);
+
+    const status = await client.status();
+    expect(status.ok).toBe(true);
+    if (!status.ok) throw new Error("expected ok status");
+    expect(status.data.mode).toBe("assisted");
+    expect(status.data.pendingApprovals).toBe(0);
+
+    // Seed a memory via a second openVault+store write against the same
+    // vault (there is no `remember` route on the bridge itself).
+    const seedCtx = await openVault(vault.vaultDir, {
+      now: clock.now,
+      genId: clock.genId,
+      env: vault.env,
+      session: "seed-session",
+    });
+    try {
+      await seedCtx.store.remember({ content: "# a remembered fact\n", reason: "seed", session: "seed-session" });
+    } finally {
+      seedCtx.close();
+    }
+
+    const memories = await client.memories();
+    expect(memories.ok).toBe(true);
+    if (!memories.ok) throw new Error("expected ok memories");
+    expect(memories.data.length).toBeGreaterThanOrEqual(1);
+  });
+
+  test("approve/reject/undo against real queued items return typed results; unknown id is a typed NOT_FOUND, not a throw", async () => {
+    vault = await makeTestVault();
+    const clock = makeClock();
+    bridge = await startBridge(vault.vaultDir, { token: TOKEN, now: clock.now, genId: clock.genId, env: vault.env });
+
+    // Seed a queued propose_edit via a second openVault over the same vault
+    // (same pattern as the memories seed above) so the bridge's own ctx picks
+    // it up from the shared on-disk journal.
+    const seedCtx = await openVault(vault.vaultDir, {
+      now: clock.now,
+      genId: clock.genId,
+      env: vault.env,
+      session: "s1",
+    });
+    let approvalId: string;
+    try {
+      const abs = join(vault.vaultDir, "Notes", "trusted.md");
+      // Padded well beyond a single line so a one-word substitution stays
+      // comfortably under the broker's PATCH_TOO_LARGE changed-ratio guard
+      // (a tiny file trips it on even a small edit — same padding
+      // packages/server/test/mutations.test.ts uses for the same reason).
+      const before =
+        "# Trusted note\n\n" +
+        "Filler line 1.\nFiller line 2.\nFiller line 3.\nFiller line 4.\nFiller line 5.\n" +
+        "Some content.\n";
+      writeFileSync(abs, before, "utf8");
+      const after = before.replace("Some content.", "Some DIFFERENT content.");
+      const patch = createPatch("trusted.md", before, after);
+      const queued = await seedCtx.broker.apply({
+        op: "propose_edit",
+        path: "Notes/trusted.md",
+        expected_hash: hashFile(abs),
+        patch,
+        reason: "test propose",
+        session: "s1",
+      });
+      if (!("queued" in queued) || !queued.queued) throw new Error("expected queued");
+      approvalId = queued.approvalId;
+    } finally {
+      seedCtx.close();
+    }
+
+    const client = new BridgeClient(`http://127.0.0.1:${bridge.port}`, TOKEN);
+
+    const approveResult = await client.approve(approvalId);
+    expect(approveResult).toEqual({ ok: true, data: { applied: true } });
+
+    const rejectUnknown = await client.reject("apr_does_not_exist");
+    expect(rejectUnknown.ok).toBe(false);
+    if (rejectUnknown.ok) throw new Error("expected a rejection");
+    expect(rejectUnknown.error.code).toBe("NOT_FOUND");
+    expect(rejectUnknown.status).toBe(404);
+
+    const approveUnknown = await client.approve("apr_does_not_exist");
+    expect(approveUnknown).toEqual({
+      ok: false,
+      status: 404,
+      error: expect.objectContaining({ code: "NOT_FOUND" }),
+    });
+
+    const txns = await client.transactions();
+    expect(txns.ok).toBe(true);
+    if (!txns.ok) throw new Error("expected ok transactions");
+    const txnId = txns.data[0]?.id;
+    expect(typeof txnId).toBe("string");
+
+    const undoResult = await client.undo(txnId as string);
+    expect(undoResult.ok).toBe(true);
+    if (!undoResult.ok) throw new Error("expected ok undo");
+    expect(undoResult.data).toMatchObject({ revertSha: expect.any(String), revertTxnId: expect.any(String) });
+
+    const undoUnknown = await client.undo("txn_does_not_exist");
+    expect(undoUnknown.ok).toBe(false);
+    if (undoUnknown.ok) throw new Error("expected undo failure");
+    expect(undoUnknown.error.code).toBe("NOT_FOUND");
+    expect(undoUnknown.status).toBe(404);
+  });
+
+  test("fromVault reads vaultId + bridge.json and connects; missing bridge.json throws BridgeUnavailableError", async () => {
+    vault = await makeTestVault();
+    const clock = makeClock();
+
+    // Missing bridge.json first.
+    await expect(BridgeClient.fromVault(vault.vaultDir, { env: vault.env })).rejects.toBeInstanceOf(
+      BridgeUnavailableError,
+    );
+
+    bridge = await startBridge(vault.vaultDir, { token: TOKEN, now: clock.now, genId: clock.genId, env: vault.env });
+
+    // Write bridge.json at the SAME core-computed path the plugin's
+    // discovery logic must compute independently.
+    const { vaultId } = readConfig(vault.vaultDir);
+    const appDir = vaultLockDir(vaultId, vault.env);
+    mkdirSync(appDir, { recursive: true });
+    const bridgeJsonPath = join(appDir, "bridge.json");
+    const tmpPath = `${bridgeJsonPath}.tmp`;
+    writeFileSync(
+      tmpPath,
+      JSON.stringify({ port: bridge.port, token: TOKEN, pid: process.pid, startedAt: clock.now() }),
+      "utf8",
+    );
+    renameSync(tmpPath, bridgeJsonPath);
+
+    const client = await BridgeClient.fromVault(vault.vaultDir, { env: vault.env });
+    const status = await client.status();
+    expect(status.ok).toBe(true);
+  });
+
+  test("wrong token surfaces a 401 as a typed auth error, not a hang", async () => {
+    vault = await makeTestVault();
+    const clock = makeClock();
+    bridge = await startBridge(vault.vaultDir, { token: TOKEN, now: clock.now, genId: clock.genId, env: vault.env });
+
+    const client = new BridgeClient(`http://127.0.0.1:${bridge.port}`, "wrong-token");
+    const status = await client.status();
+    expect(status.ok).toBe(false);
+    if (status.ok) throw new Error("expected auth failure");
+    expect(status.status).toBe(401);
+    expect(status.error.code).toBe("UNAUTHORIZED");
+  });
+
+  test("network failure (bridge down) throws BridgeUnavailableError", async () => {
+    const client = new BridgeClient("http://127.0.0.1:1", TOKEN);
+    await expect(client.status()).rejects.toBeInstanceOf(BridgeUnavailableError);
+  });
+});

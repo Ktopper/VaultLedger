@@ -120,6 +120,15 @@ importers:
         specifier: workspace:*
         version: link:../core
     devDependencies:
+      '@types/diff':
+        specifier: ^6.0.0
+        version: 6.0.0
+      '@vaultledger/server':
+        specifier: workspace:*
+        version: link:../server
+      diff:
+        specifier: ^7.0.0
+        version: 7.0.0
       esbuild:
         specifier: ^0.24.0
         version: 0.24.2
