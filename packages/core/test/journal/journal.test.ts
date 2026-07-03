@@ -27,6 +27,57 @@ describe("openJournal", () => {
     const j = new Journal(db1);
     expect(j.listTransactions({})).toEqual([]);
   });
+
+  test("DB enforces NOT NULL on required transaction columns", () => {
+    const j = makeJournal();
+    // A row with a null required field (status) must be rejected at the DB level.
+    const badRow = {
+      id: "tx_bad",
+      op: "create",
+      path: "Nova.md",
+      hash_before: null,
+      hash_after: "sha256:abc",
+      session: "session-a",
+      reason: "x",
+      memory_id: null,
+      commit_sha: null,
+      created_at: "2026-07-01T00:00:00.000Z",
+      status: null,
+    } as unknown as TransactionRow;
+    expect(() => j.recordTransaction(badRow)).toThrow(/NOT NULL/i);
+  });
+
+  test("DB enforces NOT NULL on required memory columns", () => {
+    const j = makeJournal();
+    const badRow = {
+      id: "mem_bad",
+      path: null,
+      entity: "Nova",
+      status: "active",
+      confidence: null,
+      created: "2026-07-01T00:00:00.000Z",
+      source: null,
+      supersedes: null,
+      expires: null,
+      last_referenced: null,
+    } as unknown as MemoryRow;
+    expect(() => j.insertMemory(badRow)).toThrow(/NOT NULL/i);
+  });
+
+  test("DB enforces NOT NULL on required approval columns", () => {
+    const j = makeJournal();
+    const badRow = {
+      id: "appr_bad",
+      held_operation: null,
+      zone: "restricted",
+      reason: "x",
+      session: "session-a",
+      state: "pending",
+      created_at: "2026-07-01T00:00:00.000Z",
+      resolved_at: null,
+    } as unknown as ApprovalRow;
+    expect(() => j.insertApproval(badRow)).toThrow(/NOT NULL/i);
+  });
 });
 
 describe("Journal transactions", () => {
