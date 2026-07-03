@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
-import type Database from "better-sqlite3";
 import * as YAML from "yaml";
 import {
   Approvals,
@@ -32,7 +31,10 @@ export interface LedgerContext {
   approvals: Approvals;
   now: () => string;
   genId: (prefix: string) => string;
-  db: Database.Database;
+  /** The typed as the return of `openJournal` rather than importing
+   * `better-sqlite3` directly — the CLI stays a thin adapter over core's own
+   * dependency, with no type dependency of its own to manage. */
+  db: ReturnType<typeof openJournal>;
 }
 
 export interface LoadContextDeps {

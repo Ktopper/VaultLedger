@@ -1,3 +1,134 @@
-export function run(): number {
-  return 0;
+#!/usr/bin/env node
+import { pathToFileURL } from "node:url";
+import { Command } from "commander";
+import { approveCommand } from "./commands/approve.js";
+import { initCommand } from "./commands/init.js";
+import { logCommand } from "./commands/log.js";
+import { reindexCommand } from "./commands/reindex.js";
+import { statusCommand } from "./commands/status.js";
+import { undoCommand } from "./commands/undo.js";
+
+function reportError(e: unknown): void {
+  console.error(e instanceof Error ? e.message : String(e));
+  process.exitCode = 1;
+}
+
+/**
+ * Build the `ledger` commander program. Every subcommand is a thin wrapper:
+ * parse args/opts, call the corresponding (already fully-tested) command
+ * function from ./commands, and set process.exitCode on rejection. No
+ * business logic lives here — orchestration only.
+ */
+export function buildProgram(): Command {
+  const program = new Command();
+  program.name("ledger").description("VaultLedger CLI").version("0.1.0");
+
+  program
+    .command("init <vaultDir>")
+    .description("scan a vault and, with --yes, initialize VaultLedger in it")
+    .option("-y, --yes", "write .ledger/config.json + permissions.yaml and git init", false)
+    .action(async (vaultDir: string, opts: { yes: boolean }) => {
+      try {
+        await initCommand(vaultDir, { confirm: opts.yes });
+      } catch (e) {
+        reportError(e);
+      }
+    });
+
+  program
+    .command("status <vaultDir>")
+    .description("show zones, pending approvals, and recent transactions")
+    .action(async (vaultDir: string) => {
+      try {
+        await statusCommand(vaultDir);
+      } catch (e) {
+        reportError(e);
+      }
+    });
+
+  program
+    .command("log <vaultDir>")
+    .description("list transactions")
+    .option("--entity <entity>", "filter by memory entity")
+    .option("--session <session>", "filter by session id")
+    .option("--limit <limit>", "max rows (default 20)", (v) => Number.parseInt(v, 10))
+    .action(async (vaultDir: string, opts: { entity?: string; session?: string; limit?: number }) => {
+      try {
+        await logCommand(vaultDir, opts);
+      } catch (e) {
+        reportError(e);
+      }
+    });
+
+  program
+    .command("reindex <vaultDir>")
+    .description("rebuild the journal from disk + git")
+    .action(async (vaultDir: string) => {
+      try {
+        await reindexCommand(vaultDir);
+      } catch (e) {
+        reportError(e);
+      }
+    });
+
+  program
+    .command("approve <vaultDir>")
+    .description("list pending approvals, or resolve one by id")
+    .option("--id <id>", "approval id to resolve")
+    .option("--reject", "reject instead of approve", false)
+    .option("--color", "colorize the rendered diff", false)
+    .action(async (vaultDir: string, opts: { id?: string; reject: boolean; color: boolean }) => {
+      try {
+        const result = await approveCommand(vaultDir, {
+          id: opts.id,
+          reject: opts.reject,
+          color: opts.color,
+        });
+        if (!Array.isArray(result) && "ok" in result && result.ok === false) {
+          process.exitCode = 1;
+        }
+      } catch (e) {
+        reportError(e);
+      }
+    });
+
+  program
+    .command("undo <vaultDir> <target>")
+    .description("revert a transaction id, or every transaction for session:<id>")
+    .action(async (vaultDir: string, target: string) => {
+      try {
+        const result = await undoCommand(vaultDir, target);
+        if (!result.ok) {
+          process.exitCode = 1;
+        }
+      } catch (e) {
+        reportError(e);
+      }
+    });
+
+  return program;
+}
+
+/**
+ * Programmatic entry point for tests: `run(["init", dir])` parses a bare
+ * user-style argv (no node/script prefix). With no argument, parses the real
+ * `process.argv` (used by the shebang entry point below).
+ */
+export async function run(argv?: string[]): Promise<void> {
+  const program = buildProgram();
+  if (argv) {
+    await program.parseAsync(argv, { from: "user" });
+  } else {
+    await program.parseAsync(process.argv);
+  }
+}
+
+// Only auto-run when this module is the process's actual entry point (the
+// installed `ledger` bin), never when imported by tests. Compares via
+// pathToFileURL (not a bare `file://${process.argv[1]}` template) so this
+// still matches when the path contains characters (spaces, unicode, ...)
+// that import.meta.url percent-encodes.
+const isMainModule = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (isMainModule) {
+  void run();
 }
