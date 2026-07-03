@@ -185,8 +185,29 @@ Per §3, the lock wraps the broker's mutating operations and `undo*`; everything
   - `close()` closes the db (spy on `db.close`).
 - [ ] **Step 2:** Run — FAIL.
 - [ ] **Step 3: Implement** — mirror `packages/cli/src/context.ts` wiring, but: derive `lockDir` = the app-support `<vaultId>/` dir (reuse the config path resolver used by `journalPath`), pass `lockDir` into the `Broker` (and thread it to undo calls), open the journal via `openJournal(journalPath(...))` (now WAL), run `ensureJournal` then `reconcile`, build store/approvals, generate a `session` (`openVault` is a boundary — real `now`/`genId` default here, injectable for tests). Wrap post-open work in try/catch that closes `db` before rethrowing (learn from the cli fix). Accept `sweep?: boolean` (default false) — callers that are long-running (server) pass true.
-- [ ] **Step 4:** Run — PASS. Export from `core/src/index.ts`: `openVault`, `VaultContext`, `withVaultLock`, `LOCK_CONFIG`.
+- [ ] **Step 4:** Run — PASS. Export from `core/src/index.ts`: `openVault`, `VaultContext`, `withVaultLock`, `LOCK_CONFIG`, and a helper `vaultLockDir(vaultId, env?)` that returns the app-support `<vaultId>/` dir (reuse the `journalPath` resolver's base).
 - [ ] **Step 5: Commit** `feat(core): openVault stack factory (+lock wiring, idempotent reindex)`
+
+### Task 1.5: Thread the lock into the CLI and MCP-server brokers (the real second process)
+
+**Files:** Modify `packages/cli/src/context.ts`, `packages/mcp-server/src/context.ts`; Tests alongside.
+
+> **CRITICAL (plan-review fix):** the lock only protects a process that passes
+> `lockDir`. `openVault` (the server) does, but the **MCP server** builds its own
+> `Broker` in `mcp-server/src/context.ts`, and the **CLI** builds its own in
+> `cli/src/context.ts` — both for mutating paths (`memory_*`/`vault_propose_edit`
+> in MCP; `approve`/`undo` in CLI). If they don't pass `lockDir`, there is NO
+> mutual exclusion between `ledger serve` and the MCP server — the exact
+> serve+MCP race §3 exists to prevent. This is the minimal change spec §2 names
+> ("mcp-server ... now acquires the shared mutation lock"); it is distinct from
+> the deferred full `openVault` adoption (§8) — we only pass `lockDir`, not
+> restructure the wiring.
+
+- [ ] **Step 1: Failing test** — in `mcp-server` (and `cli`) tests, construct the context over a temp vault (temp HOME) and assert the `Broker` was built with a `lockDir` equal to `vaultLockDir(vaultId, env)`. Stronger: a two-context concurrency test IN the mcp-server suite — build TWO server contexts the real way (`loadServerContext`) over the same vault and fire concurrent `memory_remember`s; assert serialized, non-corrupt commits. (This is the test that would FAIL if the MCP path skipped the lock.)
+- [ ] **Step 2:** FAIL (contexts currently pass no lockDir).
+- [ ] **Step 3: Implement** — in both `loadContext`/`loadServerContext`: compute `lockDir = vaultLockDir(config.vaultId, env)` and pass it into `new Broker({..., lockDir})`. Nothing else changes. (WAL is already inherited via `openJournal`.)
+- [ ] **Step 4:** Run — PASS; full cli + mcp suites green (the lock is a no-op under single-process test load, just serialized).
+- [ ] **Step 5: Commit** `fix(cli,mcp): acquire the shared vault lock on mutations`
 
 ---
 
@@ -218,7 +239,7 @@ Routes: `/status`, `/approvals` (with server-rendered diff per item via `render.
 
 - [ ] **Step 1: Failing tests:** `/provenance?path=Agent/Memory/<id>.md` → 200 with `{ ledger: {...} }` frontmatter; `/provenance?path=Private/secret.md` (excluded zone) → **403 FORBIDDEN_ZONE**; `/provenance?path=../../etc/passwd` (traversal) → 403; a path resolving through a symlink out of the vault → 403.
 - [ ] **Step 2:** FAIL.
-- [ ] **Step 3: Implement** — resolve the zone with `resolveZone` AND run the broker's containment (reuse the broker's checked resolver — expose a `Broker.assertReadable(relPath)` or a small shared `assertContainedAndNotExcluded(vaultRoot, manifest, relPath)` helper in core so the server and broker share ONE implementation). If excluded/escaping → throw BrokerError FORBIDDEN_ZONE (mapped to 403 in Task 2.4). Else read the file and parse `ledger:` frontmatter with gray-matter.
+- [ ] **Step 3: Implement** — resolve the zone with `resolveZone` AND run the broker's containment. The broker's containment currently lives in private methods in `broker.ts` (~lines 174–226, `resolveAbs` + zone gate). **Refactor that into a shared exported helper in core** — e.g. `assertContainedAndReadable(vaultRoot, manifest, relPath)` (lexical + realpath containment + excluded/`.ledger`/`.git` zone check) — and have BOTH the broker and this route call it, so there is ONE implementation of the containment rule (no reimplementation drift). If excluded/escaping → throw BrokerError FORBIDDEN_ZONE (mapped to 403 in Task 2.4). Else read the file and parse `ledger:` frontmatter with gray-matter.
 - [ ] **Step 4:** PASS. **Step 5: Commit** `feat(server): zone-checked /provenance`
 
 ### Task 2.4: Mutation routes + error mapping
@@ -227,7 +248,7 @@ Routes: `/status`, `/approvals` (with server-rendered diff per item via `render.
 
 Routes: `POST /approvals/:id/approve`, `POST /approvals/:id/reject`, `POST /undo {target}`. Global error handler maps `BrokerError.code` → HTTP status (403/404/409/422/400) with `{ error: { code, message, retriable } }`.
 
-- [ ] **Step 1: Failing tests:** approve a queued propose_edit → 200 `{applied:true}` and the file changes; approve when the note changed (stale) → 200 `{stale:true}` (or a 409 — pick one and assert; recommended: 200 with `{stale:true}` since it's an expected outcome, not an error); reject → 200, file unchanged; undo a create txn → 200 and file gone; undo an unknown txn → 404; a forced REVERT_CONFLICT → 409. Also assert the error body shape.
+- [ ] **Step 1: Failing tests:** approve a queued propose_edit → 200 `{applied:true}` and the file changes; approve when the note changed (stale) → 200 `{stale:true}` (recommended over 409 — stale is an expected outcome, not an error); reject → 200, file unchanged; undo a create txn → 200 and file gone; undo an unknown txn → 404; a forced REVERT_CONFLICT → 409. Also assert the error body shape. **The `/undo` route MUST thread `ctx.lockDir` into the `undoTransaction`/`undoSession` deps** (Task 1.3 added `lockDir` to their opts; `VaultContext` carries it) so the undo mutation is locked, not just create/revise — assert an undo runs under the lock (or at least that lockDir is passed).
 - [ ] **Step 2:** FAIL. **Step 3:** Implement routes + a fastify `setErrorHandler` that recognizes `BrokerError`. **Step 4:** PASS. **Step 5: Commit** `feat(server): mutation routes + BrokerError->HTTP mapping`
 
 ### Task 2.5: `startBridge` + the two-process concurrency test
@@ -236,7 +257,7 @@ Routes: `POST /approvals/:id/approve`, `POST /approvals/:id/reject`, `POST /undo
 
 `startBridge(vaultRoot, { token, port?, now?, genId?, env? }): Promise<{ app, port, token, close }>` — `openVault(vaultRoot, {sweep:true, ...})`, `buildBridge(ctx, token)`, `app.listen({ host: "127.0.0.1", port: port ?? 0 })`, resolve the actual port. `close()` closes app + ctx.db.
 
-- [ ] **Step 1: Failing test (two-process, the load-bearing one):** start the bridge over a temp vault (sweep on). In parallel, run a SECOND writer against the SAME vault + SAME lockDir (a second `openVault` in-process simulating the MCP server) doing several `store.remember`s WHILE hitting the bridge's `/memories` reads. Assert: all writes committed, `git status` clean, no corrupt index, journal row counts consistent, and reads succeeded throughout. Also a slow-commit variant if feasible (inject delay) asserting no lock theft.
+- [ ] **Step 1: Failing test (two-process, the load-bearing one):** start the bridge over a temp vault (sweep on). In parallel, run a SECOND writer **built the way the real MCP server builds its broker** — i.e. via `mcp-server`'s `loadServerContext` (NOT a second `openVault`; using `openVault` would mask the Task 1.5 gap since it always locks). Have that context do several `store.remember`s WHILE the test hits the bridge's `/memories` reads. Assert: all writes committed, `git status` clean, no corrupt index, journal row counts consistent, reads succeeded throughout. Also a slow-commit variant (inject a delay into the git step) asserting the second writer waits rather than stealing the lock. (If importing mcp-server into the server test package is awkward, put this concurrency test in the mcp-server suite in Task 1.5 instead and keep a server-side reads-during-writes test here — but SOMETHING must exercise the real MCP broker path under contention.)
 - [ ] **Step 2:** FAIL (or flaky) without proper locking. **Step 3:** Implement `startBridge`. **Step 4:** PASS reliably (run it a few times). **Step 5: Commit** `feat(server): startBridge + two-process safety test`
 
 ---
@@ -306,6 +327,7 @@ No automated tests (Obsidian API). Keep glue THIN: each view constructs a `Bridg
 
 - Strict phase order: core concurrency (1) underpins the server (2); the server underpins cli serve (3) and the plugin client (4).
 - The lock is inherited: only the broker + undo acquire it; Approvals/MemoryStore/sweep get it for free (§3). Do NOT add a second lock site.
-- `openVault` passes `lockDir`; v0.1 tests pass no lockDir, so they stay lock-free and green — don't change them.
+- **Every mutating process must pass `lockDir`**: `openVault` (server) in Task 1.4, AND the CLI + MCP contexts in Task 1.5. Threading `lockDir` is NOT the same as the deferred `openVault` adoption (§8) — cli/mcp keep their wiring, they just gain the one `lockDir` arg. Without Task 1.5 the serve+MCP concurrency guarantee is a no-op.
+- v0.1 core unit tests that build a `Broker` directly pass no lockDir, so they stay lock-free and green — don't change them. (The cli/mcp integration tests DO get lockDir via their contexts and must stay green under the now-engaged lock.)
 - Plugin glue (4.3) is the only untested code; keep it minimal and push logic into the tested `bridgeClient`/`render`.
 - Commit after each green test. Never `git add -A`; never `git push` from a task.
