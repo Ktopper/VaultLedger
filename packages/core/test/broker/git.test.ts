@@ -213,6 +213,48 @@ describe("LedgerGit", () => {
     expect(status.trim()).toBe("");
   });
 
+  test("commitPaths stages and commits a file move (delete + add) as a single commit", async () => {
+    const repoDir = makeDir();
+    const lg = new LedgerGit(repoDir);
+    await lg.init();
+
+    const { mkdirSync, rmSync: removeFile } = await import("node:fs");
+    writeFileSync(join(repoDir, "from.md"), "moved content\n", "utf8");
+    await lg.commitFile("from.md", formatMessage({ op: "create", basename: "from.md", session: "s1" }));
+
+    mkdirSync(join(repoDir, "Archive"), { recursive: true });
+    writeFileSync(join(repoDir, "Archive/from.md"), "moved content\n", "utf8");
+    removeFile(join(repoDir, "from.md"), { force: true });
+
+    const sha = await lg.commitPaths(
+      ["from.md", "Archive/from.md"],
+      formatMessage({ op: "forget", basename: "from.md", session: "s1" }),
+    );
+    expect(sha).toMatch(/^[0-9a-f]{40}$/);
+
+    expect(await lg.fileAtHead("from.md")).toBeNull();
+    expect(await lg.fileAtHead("Archive/from.md")).toBe("moved content\n");
+
+    // Both the deletion and the addition must land in exactly ONE commit
+    // (git's rename detection may report this as "R  from.md -> Archive/from.md"
+    // rather than separate add/delete lines, so match on either form).
+    const git = simpleGit(repoDir);
+    const nameStatus = await git.raw(["show", "--name-status", "--format=", "HEAD"]);
+    const lines = nameStatus
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
+    const touched = lines.join("\n");
+    expect(touched).toContain("from.md");
+    expect(touched).toContain("Archive/from.md");
+
+    const parentCount = (
+      await git.raw(["rev-list", "--count", "HEAD"])
+    ).trim();
+    // Exactly two commits total: the initial create + this one move commit.
+    expect(parentCount).toBe("2");
+  });
+
   test("concurrent commitFile calls both land without a raw index.lock error", async () => {
     const repoDir = makeDir();
     const lg = new LedgerGit(repoDir);

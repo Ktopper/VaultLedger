@@ -71,6 +71,21 @@ export class LedgerGit {
     });
   }
 
+  /**
+   * Like commitFile, but stages and commits several pathspecs as a single
+   * commit. Used for move-style operations (e.g. archive-on-forget) that
+   * touch two paths (delete the source, add the destination) but must still
+   * land as one ledger commit.
+   */
+  async commitPaths(relPaths: string[], message: string): Promise<string> {
+    return this.enqueue(async () => {
+      await this.git.add(relPaths);
+      await this.git.raw([...IDENTITY_ARGS, "commit", "-m", message, "--", ...relPaths]);
+      const sha = (await this.git.revparse(["HEAD"])).trim();
+      return sha;
+    });
+  }
+
   async revertCommit(sha: string): Promise<string> {
     return this.enqueue(async () => {
       try {
