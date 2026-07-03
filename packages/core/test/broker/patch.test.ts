@@ -87,4 +87,20 @@ describe("applyPatch", () => {
       expect((e as BrokerError).code).toBe("PATCH_TOO_LARGE");
     }
   });
+
+  test("throws SYNTAX_BREAK (not a raw Error) for a single-file patch with a mismatched hunk count", () => {
+    // jsdiff's parsePatch itself throws Error("Added line count did not match ...")
+    // when a hunk header's +/- counts don't match the body. It must surface as a
+    // clean BrokerError rejection, not escape as a raw Error.
+    const badHunk =
+      "--- a/file.md\n+++ b/file.md\n@@ -1,3 +1,3 @@\n line1\n-line2\n+line2x\n+extraline\n line3\n";
+
+    try {
+      applyPatch("line1\nline2\nline3\n", badHunk);
+      throw new Error("expected applyPatch to throw");
+    } catch (e) {
+      expect(e).toBeInstanceOf(BrokerError);
+      expect((e as BrokerError).code).toBe("SYNTAX_BREAK");
+    }
+  });
 });
