@@ -11,6 +11,8 @@ build/
 # committed — see packages/obsidian-plugin/esbuild.config.mjs)
 packages/obsidian-plugin/main.js
 packages/obsidian-plugin/main.js.map
+packages/obsidian-plugin/main*.js
+packages/obsidian-plugin/main*.js.map
 
 # Test / coverage
 coverage/
