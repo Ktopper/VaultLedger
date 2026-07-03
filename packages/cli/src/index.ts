@@ -8,6 +8,20 @@ import { reindexCommand } from "./commands/reindex.js";
 import { statusCommand } from "./commands/status.js";
 import { undoCommand } from "./commands/undo.js";
 
+// Re-exported so the testable command functions (and their option/result
+// types) are part of this package's public surface — not just reachable via
+// relative imports from within this package's own tests. Lets other
+// workspace packages (e.g. the mcp-server v0.1 gate test, which drives the
+// real `initCommand`/`undoCommand` rather than reaching into CLI internals)
+// import the exact same functions `buildProgram` wires up above.
+export { approveCommand, type ApproveOptions, type ApproveCommandResult } from "./commands/approve.js";
+export { initCommand, type InitOptions, type InitResult } from "./commands/init.js";
+export { logCommand, type LogFilters } from "./commands/log.js";
+export { reindexCommand } from "./commands/reindex.js";
+export { statusCommand, type StatusResult } from "./commands/status.js";
+export { undoCommand, type UndoOptions, type UndoCommandResult } from "./commands/undo.js";
+export { loadContext, type LedgerContext, type LoadContextDeps } from "./context.js";
+
 function reportError(e: unknown): void {
   console.error(e instanceof Error ? e.message : String(e));
   process.exitCode = 1;
