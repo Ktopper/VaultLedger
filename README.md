@@ -163,7 +163,54 @@ ledger undo /absolute/path/to/your/vault session:<sessionId>  # revert every app
 `ledger log /absolute/path/to/your/vault` lists transactions (with `--entity`
 / `--session` / `--limit` filters) if you need to find a `<txnId>` to undo.
 
-## Architecture (v0.1)
+## The review surface (v0.2)
+
+v0.2 adds a **"what does my agent believe?"** surface: a local HTTP bridge and
+an Obsidian plugin that shows the approval queue with diffs, recent agent
+activity with one-click undo, provenance on hover, and a staleness list — so you
+can audit agent memory like a bank statement.
+
+**1. Start the bridge**
+
+```sh
+ledger serve /absolute/path/to/your/vault      # add --port N to pin a port
+```
+
+`ledger serve` runs a small localhost (`127.0.0.1`-only) HTTP server over the
+same governed core, and publishes a runtime discovery file to the OS
+app-support dir (**never** into the synced vault): `<app-support>/<vaultId>/
+bridge.json` = `{ port, token, pid, startedAt }`, written `0600`. The bearer
+token in that file is what authorizes the plugin; it never rides along with
+Obsidian Sync / iCloud / Git. Starting `serve` again reuses the token by
+default; `--rotate-token` mints a fresh one (revoking the old). It's safe to run
+`serve` **while an agent works** through the MCP server — a cross-process lock
+(plus WAL) serializes every vault mutation, so the two never corrupt the Git
+index.
+
+**2. Install the plugin**
+
+```sh
+pnpm -C packages/obsidian-plugin build         # produces main.js
+```
+
+Copy `packages/obsidian-plugin/manifest.json` and `main.js` into
+`<vault>/.obsidian/plugins/vaultledger/`, then enable **VaultLedger** in
+Obsidian's Community Plugins settings. (See
+[`packages/obsidian-plugin/SMOKE.md`](packages/obsidian-plugin/SMOKE.md) for the
+manual verification checklist.)
+
+**3. Use it**
+
+With the bridge running, the plugin auto-discovers it (reads `vaultId` from the
+synced-safe `.ledger/config.json`, then the token from app-support). Open the
+**Approval Queue** view to see pending trusted-zone edits with rendered diffs and
+Approve/Reject buttons; open **Agent Activity** to see recent transactions grouped
+by session with Undo; hover any note carrying `ledger:` frontmatter to see its
+provenance (source / reason / date / status). The Conflicts tab is present but
+empty until v0.3. Every mutation still goes through the broker — the plugin is a
+pure client and writes nothing directly.
+
+## Architecture (v0.1 + v0.2)
 
 - [`packages/core`](packages/core) — the broker: zone resolution, patch-level
   edits with hash checks, the SQLite journal + reindex/reconcile, the memory
@@ -175,12 +222,22 @@ ledger undo /absolute/path/to/your/vault session:<sessionId>  # revert every app
   function in `packages/cli/src/commands/`.
 - [`packages/mcp-server`](packages/mcp-server) — the `vaultledger-mcp` bin: the
   7 MCP tools listed above, wired over stdio via the official MCP SDK.
-- [`packages/obsidian-plugin`](packages/obsidian-plugin) — the v0.2 review
-  surface (not yet built).
+- [`packages/server`](packages/server) — **(v0.2)** the fastify bridge behind
+  `ledger serve`: token-authed, loopback-only HTTP over the core, the plugin's
+  only backend.
+- [`packages/obsidian-plugin`](packages/obsidian-plugin) — **(v0.2)** the review
+  surface: a thin HTTP client (`BridgeClient`) + XSS-safe DOM rendering + the
+  Obsidian views/hover.
 
-For the full design and the plan this was built from, see
-[`docs/superpowers/specs/2026-07-02-vaultledger-v01-design.md`](docs/superpowers/specs/2026-07-02-vaultledger-v01-design.md)
-and [`docs/superpowers/plans/2026-07-02-vaultledger-v01.md`](docs/superpowers/plans/2026-07-02-vaultledger-v01.md).
+Concurrency (v0.2): `core` gained a WAL journal and a cross-process mutation lock
+(`vault.lock` in app-support) that every mutating entry point — the broker's
+writes, `undo`, and thus the CLI, MCP server, and bridge — acquires, so `ledger
+serve` and `vaultledger-mcp` are safe against one vault at once.
+
+For the full designs and plans, see
+[`docs/superpowers/specs/`](docs/superpowers/specs/) and
+[`docs/superpowers/plans/`](docs/superpowers/plans/) (v0.1: `2026-07-02-*`; v0.2:
+`2026-07-03-*`).
 
 ## Stack
 
@@ -189,10 +246,11 @@ index).
 
 ## Status & roadmap
 
-- **v0.1** — core broker + MCP server + CLI (approve/undo). Prove the loop.
-- **v0.2** — Obsidian review plugin.
-- **v0.3** — lifecycle automation, contradiction/staleness queues.
-- **v1.0** — polish, packaged installers, integration guides.
+- **v0.1** — core broker + MCP server + CLI (approve/undo). Prove the loop. ✅
+- **v0.2** — `ledger serve` bridge + Obsidian review plugin (approval queue,
+  activity/undo, provenance hover, staleness); concurrency-safe. ✅
+- **v0.3** — lifecycle automation, contradiction detection + conflicts queue.
+- **v1.0** — polish, packaged installers, community-plugin submission, guides.
 
 ## License
 
