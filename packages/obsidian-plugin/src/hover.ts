@@ -70,7 +70,7 @@ async function showProvenancePopover(
     el.style.left = `${evt.clientX + 12}px`;
     el.style.top = `${evt.clientY + 12}px`;
     el.style.zIndex = "9999";
-    el.appendChild(renderProvenance(result.data.ledger as ProvenanceInfo));
+    el.appendChild(renderProvenance(coerceProvenance(result.data.ledger)));
     setPopover(el);
   } catch (e) {
     if (!(e instanceof BridgeUnavailableError)) throw e;
@@ -78,4 +78,32 @@ async function showProvenancePopover(
     // Agent Activity views already surface the "start `ledger serve`"
     // message, no need to duplicate it in a transient hover popover.
   }
+}
+
+/**
+ * Narrow the bridge's raw `ledger` frontmatter (typed `unknown`, since it's
+ * whatever an agent wrote into the note) into a `ProvenanceInfo` HONESTLY: a
+ * value survives only if the key is one we render AND its value is a string.
+ * This replaces a bare `as ProvenanceInfo` cast (a type-lie — the raw value
+ * could be null, an array, nested objects, ...) with a real boundary check.
+ * Rendering is textContent-safe regardless; this is about the type reflecting
+ * reality, and about never handing renderProvenance a non-string field.
+ */
+function coerceProvenance(raw: unknown): ProvenanceInfo {
+  if (typeof raw !== "object" || raw === null) return {};
+  const record = raw as Record<string, unknown>;
+  const out: ProvenanceInfo = {};
+  const keys: Array<keyof ProvenanceInfo> = [
+    "source",
+    "reason",
+    "status",
+    "confidence",
+    "created",
+    "expires",
+  ];
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string") out[key] = value;
+  }
+  return out;
 }

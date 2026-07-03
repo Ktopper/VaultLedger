@@ -118,11 +118,33 @@ function toQueryString(params?: Record<string, string | number | undefined>): st
  *    — there is nothing sensible to render per-row for that, the whole view
  *    needs a "start `ledger serve`" message instead.
  */
+/** Default per-request timeout (ms). A bridge process that's alive but
+ * wedged (never replies) would otherwise hang a view's refresh forever —
+ * `fetch` only rejects on an *immediate* network failure, not a stall. */
+const DEFAULT_TIMEOUT_MS = 5000;
+
+/** Injectable dependencies for testability — a fake fetch and/or a shorter
+ * timeout so the timeout path can be exercised deterministically without a
+ * real 5s wait. `fetch` defaults to the global; `timeoutMs` to 5000. */
+export interface BridgeClientDeps {
+  fetch?: typeof fetch;
+  timeoutMs?: number;
+}
+
 export class BridgeClient {
+  private readonly fetchImpl: typeof fetch;
+  private readonly timeoutMs: number;
+
   constructor(
     private readonly baseUrl: string,
     private readonly token: string,
-  ) {}
+    deps?: BridgeClientDeps,
+  ) {
+    // Bind to globalThis so a default `fetch` isn't called with the wrong
+    // `this` (undici's fetch throws "Illegal invocation" otherwise).
+    this.fetchImpl = deps?.fetch ?? fetch.bind(globalThis);
+    this.timeoutMs = deps?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  }
 
   /**
    * Discover a running bridge for `vaultRoot` the same way every host must:
@@ -132,7 +154,10 @@ export class BridgeClient {
    * re-deriving the path) is what guarantees this lines up EXACTLY with
    * where `ledger serve` (packages/cli's serveCommand) publishes it.
    */
-  static async fromVault(vaultRoot: string, deps?: { env?: NodeJS.ProcessEnv }): Promise<BridgeClient> {
+  static async fromVault(
+    vaultRoot: string,
+    deps?: { env?: NodeJS.ProcessEnv } & BridgeClientDeps,
+  ): Promise<BridgeClient> {
     const { vaultId } = readConfig(vaultRoot);
     const bridgePath = join(vaultLockDir(vaultId, deps?.env), "bridge.json");
 
@@ -153,21 +178,28 @@ export class BridgeClient {
       throw new BridgeUnavailableError(`bridge discovery file malformed at ${bridgePath}`);
     }
 
-    return new BridgeClient(`http://127.0.0.1:${parsed.port}`, parsed.token);
+    return new BridgeClient(`http://127.0.0.1:${parsed.port}`, parsed.token, {
+      fetch: deps?.fetch,
+      timeoutMs: deps?.timeoutMs,
+    });
   }
 
   /**
    * Shared fetch + response-shaping path every typed method funnels through.
-   * A network-level failure (bridge process down, port unreachable, ...)
+   * A network-level failure (bridge process down, port unreachable, ...) OR a
+   * timeout (bridge alive but wedged, never replying within `timeoutMs`)
    * throws `BridgeUnavailableError` — that's the ONE place in this class a
    * throw is the right contract, since it means there is no response at all
-   * to shape into a `BridgeResult`.
+   * to shape into a `BridgeResult`. The timeout is enforced via
+   * `AbortSignal.timeout`, so a hung bridge fails a view's refresh in bounded
+   * time instead of hanging it forever.
    */
   private async request<T>(path: string, init?: RequestInit): Promise<BridgeResult<T>> {
     let res: Response;
     try {
-      res = await fetch(`${this.baseUrl}${path}`, {
+      res = await this.fetchImpl(`${this.baseUrl}${path}`, {
         ...init,
+        signal: AbortSignal.timeout(this.timeoutMs),
         headers: {
           Authorization: `Bearer ${this.token}`,
           "Content-Type": "application/json",
@@ -175,6 +207,14 @@ export class BridgeClient {
         },
       });
     } catch (e) {
+      // A timeout surfaces as an AbortError (name "AbortError" / "TimeoutError"
+      // depending on runtime) — fold it into the same unreachable-bridge
+      // contract, with a message that names the stall specifically.
+      if (e instanceof Error && (e.name === "TimeoutError" || e.name === "AbortError")) {
+        throw new BridgeUnavailableError(
+          `bridge timed out after ${this.timeoutMs}ms at ${this.baseUrl} — the bridge process may be wedged`,
+        );
+      }
       throw new BridgeUnavailableError(
         `could not reach the VaultLedger bridge at ${this.baseUrl}: ${e instanceof Error ? e.message : String(e)}`,
       );

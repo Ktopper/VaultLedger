@@ -34,10 +34,11 @@ describe("renderDiff", () => {
     expect(el.textContent).toContain("<script>evil()</script>");
   });
 
-  test("empty diff text renders zero line children", () => {
+  test("empty diff text renders a single empty context line ('' splits to one empty line)", () => {
     const el = renderDiff("");
     expect(el.children).toHaveLength(1);
     expect(el.children[0]!.textContent).toBe("");
+    expect(el.children[0]!.classList.contains("vl-diff-ctx")).toBe(true);
   });
 });
 

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createPatch } from "diff";
@@ -255,6 +256,44 @@ describe("BridgeClient", () => {
 
   test("network failure (bridge down) throws BridgeUnavailableError", async () => {
     const client = new BridgeClient("http://127.0.0.1:1", TOKEN);
+    await expect(client.status()).rejects.toBeInstanceOf(BridgeUnavailableError);
+  });
+
+  test("a wedged bridge (accepts the socket but never replies) times out as BridgeUnavailableError within bound, not a hang", async () => {
+    // A bare TCP server that accepts connections but NEVER writes a response
+    // — the exact "process alive but wedged" shape `fetch` alone would hang
+    // on forever (no immediate network failure to reject with). Track the
+    // accepted sockets so teardown can force-destroy them: server.close()
+    // only *waits* for open connections, and this one is deliberately never
+    // closed by the peer, so it would otherwise hang the test's own cleanup.
+    const sockets: Socket[] = [];
+    const server: Server = createServer((socket) => {
+      sockets.push(socket);
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address !== null ? address.port : 0;
+
+    try {
+      // A short injected timeout keeps the test fast + deterministic.
+      const client = new BridgeClient(`http://127.0.0.1:${port}`, TOKEN, { timeoutMs: 200 });
+      const start = Date.now();
+      await expect(client.status()).rejects.toBeInstanceOf(BridgeUnavailableError);
+      // Comfortably under the default 5s: proves the timeout fired, not a hang.
+      expect(Date.now() - start).toBeLessThan(2000);
+    } finally {
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  test("an injected fetch that rejects with an AbortError maps to BridgeUnavailableError", async () => {
+    const abortingFetch: typeof fetch = () => {
+      const err = new Error("The operation was aborted");
+      err.name = "AbortError";
+      return Promise.reject(err);
+    };
+    const client = new BridgeClient("http://127.0.0.1:9", TOKEN, { fetch: abortingFetch });
     await expect(client.status()).rejects.toBeInstanceOf(BridgeUnavailableError);
   });
 });
