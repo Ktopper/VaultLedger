@@ -19,3 +19,4 @@ export * from "./memory/store.js";
 export * from "./approvals/queue.js";
 export * from "./memory/ttl.js";
 export * from "./memory/reindex.js";
+export * from "./scan/scanner.js";
