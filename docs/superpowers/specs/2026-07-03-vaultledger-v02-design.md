@@ -83,6 +83,22 @@ cli, mcp-server, and server all inherit it via the shared broker path. The
 in-process `LedgerGit` promise-mutex (v0.1) still serializes within a process;
 this lock adds *cross*-process serialization.
 
+**Lock lifetime is per-transaction**, not process-held: acquired at the start of
+a single mutating transaction and released in its `finally`. A crashed process
+leaves a stale lockfile that the retry/stale-detection reclaims. Process shutdown
+(§5) only needs to release a lock that happens to be held by an **in-flight**
+transaction at signal time.
+
+**`Approvals` funnels through the broker, not a second lock site.**
+`Approvals.approve` does not acquire the lock itself — it re-runs the held op via
+`Broker.apply(op, {approved:true})` (for revise/propose_edit) or, for a canonical
+promote, via `MemoryStore.setStatus` which itself routes through a broker
+`revise`; both paths acquire the lock at the broker's mutating boundary.
+`Approvals.reject` performs no vault mutation (journal-only) and needs no lock. So
+"every entry point" reduces to a single mechanical guarantee: **the lock wraps
+the broker's mutating operations (and `undo*`)**, and everything else reaches
+mutation through them.
+
 **Journal in WAL.** `openJournal` sets `PRAGMA journal_mode = WAL` and
 `PRAGMA busy_timeout = 5000` so concurrent readers (the plugin polling status)
 don't block the writer and a brief contention retries rather than erroring.
@@ -204,7 +220,8 @@ parsed elements. It is a test, not a convention.
 - **`packages/obsidian-plugin`** — unit-test `BridgeClient` (against an injected
   server) and the **pure render helpers incl. the hostile-diff XSS test**. The
   Obsidian-API glue (`ItemView`/hover registration) gets a **documented manual
-  smoke checklist**, not automated tests (no headless Obsidian).
+  smoke checklist** (lives at `packages/obsidian-plugin/SMOKE.md`), not automated
+  tests (no headless Obsidian).
 - **Gate:** `pnpm build && pnpm lint && pnpm test` stays green; v0.2 work is
   additive. A short README section documents `ledger serve` + installing the
   plugin (copy `manifest.json`+`main.js` into `<vault>/.obsidian/plugins/`).
