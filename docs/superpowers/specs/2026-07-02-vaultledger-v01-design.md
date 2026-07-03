@@ -414,6 +414,14 @@ checkpoint after each package.
 
 ## 12. Deferred to later milestones
 
+**Known v0.1 limitations (accepted):**
+- Multi-step operations (e.g. `forget` = frontmatter-flip commit **then** archive
+  move; approval-row state **after** the applied op) are not single-commit atomic.
+  A crash between steps leaves a transient inconsistency, self-healing on the next
+  `reindex` (file frontmatter is the source of truth) or visible on retry. A
+  reconcile pass for the approval-row-vs-applied-op gap is future work.
+
+**Later milestones:**
 - Obsidian plugin (v0.2) — stub compiles this cycle.
 - Contradiction/negation detection + `conflicts` population (v0.3).
 - Embeddings-assisted recall/conflict, team tier, WAL, Windows path hardening,
