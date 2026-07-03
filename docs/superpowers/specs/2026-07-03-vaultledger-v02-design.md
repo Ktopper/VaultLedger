@@ -184,8 +184,16 @@ approve/undo and must not be group/world-readable even within app-support.
   resolver as `core`'s `journalPath`), and reads `bridge.json` for the live
   `{port, token}`. This also **solves port discovery** — no "print the port"
   guesswork. Obsidian plugins are desktop Electron with Node `fs`, so this works.
-- `--rotate-token` mints a fresh token (invalidating old `bridge.json`), for
-  revocation.
+- **Pid-aware token lifecycle** (so `--rotate-token` is meaningful, not inert):
+  on start, `serve` reads any existing `bridge.json`. If it names a **live** pid
+  → refuse to start (a bridge is already running for this vault). If it names a
+  **dead** pid → **reuse** its token by default (a client that already read it
+  keeps working across a restart); `--rotate-token` mints a **fresh** token to
+  deliberately revoke the old one. No file → mint fresh. `close()` only unlinks
+  `bridge.json` if it still describes *this* instance (pid+port match), so a late
+  shutdown can't delete a newer server's live file. The file is written
+  atomically (temp file created `0o600`, then renamed) so a token is never
+  briefly world-readable.
 
 **Auth + origin guard.** Every request requires `Authorization: Bearer <token>`;
 missing/wrong → **401**. Reject requests whose `Host`/`Origin` header isn't
