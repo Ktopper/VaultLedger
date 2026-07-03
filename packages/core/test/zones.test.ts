@@ -50,4 +50,78 @@ describe("resolveZone", () => {
     });
     expect(resolveZone("Agent/a/b/c/d/pinned.md", m)).toBe("trusted");
   });
+
+  // -------------------------------------------------------------------
+  // security: .ledger/** and .git/** are hard-coded, always-excluded
+  // regardless of what the manifest says (fix 1).
+  // -------------------------------------------------------------------
+
+  describe("hard-coded exclusion of .ledger/** and .git/**", () => {
+    // An attacker-controlled manifest that tries to make the security
+    // policy itself ("trusted", i.e. writable-with-approval) by matching
+    // everything with "**". This must NOT be able to expose .ledger or
+    // .git — those are excluded no matter what the manifest configures.
+    const manifestWithTrustedStarStar = PermissionsManifest.parse({
+      zones: {
+        trusted: ["**"],
+      },
+      overrides: [],
+    });
+
+    test(".ledger/permissions.yaml resolves to excluded even though '**' is trusted", () => {
+      expect(resolveZone(".ledger/permissions.yaml", manifestWithTrustedStarStar)).toBe(
+        "excluded",
+      );
+    });
+
+    test(".ledger/config.json resolves to excluded", () => {
+      expect(resolveZone(".ledger/config.json", manifestWithTrustedStarStar)).toBe("excluded");
+    });
+
+    test(".git/config resolves to excluded", () => {
+      expect(resolveZone(".git/config", manifestWithTrustedStarStar)).toBe("excluded");
+    });
+
+    test("the bare .ledger directory path itself resolves to excluded", () => {
+      expect(resolveZone(".ledger", manifestWithTrustedStarStar)).toBe("excluded");
+    });
+
+    test("the bare .git directory path itself resolves to excluded", () => {
+      expect(resolveZone(".git", manifestWithTrustedStarStar)).toBe("excluded");
+    });
+
+    test("an override trying to reclaim .ledger/** as trusted cannot win", () => {
+      const m = PermissionsManifest.parse({
+        zones: { trusted: ["**"] },
+        overrides: [{ glob: ".ledger/**", zone: "trusted" }],
+      });
+      expect(resolveZone(".ledger/permissions.yaml", m)).toBe("excluded");
+    });
+  });
+
+  // -------------------------------------------------------------------
+  // security: case-insensitive matching so an APFS/NTFS case-folding
+  // filesystem can't be used to dodge an excluded glob (fix 2).
+  // -------------------------------------------------------------------
+
+  describe("case-insensitive zone matching (defeats case-folding filesystem escape)", () => {
+    const m = PermissionsManifest.parse({
+      zones: {
+        trusted: ["**"],
+        excluded: ["Private/**"],
+      },
+    });
+
+    test("lowercased path still resolves to excluded", () => {
+      expect(resolveZone("private/secret.md", m)).toBe("excluded");
+    });
+
+    test("uppercased path still resolves to excluded", () => {
+      expect(resolveZone("PRIVATE/x.md", m)).toBe("excluded");
+    });
+
+    test("exact-case path still resolves to excluded (unchanged behavior)", () => {
+      expect(resolveZone("Private/secret.md", m)).toBe("excluded");
+    });
+  });
 });

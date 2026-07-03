@@ -1,5 +1,13 @@
 import { describe, expect, test, afterEach } from "vitest";
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import {
+  mkdtempSync,
+  rmSync,
+  readFileSync,
+  writeFileSync,
+  existsSync,
+  mkdirSync,
+  symlinkSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createPatch } from "diff";
@@ -603,5 +611,126 @@ describe("Broker", () => {
     }
     expect(thrown).toBeInstanceOf(BrokerError);
     expect((thrown as BrokerError).code).toBe("SYNTAX_BREAK");
+  });
+
+  // -------------------------------------------------------------------
+  // security: .ledger is the security policy itself and must never be
+  // agent-writable, even if a (malicious or misconfigured) manifest tries
+  // to make "**" trusted (fix 1).
+  // -------------------------------------------------------------------
+
+  test("propose_edit on .ledger/permissions.yaml throws FORBIDDEN_ZONE, not a queued approval", async () => {
+    const { broker, journal, vaultRoot } = await makeBroker();
+    mkdirSync(join(vaultRoot, ".ledger"), { recursive: true });
+    const original = "zones:\n  trusted: ['**']\n";
+    writeFileSync(join(vaultRoot, ".ledger/permissions.yaml"), original, "utf8");
+
+    const patchText = createPatch(
+      "permissions.yaml",
+      original,
+      "zones:\n  trusted: ['**']\n  agent: ['**']\n",
+    );
+
+    let thrown: unknown;
+    try {
+      await broker.apply({
+        op: "propose_edit",
+        path: ".ledger/permissions.yaml",
+        expected_hash: hashBytes(Buffer.from(original, "utf8")),
+        patch: patchText,
+        reason: "attack: widen own zones via propose_edit",
+        session: "s1",
+      });
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(BrokerError);
+    expect((thrown as BrokerError).code).toBe("FORBIDDEN_ZONE");
+    // Must not be queued for approval at all.
+    expect(journal.listApprovals("pending").length).toBe(0);
+    // File bytes unchanged.
+    expect(readFileSync(join(vaultRoot, ".ledger/permissions.yaml"), "utf8")).toBe(original);
+  });
+
+  // -------------------------------------------------------------------
+  // security: symlink escape must not defeat vault-root containment
+  // (fix 3). A symlink INSIDE the vault pointing OUTSIDE it would let a
+  // lexically-contained path (Agent/evil/x.md) physically write outside
+  // the vault root.
+  // -------------------------------------------------------------------
+
+  test("create through a symlink that escapes the vault root throws FORBIDDEN_ZONE and writes nothing outside", async () => {
+    const { broker, vaultRoot } = await makeBroker();
+    const outsideDir = mkdtempSync(join(tmpdir(), "vl-outside-"));
+    try {
+      mkdirSync(join(vaultRoot, "Agent"), { recursive: true });
+      symlinkSync(outsideDir, join(vaultRoot, "Agent", "evil"));
+
+      let thrown: unknown;
+      try {
+        await broker.apply({
+          op: "create",
+          path: "Agent/evil/pwned.md",
+          content: "pwned\n",
+          reason: "attack: symlink escape",
+          session: "s1",
+        });
+      } catch (e) {
+        thrown = e;
+      }
+      expect(thrown).toBeInstanceOf(BrokerError);
+      expect((thrown as BrokerError).code).toBe("FORBIDDEN_ZONE");
+      expect(existsSync(join(outsideDir, "pwned.md"))).toBe(false);
+    } finally {
+      rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+
+  test("revise through a symlinked ancestor directory throws FORBIDDEN_ZONE", async () => {
+    const { broker, vaultRoot } = await makeBroker();
+    const outsideDir = mkdtempSync(join(tmpdir(), "vl-outside-revise-"));
+    try {
+      const outsideFile = join(outsideDir, "x.md");
+      const original = "outside content\n";
+      writeFileSync(outsideFile, original, "utf8");
+
+      mkdirSync(join(vaultRoot, "Agent"), { recursive: true });
+      symlinkSync(outsideDir, join(vaultRoot, "Agent", "evil"));
+
+      const patchText = createPatch("x.md", original, original + "tampered\n");
+      let thrown: unknown;
+      try {
+        await broker.apply({
+          op: "revise",
+          path: "Agent/evil/x.md",
+          expected_hash: hashBytes(Buffer.from(original, "utf8")),
+          patch: patchText,
+          reason: "attack: symlink escape via revise",
+          session: "s1",
+        });
+      } catch (e) {
+        thrown = e;
+      }
+      expect(thrown).toBeInstanceOf(BrokerError);
+      expect((thrown as BrokerError).code).toBe("FORBIDDEN_ZONE");
+      expect(readFileSync(outsideFile, "utf8")).toBe(original);
+    } finally {
+      rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+
+  test("a normal deep create with non-existent parent directories still succeeds (realpath walk doesn't break legitimate nesting)", async () => {
+    const { broker, vaultRoot } = await makeBroker();
+    const result = await broker.apply({
+      op: "create",
+      path: "Agent/Memory/sub/deep/note.md",
+      content: "deep note\n",
+      reason: "legit deep create",
+      session: "s1",
+    });
+    expect(result.ok).toBe(true);
+    expect(readFileSync(join(vaultRoot, "Agent/Memory/sub/deep/note.md"), "utf8")).toBe(
+      "deep note\n",
+    );
   });
 });

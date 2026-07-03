@@ -1,4 +1,11 @@
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { basename, dirname, resolve, sep } from "node:path";
 import { BrokerError } from "../errors.js";
 import type { PermissionsManifest } from "../schemas/manifest.js";
@@ -61,6 +68,11 @@ export class Broker {
   private readonly now: () => string;
   private readonly genId: (prefix: string) => string;
   private readonly patchThreshold: number;
+  // Memoized realpath of the vault root (fix 3). Computed lazily rather
+  // than in the constructor because some callers construct a Broker before
+  // the vault directory necessarily exists on disk; realpathSync on a
+  // nonexistent path throws.
+  private canonicalRoot: string | undefined;
 
   constructor(opts: BrokerOptions) {
     this.vaultRoot = opts.vaultRoot;
@@ -170,6 +182,18 @@ export class Broker {
    * trust boundary — and let the agent read/write arbitrary files. Every
    * filesystem access in the broker (create, revise, propose_edit, archive)
    * routes through here. On escape we throw FORBIDDEN_ZONE.
+   *
+   * Two layers of containment:
+   *  1. Lexical (cheap fast-path): resolve(root, relPath) must stay under
+   *     root textually. Catches ".." traversal.
+   *  2. Realpath-based (fix 3): a symlink INSIDE the vault (e.g.
+   *     Agent/evil -> /tmp/outside) passes the lexical check but
+   *     physically resolves outside the vault. Canonicalize the vault
+   *     root once and the nearest EXISTING ancestor of the target
+   *     (walking up with dirname, since the target itself may not exist
+   *     yet for a create — realpathSync throws on a nonexistent path),
+   *     then assert the canonicalized ancestor is still inside the
+   *     canonicalized root.
    */
   private resolveAbs(relPath: string): string {
     const root = resolve(this.vaultRoot);
@@ -177,7 +201,31 @@ export class Broker {
     if (abs !== root && !abs.startsWith(root + sep)) {
       throw new BrokerError("FORBIDDEN_ZONE", `path escapes vault root: ${relPath}`);
     }
+
+    const canonicalRoot = this.getCanonicalRoot(root);
+
+    let ancestor: string | undefined = abs;
+    while (ancestor !== undefined && !existsSync(ancestor)) {
+      const parent = dirname(ancestor);
+      ancestor = parent === ancestor ? undefined : parent;
+    }
+    const realAncestor = ancestor !== undefined ? realpathSync(ancestor) : canonicalRoot;
+
+    if (realAncestor !== canonicalRoot && !realAncestor.startsWith(canonicalRoot + sep)) {
+      throw new BrokerError(
+        "FORBIDDEN_ZONE",
+        `path escapes vault root via symlink: ${relPath}`,
+      );
+    }
+
     return abs;
+  }
+
+  private getCanonicalRoot(root: string): string {
+    if (this.canonicalRoot === undefined) {
+      this.canonicalRoot = realpathSync(root);
+    }
+    return this.canonicalRoot;
   }
 
   private async applyCreate(op: CreateOp): Promise<AppliedResult> {
