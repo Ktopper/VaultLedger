@@ -1,0 +1,162 @@
+#!/usr/bin/env node
+import { pathToFileURL } from "node:url";
+import { Command } from "commander";
+import { approveCommand } from "./commands/approve.js";
+import { initCommand } from "./commands/init.js";
+import { logCommand } from "./commands/log.js";
+import { reindexCommand } from "./commands/reindex.js";
+import { statusCommand } from "./commands/status.js";
+import { undoCommand } from "./commands/undo.js";
+
+// Re-exported so the testable command functions (and their option/result
+// types) are part of this package's public surface — not just reachable via
+// relative imports from within this package's own tests. Lets other
+// workspace packages (e.g. the mcp-server v0.1 gate test, which drives the
+// real `initCommand`/`undoCommand` rather than reaching into CLI internals)
+// import the exact same functions `buildProgram` wires up above.
+export { approveCommand, type ApproveOptions, type ApproveCommandResult } from "./commands/approve.js";
+export { initCommand, type InitOptions, type InitResult } from "./commands/init.js";
+export { logCommand, type LogFilters } from "./commands/log.js";
+export { reindexCommand } from "./commands/reindex.js";
+export { statusCommand, type StatusResult } from "./commands/status.js";
+export { undoCommand, type UndoOptions, type UndoCommandResult } from "./commands/undo.js";
+export { loadContext, type LedgerContext, type LoadContextDeps } from "./context.js";
+
+function reportError(e: unknown): void {
+  console.error(e instanceof Error ? e.message : String(e));
+  process.exitCode = 1;
+}
+
+/**
+ * Build the `ledger` commander program. Every subcommand is a thin wrapper:
+ * parse args/opts, call the corresponding (already fully-tested) command
+ * function from ./commands, and set process.exitCode on rejection. No
+ * business logic lives here — orchestration only.
+ */
+export function buildProgram(): Command {
+  const program = new Command();
+  program.name("ledger").description("VaultLedger CLI").version("0.1.0");
+
+  program
+    .command("init <vaultDir>")
+    .description("scan a vault and, with --yes, initialize VaultLedger in it")
+    .option("-y, --yes", "write .ledger/config.json + permissions.yaml and git init", false)
+    .action(async (vaultDir: string, opts: { yes: boolean }) => {
+      try {
+        await initCommand(vaultDir, { confirm: opts.yes });
+      } catch (e) {
+        reportError(e);
+      }
+    });
+
+  program
+    .command("status <vaultDir>")
+    .description("show zones, pending approvals, and recent transactions")
+    .action(async (vaultDir: string) => {
+      try {
+        await statusCommand(vaultDir);
+      } catch (e) {
+        reportError(e);
+      }
+    });
+
+  program
+    .command("log <vaultDir>")
+    .description("list transactions")
+    .option("--entity <entity>", "filter by memory entity")
+    .option("--session <session>", "filter by session id")
+    // Keep the raw string here and validate in the action — a commander
+    // coercion callback can only throw a CommanderError, which is noisier than
+    // the friendly one-line message we want for a bad --limit.
+    .option("--limit <limit>", "max rows (default 20)")
+    .action(async (vaultDir: string, opts: { entity?: string; session?: string; limit?: string }) => {
+      let limit: number | undefined;
+      if (opts.limit !== undefined) {
+        // Reject anything that isn't a positive integer BEFORE it can reach
+        // the sqlite query as NaN.
+        if (!/^\d+$/.test(opts.limit) || Number.parseInt(opts.limit, 10) < 1) {
+          console.error(`invalid --limit: ${opts.limit} (expected a positive integer)`);
+          process.exitCode = 1;
+          return;
+        }
+        limit = Number.parseInt(opts.limit, 10);
+      }
+      try {
+        await logCommand(vaultDir, { entity: opts.entity, session: opts.session, limit });
+      } catch (e) {
+        reportError(e);
+      }
+    });
+
+  program
+    .command("reindex <vaultDir>")
+    .description("rebuild the journal from disk + git")
+    .action(async (vaultDir: string) => {
+      try {
+        await reindexCommand(vaultDir);
+      } catch (e) {
+        reportError(e);
+      }
+    });
+
+  program
+    .command("approve <vaultDir>")
+    .description("list pending approvals, or resolve one by id")
+    .option("--id <id>", "approval id to resolve")
+    .option("--reject", "reject instead of approve", false)
+    .option("--color", "colorize the rendered diff", false)
+    .action(async (vaultDir: string, opts: { id?: string; reject: boolean; color: boolean }) => {
+      try {
+        const result = await approveCommand(vaultDir, {
+          id: opts.id,
+          reject: opts.reject,
+          color: opts.color,
+        });
+        if (!Array.isArray(result) && "ok" in result && result.ok === false) {
+          process.exitCode = 1;
+        }
+      } catch (e) {
+        reportError(e);
+      }
+    });
+
+  program
+    .command("undo <vaultDir> <target>")
+    .description("revert a transaction id, or every transaction for session:<id>")
+    .action(async (vaultDir: string, target: string) => {
+      try {
+        const result = await undoCommand(vaultDir, target);
+        if (!result.ok) {
+          process.exitCode = 1;
+        }
+      } catch (e) {
+        reportError(e);
+      }
+    });
+
+  return program;
+}
+
+/**
+ * Programmatic entry point for tests: `run(["init", dir])` parses a bare
+ * user-style argv (no node/script prefix). With no argument, parses the real
+ * `process.argv` (used by the shebang entry point below).
+ */
+export async function run(argv?: string[]): Promise<void> {
+  const program = buildProgram();
+  if (argv) {
+    await program.parseAsync(argv, { from: "user" });
+  } else {
+    await program.parseAsync(process.argv);
+  }
+}
+
+// Only auto-run when this module is the process's actual entry point (the
+// installed `ledger` bin), never when imported by tests. Compares via
+// pathToFileURL (not a bare `file://${process.argv[1]}` template) so this
+// still matches when the path contains characters (spaces, unicode, ...)
+// that import.meta.url percent-encodes.
+const isMainModule = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (isMainModule) {
+  void run();
+}

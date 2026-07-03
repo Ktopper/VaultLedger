@@ -219,11 +219,20 @@ whole-file-rewrite guard, threshold configurable, default ~50%) →
 **forget path:** `validate` (source exists) → move to `Agent/Archive/` + flip
 frontmatter → `gitCommit` → `journal.record`.
 
+**Path containment (trust-boundary invariant).** Every filesystem access in the
+broker resolves the op path against `vaultRoot` and rejects (`FORBIDDEN_ZONE`)
+unless the resolved absolute path stays under the vault root — so a `..`
+traversal in an op path can never read/write/delete outside the vault, even on
+the approved-execution path. This is enforced in code (not deferred to the v1.0
+security pass, since the approved-execution path ships in v0.1). Symlink-escape
+and case-insensitive-filesystem hardening remain v1.0 (§12).
+
 ### 5.1 Rejection codes
 
-`FORBIDDEN_ZONE`, `STALE_HASH`, `PATCH_TOO_LARGE`, `SYNTAX_BREAK`, `NOT_FOUND`,
-`TARGET_EXISTS` (create onto an existing path), `APPROVAL_REQUIRED`,
-`REVERT_CONFLICT` (undo cannot cleanly revert — see §5.3).
+`FORBIDDEN_ZONE` (also covers a path escaping the vault root), `STALE_HASH`,
+`PATCH_TOO_LARGE`, `SYNTAX_BREAK`, `NOT_FOUND`, `TARGET_EXISTS` (create onto an
+existing path), `APPROVAL_REQUIRED`, `REVERT_CONFLICT` (undo cannot cleanly
+revert — see §5.3), `ALREADY_REVERTED` (undo of a transaction already reverted).
 
 ### 5.2 Git identity
 
@@ -238,11 +247,26 @@ frontmatter → `gitCommit` → `journal.record`.
 
 > **Review fix #3:** `git revert` fixes files but the `memories`/`transactions`
 > rows still describe the pre-revert world. Undo MUST also compensate the
-> journal: mark the affected memory row `reverted` (so `recall` stops returning
-> it), set the original transaction `status = reverted`, and record the revert
-> as its **own** `op = 'revert'` transaction row. Without this, `recall` returns
-> beliefs that were rolled back — precisely the failure the product exists to
-> prevent. This is an explicit e2e assertion (success criterion step 5).
+> journal: set the original transaction `status = reverted`, and record the
+> revert as its **own** `op = 'revert'` transaction row.
+>
+> **Memory-status compensation (final-review fix): re-derive from the file, do
+> not blind-set `reverted`.** After the revert, the memory's journal status is
+> re-derived from the source of truth — the file (§6.0):
+> - if the note no longer exists at HEAD (an originating `create` was reverted)
+>   → mark the memory `reverted` so `recall` stops returning a belief whose file
+>   is gone;
+> - if the note still exists (a content `revise` or a `promote` status-flip was
+>   reverted) → set the memory row to the status now in the note's `ledger:`
+>   frontmatter (git already restored it), keeping a still-true belief **live in
+>   recall**.
+>
+> Blindly marking the memory `reverted` on *any* linked transaction was a bug:
+> undoing a routine content edit made a live, correct memory silently vanish
+> from `recall` — the exact failure the product exists to prevent, in the
+> opposite direction. This is covered by an explicit test (undo a revise →
+> `recall` still returns the memory) alongside the create-undo e2e assertion
+> (success criterion step 5).
 
 **Revert conflicts.** `git revert` of an older transaction can conflict when a
 later commit touched the same file. Behavior:
@@ -259,6 +283,17 @@ later commit touched the same file. Behavior:
 
 ## 6. Memory store & lifecycle (Prompt 4)
 
+> **Status source-of-truth invariant (WU3b review fix):** a memory's `status`
+> lives in both the note's `ledger:` frontmatter and the journal `memories.status`
+> row, and `reindex` rebuilds the journal *from the file* (§3.3: vault + Git are
+> the source of truth). Therefore **every status transition writes the file's
+> frontmatter through the broker**, not just the journal row — otherwise the
+> change is silently lost on a journal rebuild. `promote` (scratch→working) and
+> approved `promote` (working→canonical) flip `ledger.status` in the note via a
+> broker `revise` (audited, committed); `forget` flips it to `forgotten` as part
+> of the archive move. The journal row updates in the same operation and stays a
+> pure cache of what the files say.
+
 - **`remember()`** → `create` op into the agent zone, provenance frontmatter,
   `status = scratch`.
 - **`revise()`** → `revise` op; bumps provenance (`created`/`reason`), links
@@ -270,8 +305,12 @@ later commit touched the same file. Behavior:
   `status = forgotten`). Git retains history; never hard-deleted.
 - **TTL sweep** → scratch older than config TTL (default 14 days) → archived;
   emit staleness flags for working memories unreferenced for N days. There is no
-  daemon in v0.1: the sweep triggers **lazily at CLI and MCP-server startup**
-  (and can be run on demand). Later milestones may add a scheduled sweep.
+  daemon in v0.1: the sweep triggers lazily at **MCP-server startup** (a genuine
+  long-running session). The **CLI does NOT auto-sweep** — a read-only command
+  like `status`/`log` must never silently write commits or move files
+  (auditability), so `loadContext` runs only journal-DB repairs
+  (`ensureJournal` + `reconcile`), never a vault-mutating sweep. Sweep stays
+  available as a core API and can be wired to an explicit command later.
 - **Approval queue** → SQLite `approvals` table + core API
   (`list` / `approve` / `reject`). Approving **re-runs the held operation
   through the broker** (does not blind-apply a stored diff) — but through the
@@ -394,6 +433,14 @@ checkpoint after each package.
 
 ## 12. Deferred to later milestones
 
+**Known v0.1 limitations (accepted):**
+- Multi-step operations (e.g. `forget` = frontmatter-flip commit **then** archive
+  move; approval-row state **after** the applied op) are not single-commit atomic.
+  A crash between steps leaves a transient inconsistency, self-healing on the next
+  `reindex` (file frontmatter is the source of truth) or visible on retry. A
+  reconcile pass for the approval-row-vs-applied-op gap is future work.
+
+**Later milestones:**
 - Obsidian plugin (v0.2) — stub compiles this cycle.
 - Contradiction/negation detection + `conflicts` population (v0.3).
 - Embeddings-assisted recall/conflict, team tier, WAL, Windows path hardening,
