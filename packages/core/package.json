@@ -13,11 +13,13 @@
     "picomatch": "^4.0.0",
     "gray-matter": "^4.0.3",
     "diff": "^7.0.0",
-    "yaml": "^2.5.0"
+    "yaml": "^2.5.0",
+    "proper-lockfile": "^4.1.2"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.0",
     "@types/picomatch": "^3.0.0",
-    "@types/diff": "^6.0.0"
+    "@types/diff": "^6.0.0",
+    "@types/proper-lockfile": "^4.1.4"
   }
 }
