@@ -13,3 +13,6 @@ export * from "./journal/journal.js";
 export * from "./broker/broker.js";
 export * from "./broker/undo.js";
 export * from "./broker/reconcile.js";
+export * from "./config.js";
+export * from "./recall/recall.js";
+export * from "./memory/store.js";
