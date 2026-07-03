@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, resolve, sep } from "node:path";
 import { BrokerError } from "../errors.js";
 import type { PermissionsManifest } from "../schemas/manifest.js";
 import type { ProposedOperation } from "../schemas/operation.js";
@@ -106,11 +106,32 @@ export class Broker {
     session: string,
     reason: string,
   ): Promise<AppliedResult> {
+    // ALL containment + zone checks run BEFORE any fs mutation (writeFile /
+    // unlink happen before the git commit, so a late rejection would leave a
+    // half-applied move on disk). Both endpoints must stay inside the vault
+    // AND resolve to a writable zone (agent/scratch); the archive destination
+    // Agent/Archive/** is agent zone. Excluded/trusted are rejected.
     const fromAbs = this.resolveAbs(fromRel);
+    const toAbs = this.resolveAbs(toRel);
+
+    const fromZone = resolveZone(fromRel, this.manifest);
+    if (fromZone !== "agent" && fromZone !== "scratch") {
+      throw new BrokerError(
+        "FORBIDDEN_ZONE",
+        `archive source must be in agent/scratch zone (was '${fromZone}'): ${fromRel}`,
+      );
+    }
+    const toZone = resolveZone(toRel, this.manifest);
+    if (toZone !== "agent" && toZone !== "scratch") {
+      throw new BrokerError(
+        "FORBIDDEN_ZONE",
+        `archive destination must be in agent/scratch zone (was '${toZone}'): ${toRel}`,
+      );
+    }
+
     if (!existsSync(fromAbs)) {
       throw new BrokerError("NOT_FOUND", `archive source not found: ${fromRel}`);
     }
-    const toAbs = this.resolveAbs(toRel);
     if (existsSync(toAbs)) {
       throw new BrokerError("TARGET_EXISTS", `archive target already exists: ${toRel}`);
     }
@@ -142,17 +163,33 @@ export class Broker {
     return { ok: true, txnId, commitSha, path: toRel };
   }
 
+  /**
+   * Resolve a vault-relative path to an absolute path AND enforce that it
+   * stays inside the vault root. A traversal path (e.g.
+   * "Notes/../../../../etc/passwd") would otherwise escape the vault — the
+   * trust boundary — and let the agent read/write arbitrary files. Every
+   * filesystem access in the broker (create, revise, propose_edit, archive)
+   * routes through here. On escape we throw FORBIDDEN_ZONE.
+   */
   private resolveAbs(relPath: string): string {
-    return join(this.vaultRoot, relPath);
+    const root = resolve(this.vaultRoot);
+    const abs = resolve(root, relPath);
+    if (abs !== root && !abs.startsWith(root + sep)) {
+      throw new BrokerError("FORBIDDEN_ZONE", `path escapes vault root: ${relPath}`);
+    }
+    return abs;
   }
 
   private async applyCreate(op: CreateOp): Promise<AppliedResult> {
+    // Containment check first (throws FORBIDDEN_ZONE on a traversal escape),
+    // then the zone gate — both before any filesystem mutation.
+    const abs = this.resolveAbs(op.path);
+
     const zone = resolveZone(op.path, this.manifest);
     if (zone !== "agent" && zone !== "scratch") {
       throw new BrokerError("FORBIDDEN_ZONE", `cannot create in zone '${zone}': ${op.path}`);
     }
 
-    const abs = this.resolveAbs(op.path);
     if (existsSync(abs)) {
       throw new BrokerError("TARGET_EXISTS", `target already exists: ${op.path}`);
     }
@@ -188,6 +225,11 @@ export class Broker {
   }
 
   private async applyRevise(op: ReviseOp, approved: boolean): Promise<AppliedResult> {
+    // Containment check first: an escaping path is invalid regardless of zone,
+    // and this must reject BEFORE the trusted/approval branch so a traversal
+    // surfaces as FORBIDDEN_ZONE (not APPROVAL_REQUIRED).
+    const abs = this.resolveAbs(op.path);
+
     const zone = resolveZone(op.path, this.manifest);
     if (zone === "excluded") {
       throw new BrokerError("FORBIDDEN_ZONE", `cannot revise excluded path: ${op.path}`);
@@ -199,14 +241,17 @@ export class Broker {
       );
     }
     if (zone !== "agent" && zone !== "scratch" && zone !== "trusted") {
+      // defensive: guards against a future 5th ZoneName being added.
       throw new BrokerError("FORBIDDEN_ZONE", `cannot revise in zone '${zone}': ${op.path}`);
     }
 
-    const abs = this.resolveAbs(op.path);
     if (!existsSync(abs)) {
       throw new BrokerError("NOT_FOUND", `target not found: ${op.path}`);
     }
 
+    // v0.1 TOCTOU gap: the file could change on disk between this hash read
+    // and the writeFileSync below. Acceptable for v0.1 (single-writer broker);
+    // a future version may hold a lock or re-check under the git commit.
     const computed = hashFile(abs);
     if (computed !== op.expected_hash) {
       throw new BrokerError(
@@ -248,6 +293,11 @@ export class Broker {
   }
 
   private applyProposeEdit(op: ProposeEditOp): QueuedResult {
+    // Reject a traversal path even though propose_edit only queues (never
+    // writes): the held operation is applied later, so an escaping path must
+    // never enter the approval queue in the first place.
+    this.resolveAbs(op.path);
+
     const zone = resolveZone(op.path, this.manifest);
     if (zone === "excluded") {
       throw new BrokerError(

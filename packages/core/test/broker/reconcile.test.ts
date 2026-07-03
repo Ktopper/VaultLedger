@@ -122,4 +122,55 @@ describe("reconcile", () => {
     const second = await reconcile({ git, journal, now, genId });
     expect(second.repaired).toBe(0);
   });
+
+  test("recovers a basename WITH SPACES and a [memoryId] segment", async () => {
+    const { journal, git, vaultRoot, now, genId } = await makeHarness();
+
+    writeFileSync(join(vaultRoot, "My Note.md"), "spaced\n", "utf8");
+    const sha = await git.commitFile(
+      "My Note.md",
+      formatMessage({
+        op: "revise",
+        basename: "My Note.md",
+        memoryId: "mem_1",
+        session: "session-b",
+      }),
+    );
+    // Confirm the recorded message really does contain spaces in the basename.
+    const commits = await git.listLedgerCommits();
+    expect(commits.find((c) => c.sha === sha)!.message).toBe(
+      "ledger: revise My Note.md [mem_1] session-b",
+    );
+
+    const result = await reconcile({ git, journal, now, genId });
+    expect(result.repaired).toBe(1);
+
+    const repaired = journal.listTransactions({}).find((t) => t.commit_sha === sha)!;
+    expect(repaired.op).toBe("revise");
+    expect(repaired.path).toBe("My Note.md");
+    expect(repaired.session).toBe("session-b");
+    expect(repaired.memory_id).toBe("mem_1");
+  });
+
+  test("recovers a basename WITH SPACES and NO memoryId, leaving memory_id null", async () => {
+    const { journal, git, vaultRoot, now, genId } = await makeHarness();
+
+    writeFileSync(join(vaultRoot, "Another Note.md"), "spaced\n", "utf8");
+    const sha = await git.commitFile(
+      "Another Note.md",
+      formatMessage({ op: "create", basename: "Another Note.md", session: "session-a" }),
+    );
+    expect(
+      (await git.listLedgerCommits()).find((c) => c.sha === sha)!.message,
+    ).toBe("ledger: create Another Note.md session-a");
+
+    const result = await reconcile({ git, journal, now, genId });
+    expect(result.repaired).toBe(1);
+
+    const repaired = journal.listTransactions({}).find((t) => t.commit_sha === sha)!;
+    expect(repaired.op).toBe("create");
+    expect(repaired.path).toBe("Another Note.md");
+    expect(repaired.session).toBe("session-a");
+    expect(repaired.memory_id).toBeNull();
+  });
 });

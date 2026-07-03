@@ -130,6 +130,19 @@ describe("Journal transactions", () => {
     expect(limited.map((t) => t.id)).toEqual(["tx_3", "tx_2"]);
   });
 
+  test("listTransactions breaks created_at ties by insertion order (newest rowid first)", () => {
+    const j = makeJournal();
+    const sameTs = "2026-07-01T00:00:00.000Z";
+    // Insert three rows with the IDENTICAL created_at; newest-inserted must
+    // come first so undoSession's newest-first guarantee holds.
+    j.recordTransaction(row({ id: "tx_a", created_at: sameTs }));
+    j.recordTransaction(row({ id: "tx_b", created_at: sameTs }));
+    j.recordTransaction(row({ id: "tx_c", created_at: sameTs }));
+
+    const all = j.listTransactions({});
+    expect(all.map((t) => t.id)).toEqual(["tx_c", "tx_b", "tx_a"]);
+  });
+
   test("listTransactions filters by session", () => {
     const j = makeJournal();
     j.recordTransaction(row({ id: "tx_1", session: "session-a" }));

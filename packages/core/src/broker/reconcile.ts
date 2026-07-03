@@ -9,7 +9,11 @@ export interface ReconcileDeps {
 }
 
 // Mirrors formatMessage's `ledger: <op> <basename> [<memoryId>] <session>`.
-const MESSAGE_RE = /^ledger:\s+(\S+)\s+(\S+)(?:\s+\[([^\]]+)\])?\s+(\S+)$/;
+// Anchored on the KNOWN structure so a basename containing spaces (e.g.
+// "My Note.md") still parses: op is the first token, session the LAST token,
+// an optional `[memoryId]` sits immediately before session, and basename is
+// everything in between (non-greedy so it doesn't swallow the [memoryId]).
+const MESSAGE_RE = /^ledger:\s+(\S+)\s+(.+?)(?:\s+\[([^\]]+)\])?\s+(\S+)\s*$/;
 
 /**
  * Startup reconciliation (design §5, crash-recovery): a process can crash
@@ -34,11 +38,12 @@ export async function reconcile(deps: ReconcileDeps): Promise<{ repaired: number
     const match = MESSAGE_RE.exec(message);
     if (!match) continue; // Not a well-formed ledger message; nothing to recover.
 
-    const op = match[1];
-    const basename = match[2];
+    // Groups 1 (op), 2 (basename), 4 (session) are guaranteed present when the
+    // regex matches; group 3 (memoryId) is optional.
+    const op = match[1]!;
+    const basename = match[2]!;
     const memoryId = match[3];
-    const session = match[4];
-    if (!op || !basename || !session) continue;
+    const session = match[4]!;
 
     const row: TransactionRow = {
       id: genId("txn"),

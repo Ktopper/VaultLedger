@@ -214,6 +214,47 @@ describe("undo", () => {
     expect((thrown as BrokerError).code).toBe("ALREADY_REVERTED");
   });
 
+  test("undoTransaction on an unknown txnId throws NOT_FOUND", async () => {
+    const { journal, git, now, genId } = await makeHarness();
+    let thrown: unknown;
+    try {
+      await undoTransaction({ git, journal, now, genId }, "txn_does_not_exist");
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(BrokerError);
+    expect((thrown as BrokerError).code).toBe("NOT_FOUND");
+  });
+
+  test("undoTransaction on a transaction with commit_sha=null throws NOT_FOUND", async () => {
+    const { journal, git, now, genId } = await makeHarness();
+    const txnId = genId("txn");
+    journal.recordTransaction({
+      id: txnId,
+      op: "create",
+      path: "Agent/Memory/nocommit.md",
+      hash_before: null,
+      hash_after: "sha256:abc",
+      session: "s1",
+      reason: "no commit recorded",
+      memory_id: null,
+      commit_sha: null,
+      created_at: now(),
+      status: "applied",
+    });
+
+    let thrown: unknown;
+    try {
+      await undoTransaction({ git, journal, now, genId }, txnId);
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(BrokerError);
+    expect((thrown as BrokerError).code).toBe("NOT_FOUND");
+    // The transaction must NOT have been marked reverted.
+    expect(journal.getTransaction(txnId)!.status).toBe("applied");
+  });
+
   test("dirty revert: REVERT_CONFLICT propagates, working tree stays clean, and the journal is untouched", async () => {
     const { broker, journal, git, vaultRoot, now, genId } = await makeHarness();
 

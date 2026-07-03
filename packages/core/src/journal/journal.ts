@@ -132,7 +132,7 @@ export class Journal {
       SELECT t.* FROM transactions t
       ${join}
       ${where}
-      ORDER BY t.created_at DESC
+      ORDER BY t.created_at DESC, t.rowid DESC
       ${limitClause}
     `;
 
