@@ -106,6 +106,19 @@ export class Journal {
     this.db.prepare(`UPDATE transactions SET status = @status WHERE id = @id`).run({ id, status });
   }
 
+  /**
+   * Link a transaction to a memory row after the fact. The broker records
+   * transactions with memory_id=null (it operates on paths, not memory ids);
+   * the memory store calls this once it has both the txnId and the memory id
+   * so undo can reach the memory row (mark it 'reverted') and
+   * listTransactions({entity}) can join on memory_id.
+   */
+  setTransactionMemoryId(txnId: string, memoryId: string): void {
+    this.db
+      .prepare(`UPDATE transactions SET memory_id = @memoryId WHERE id = @txnId`)
+      .run({ txnId, memoryId });
+  }
+
   listTransactions(filters: ListTransactionsFilters): TransactionRow[] {
     const conditions: string[] = [];
     const params: Record<string, unknown> = {};

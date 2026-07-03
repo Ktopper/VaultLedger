@@ -11,6 +11,8 @@ import { openJournal } from "../../src/journal/db.js";
 import { hashFile } from "../../src/broker/hash.js";
 import { BrokerError } from "../../src/errors.js";
 import { MemoryStore } from "../../src/memory/store.js";
+import { recall } from "../../src/recall/recall.js";
+import { undoTransaction } from "../../src/broker/undo.js";
 import type { PermissionsManifest } from "../../src/schemas/manifest.js";
 
 const MANIFEST: PermissionsManifest = {
@@ -54,6 +56,9 @@ describe("MemoryStore", () => {
     store: MemoryStore;
     journal: Journal;
     vaultRoot: string;
+    git: LedgerGit;
+    now: () => string;
+    genId: (prefix: string) => string;
   }> {
     const vaultRoot = mkdtempSync(join(tmpdir(), "vl-memstore-"));
     dir = vaultRoot;
@@ -64,7 +69,7 @@ describe("MemoryStore", () => {
     const { now, genId } = makeClock();
     const broker = new Broker({ vaultRoot, git, journal, manifest: MANIFEST, now, genId });
     const store = new MemoryStore({ broker, journal, now, genId, vaultRoot });
-    return { store, journal, vaultRoot };
+    return { store, journal, vaultRoot, git, now, genId };
   }
 
   test("remember creates a note under Agent/Memory with ledger frontmatter and a journal row", async () => {
@@ -98,6 +103,38 @@ describe("MemoryStore", () => {
     expect(row!.entity).toBe("alice");
     expect(row!.path).toBe(path);
     expect(journal.getTags(id).sort()).toEqual(["preferences", "ui"]);
+  });
+
+  test("remember returns the create txnId and links memory_id onto that transaction", async () => {
+    const { store, journal } = await makeStore();
+    const result = await store.remember({ content: "x", reason: "seed", session: "s1" });
+    expect(result.txnId).toBeDefined();
+    const txn = journal.getTransaction(result.txnId);
+    expect(txn).not.toBeNull();
+    expect(txn!.op).toBe("create");
+    expect(txn!.memory_id).toBe(result.id);
+  });
+
+  test("undo of a remember's create transaction reverts the memory row and drops it from recall", async () => {
+    const { store, journal, git, vaultRoot, now, genId } = await makeStore();
+
+    const { id, path, txnId } = await store.remember({
+      content: "ephemeral fact",
+      entity: "alice",
+      reason: "seed",
+      session: "s1",
+    });
+    // Sanity: the memory is recallable and its file exists before undo.
+    expect(existsSync(join(vaultRoot, path))).toBe(true);
+    expect(recall(journal, { entity: "alice" }, now).map((r) => r.id)).toContain(id);
+
+    await undoTransaction({ git, journal, now, genId }, txnId);
+
+    // File is gone at HEAD (create reverted)...
+    expect(await git.fileAtHead(path)).toBeNull();
+    // ...and the memory row is now 'reverted', so recall no longer returns it.
+    expect(journal.getMemory(id)!.status).toBe("reverted");
+    expect(recall(journal, { entity: "alice" }, now).map((r) => r.id)).not.toContain(id);
   });
 
   test("revise patches the note through the broker", async () => {
@@ -182,6 +219,26 @@ describe("MemoryStore", () => {
     const row = journal.getMemory(id);
     expect(row!.status).toBe("forgotten");
     expect(row!.path).toBe(archivePath);
+
+    // The forget transaction must be linked to the memory id.
+    const forgetTxn = journal
+      .listTransactions({})
+      .find((t) => t.op === "forget" && t.memory_id === id);
+    expect(forgetTxn).toBeDefined();
+  });
+
+  test("revise links its transaction to the memory id", async () => {
+    const { store, journal, vaultRoot } = await makeStore();
+    const { id, path } = await store.remember({ content: "line1\nline2", reason: "seed", session: "s1" });
+    const before = readFileSync(join(vaultRoot, path), "utf8");
+    const patchText = createPatch(path, before, before + "\nline3");
+
+    await store.revise({ id, patch: patchText, reason: "append", session: "s1" });
+
+    const reviseTxn = journal
+      .listTransactions({})
+      .find((t) => t.op === "revise" && t.memory_id === id);
+    expect(reviseTxn).toBeDefined();
   });
 
   test("revise computes expected_hash via hashFile against the current on-disk content", async () => {

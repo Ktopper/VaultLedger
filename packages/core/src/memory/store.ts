@@ -36,6 +36,8 @@ export interface RememberInput {
 export interface RememberResult {
   id: string;
   path: string;
+  /** The create transaction's id, linked to this memory (for undo/audit). */
+  txnId: string;
 }
 
 export interface ReviseInput {
@@ -93,6 +95,10 @@ export class MemoryStore {
     const path = `${this.agentDir}/${id}.md`;
     const created = this.now();
 
+    // v0.1 limitation: if `content` itself begins with its own `---`
+    // frontmatter block, matter.stringify does not merge/relocate it — the
+    // ledger block is prepended and the caller's leading `---` ends up in the
+    // body. Callers pass plain content in v0.1.
     const noteBody = matter.stringify(input.content, {
       ledger: {
         id,
@@ -106,7 +112,7 @@ export class MemoryStore {
       },
     });
 
-    await this.broker.apply({
+    const result = await this.broker.apply({
       op: "create",
       path,
       content: noteBody,
@@ -115,6 +121,11 @@ export class MemoryStore {
       reason: input.reason,
       session: input.session,
     });
+    // create always lands immediately (never queued), so a txnId is present.
+    if ("queued" in result || result.txnId === undefined) {
+      throw new BrokerError("NOT_FOUND", `create did not record a transaction for ${path}`);
+    }
+    const txnId = result.txnId;
 
     const row: MemoryRow = {
       id,
@@ -132,8 +143,11 @@ export class MemoryStore {
     if (input.tags && input.tags.length > 0) {
       this.journal.addTags(id, input.tags);
     }
+    // Link the create transaction to this memory so undo can reach the memory
+    // row (mark it 'reverted') and listTransactions({entity}) can join.
+    this.journal.setTransactionMemoryId(txnId, id);
 
-    return { id, path };
+    return { id, path, txnId };
   }
 
   /**
@@ -151,7 +165,7 @@ export class MemoryStore {
 
     const expectedHash = hashFile(join(this.vaultRoot, mem.path));
 
-    await this.broker.apply({
+    const result = await this.broker.apply({
       op: "revise",
       path: mem.path,
       expected_hash: expectedHash,
@@ -160,6 +174,10 @@ export class MemoryStore {
       reason: input.reason,
       session: input.session,
     });
+    // A direct revise into an agent-zone note always lands immediately.
+    if (!("queued" in result) && result.txnId !== undefined) {
+      this.journal.setTransactionMemoryId(result.txnId, input.id);
+    }
   }
 
   /**
@@ -183,6 +201,13 @@ export class MemoryStore {
 
     if (mem.status === "working" && input.target_status === "canonical") {
       const approvalId = this.genId("apr");
+      // EXECUTION CONTRACT FOR WU3b (approve()): the held op below is an
+      // op:"promote", which broker.apply() rejects by design (it operates on
+      // a memory id, not a path). approve() MUST DISPATCH on the held op — a
+      // held `promote` is executed by applying the canonical status change
+      // directly (journal.setMemoryStatus(id, "canonical")), NOT via
+      // broker.apply. Only create/revise/propose_edit held ops go through
+      // broker.apply(op, { approved: true }).
       this.journal.insertApproval({
         id: approvalId,
         held_operation: JSON.stringify({
@@ -217,8 +242,12 @@ export class MemoryStore {
     }
 
     const archivePath = `${ARCHIVE_DIR}/${input.id}.md`;
-    await this.broker.archive(mem.path, archivePath, input.session, input.reason);
+    const result = await this.broker.archive(mem.path, archivePath, input.session, input.reason);
 
     this.journal.updateMemory(input.id, { status: "forgotten", path: archivePath });
+    // Link the forget (archive) transaction to this memory for undo/audit.
+    if (result.txnId !== undefined) {
+      this.journal.setTransactionMemoryId(result.txnId, input.id);
+    }
   }
 }

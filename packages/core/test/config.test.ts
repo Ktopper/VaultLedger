@@ -1,7 +1,7 @@
 import { describe, expect, test, afterEach } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import {
   mintVaultId,
   appSupportBase,
@@ -60,6 +60,21 @@ describe("config", () => {
     expect(base).toBe(join("/home/alice", ".local", "share", "VaultLedger"));
   });
 
+  test("appSupportBase returns an ABSOLUTE path on darwin when HOME is unset", () => {
+    const base = appSupportBase({}, "darwin");
+    expect(isAbsolute(base)).toBe(true);
+  });
+
+  test("appSupportBase returns an ABSOLUTE path on win32 when APPDATA and HOME are unset", () => {
+    const base = appSupportBase({}, "win32");
+    expect(isAbsolute(base)).toBe(true);
+  });
+
+  test("appSupportBase returns an ABSOLUTE path on linux when XDG and HOME are unset", () => {
+    const base = appSupportBase({}, "linux");
+    expect(isAbsolute(base)).toBe(true);
+  });
+
   test("journalPath composes appSupportBase + vaultId + journal.db", () => {
     const path = journalPath("vault_abc123", { HOME: "/Users/alice" }, "darwin");
     expect(path).toBe(
@@ -96,5 +111,61 @@ describe("config", () => {
     }
     expect(thrown).toBeInstanceOf(BrokerError);
     expect((thrown as BrokerError).code).toBe("NOT_FOUND");
+  });
+
+  test("readConfig on corrupted JSON throws a BrokerError, not a raw SyntaxError", () => {
+    dir = mkdtempSync(join(tmpdir(), "vl-config-"));
+    mkdirSync(join(dir, ".ledger"), { recursive: true });
+    writeFileSync(join(dir, ".ledger", "config.json"), "{ this is not valid json ", "utf8");
+
+    let thrown: unknown;
+    try {
+      readConfig(dir);
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(BrokerError);
+    expect(thrown).not.toBeInstanceOf(SyntaxError);
+    expect((thrown as BrokerError).code).toBe("NOT_FOUND");
+  });
+
+  test("writeConfig does not leave a stray temp file behind (atomic rename)", () => {
+    dir = mkdtempSync(join(tmpdir(), "vl-config-"));
+    const cfg: LedgerConfig = {
+      vaultId: "vault_atomic",
+      ttlDays: 14,
+      patchThreshold: 0.5,
+      mode: "assisted",
+      stalenessDays: 30,
+    };
+    writeConfig(dir, cfg);
+    const entries = readdirSync(join(dir, ".ledger"));
+    expect(entries).toEqual(["config.json"]);
+    expect(readConfig(dir)).toEqual(cfg);
+  });
+
+  test("journalPath rejects a vaultId containing path traversal", () => {
+    let thrown: unknown;
+    try {
+      journalPath("../../etc", { HOME: "/Users/alice" }, "darwin");
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(BrokerError);
+  });
+
+  test("journalPath rejects a vaultId containing a slash", () => {
+    let thrown: unknown;
+    try {
+      journalPath("vault/evil", { HOME: "/Users/alice" }, "darwin");
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(BrokerError);
+  });
+
+  test("journalPath accepts a well-formed vaultId", () => {
+    const path = journalPath("vault_abc-123", { HOME: "/Users/alice" }, "darwin");
+    expect(path).toContain("vault_abc-123");
   });
 });

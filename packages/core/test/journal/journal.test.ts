@@ -117,6 +117,13 @@ describe("Journal transactions", () => {
     expect(j.getTransaction("tx_1")?.status).toBe("reverted");
   });
 
+  test("setTransactionMemoryId links a transaction to a memory id", () => {
+    const j = makeJournal();
+    j.recordTransaction(row({ id: "tx_1", memory_id: null }));
+    j.setTransactionMemoryId("tx_1", "mem_42");
+    expect(j.getTransaction("tx_1")?.memory_id).toBe("mem_42");
+  });
+
   test("listTransactions returns newest-first and respects limit", () => {
     const j = makeJournal();
     j.recordTransaction(row({ id: "tx_1", created_at: "2026-07-01T00:00:00.000Z" }));

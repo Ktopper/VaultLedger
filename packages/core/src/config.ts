@@ -1,6 +1,18 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { BrokerError } from "./errors.js";
+
+/** A vaultId is used as a directory name under app-support; keep it to a
+ * traversal-safe character set so a tampered config.json can't escape via
+ * path.join (e.g. "../../etc" or "vault/evil"). */
+const VAULT_ID_RE = /^[A-Za-z0-9_-]+$/;
+
+function assertValidVaultId(vaultId: string): void {
+  if (!VAULT_ID_RE.test(vaultId)) {
+    throw new BrokerError("FORBIDDEN_ZONE", `invalid vault id: ${JSON.stringify(vaultId)}`);
+  }
+}
 
 /**
  * VaultLedger's only in-vault footprint is `.ledger/` (design §3.1).
@@ -45,15 +57,17 @@ export function appSupportBase(
   env: EnvLike = process.env,
   platform: NodeJS.Platform = process.platform,
 ): string {
+  // Fall back to os.homedir() (an absolute path) rather than "" when the env
+  // var is missing, so the journal location is never cwd-dependent/relative.
   if (platform === "darwin") {
-    const home = env.HOME ?? "";
+    const home = env.HOME ?? homedir();
     return join(home, "Library", "Application Support", "VaultLedger");
   }
   if (platform === "win32") {
-    const appData = env.APPDATA ?? join(env.HOME ?? "", "AppData", "Roaming");
+    const appData = env.APPDATA ?? join(env.HOME ?? homedir(), "AppData", "Roaming");
     return join(appData, "VaultLedger");
   }
-  const xdg = env.XDG_DATA_HOME ?? join(env.HOME ?? "", ".local", "share");
+  const xdg = env.XDG_DATA_HOME ?? join(env.HOME ?? homedir(), ".local", "share");
   return join(xdg, "VaultLedger");
 }
 
@@ -63,6 +77,7 @@ export function journalPath(
   env: EnvLike = process.env,
   platform: NodeJS.Platform = process.platform,
 ): string {
+  assertValidVaultId(vaultId);
   return join(appSupportBase(env, platform), vaultId, "journal.db");
 }
 
@@ -83,12 +98,29 @@ export function readConfig(vaultRoot: string): LedgerConfig {
     throw new BrokerError("NOT_FOUND", `no config found at ${path}`);
   }
   const raw = readFileSync(path, "utf8");
-  return JSON.parse(raw) as LedgerConfig;
+  try {
+    return JSON.parse(raw) as LedgerConfig;
+  } catch (e) {
+    // Preserve the typed-rejection contract: a corrupted config.json must not
+    // surface as a raw SyntaxError to callers that only handle BrokerError.
+    throw new BrokerError(
+      "NOT_FOUND",
+      `config unreadable at ${path}: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
 }
 
-/** Write `.ledger/config.json`, creating the `.ledger/` directory if needed. */
+/**
+ * Write `.ledger/config.json`, creating the `.ledger/` directory if needed.
+ * The write is atomic: content goes to a temp file first, then renameSync
+ * swaps it into place, so a crash mid-write can never leave a truncated
+ * config.json (a rename is atomic on the same filesystem).
+ */
 export function writeConfig(vaultRoot: string, config: LedgerConfig): void {
   const path = configPath(vaultRoot);
-  mkdirSync(join(vaultRoot, ".ledger"), { recursive: true });
-  writeFileSync(path, JSON.stringify(config, null, 2) + "\n", "utf8");
+  const dir = join(vaultRoot, ".ledger");
+  mkdirSync(dir, { recursive: true });
+  const tmp = join(dir, `.config.json.${process.pid}.tmp`);
+  writeFileSync(tmp, JSON.stringify(config, null, 2) + "\n", "utf8");
+  renameSync(tmp, path);
 }
