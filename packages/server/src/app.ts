@@ -1,7 +1,37 @@
 import { timingSafeEqual } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
-import { findStale, recall, type VaultContext } from "@vaultledger/core";
+import matter from "gray-matter";
+import {
+  assertContainedAndReadable,
+  BrokerError,
+  findStale,
+  recall,
+  type RejectionCode,
+  type VaultContext,
+} from "@vaultledger/core";
 import { renderApprovalDiff } from "./render.js";
+
+/**
+ * BrokerError.code -> HTTP status (Task 2.4's contract, wired here already
+ * because /provenance — Task 2.3 — is the first route that can throw a
+ * BrokerError (FORBIDDEN_ZONE) and needs it mapped to a real HTTP status
+ * rather than leaking as a generic 500). This table is exhaustive over
+ * every RejectionCode so a future route throwing any core BrokerError maps
+ * correctly without touching this file again.
+ */
+const BROKER_ERROR_STATUS: Record<RejectionCode, number> = {
+  FORBIDDEN_ZONE: 403,
+  NOT_FOUND: 404,
+  STALE_HASH: 409,
+  REVERT_CONFLICT: 409,
+  ALREADY_REVERTED: 409,
+  INVALID_TRANSITION: 422,
+  TARGET_EXISTS: 409,
+  PATCH_TOO_LARGE: 400,
+  SYNTAX_BREAK: 400,
+  APPROVAL_REQUIRED: 400,
+};
 
 const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
 
@@ -125,6 +155,36 @@ export function buildBridge(ctx: VaultContext, token: string): FastifyInstance {
 
   app.get("/conflicts", async () => {
     return [];
+  });
+
+  // SECURITY (Task 2.3): reuses the EXACT SAME containment + zone-exclusion
+  // gate the broker enforces on writes (assertContainedAndReadable, shared
+  // via core's broker/containment.ts) so this read-only route can never leak
+  // an excluded-zone note's frontmatter, a traversal path, or a
+  // symlink-escape target — it throws BrokerError FORBIDDEN_ZONE for all
+  // three, mapped to 403 by the error handler below.
+  app.get("/provenance", async (req: FastifyRequest) => {
+    const query = req.query as { path?: string };
+    const relPath = query.path ?? "";
+    const abs = assertContainedAndReadable(ctx.vaultRoot, ctx.manifest, relPath);
+    if (!existsSync(abs)) {
+      throw new BrokerError("NOT_FOUND", `no note at ${relPath}`);
+    }
+    const content = readFileSync(abs, "utf8");
+    const parsed = matter(content);
+    const ledger = parsed.data.ledger ?? null;
+    return { path: relPath, ledger };
+  });
+
+  app.setErrorHandler((err: unknown, _req: FastifyRequest, reply: FastifyReply) => {
+    if (err instanceof BrokerError) {
+      const status = BROKER_ERROR_STATUS[err.code] ?? 400;
+      void reply.code(status).send({ error: err.toRejection() });
+      return;
+    }
+    // Never leak a raw stack — everything else is a generic 500.
+    const message = err instanceof Error ? err.message : String(err);
+    void reply.code(500).send({ error: { code: "INTERNAL", message } });
   });
 
   return app;
