@@ -7,6 +7,8 @@ import {
   BrokerError,
   findStale,
   recall,
+  undoSession,
+  undoTransaction,
   type RejectionCode,
   type VaultContext,
 } from "@vaultledger/core";
@@ -87,6 +89,27 @@ function errorBody(code: string, message: string): ErrorBody {
  */
 export function buildBridge(ctx: VaultContext, token: string): FastifyInstance {
   const app = Fastify({ logger: false });
+
+  // Some mutation routes (approve/reject) take no body at all; a real client
+  // may still send `Content-Type: application/json` on a bodyless POST.
+  // Fastify's default JSON parser rejects an empty body outright — override
+  // it to treat empty as `{}` rather than 500ing on a perfectly normal
+  // request shape.
+  app.addContentTypeParser(
+    "application/json",
+    { parseAs: "string" },
+    (_req: FastifyRequest, body: string, done: (err: Error | null, result?: unknown) => void) => {
+      if (body.length === 0) {
+        done(null, {});
+        return;
+      }
+      try {
+        done(null, JSON.parse(body));
+      } catch (e) {
+        done(e as Error, undefined);
+      }
+    },
+  );
 
   app.addHook("preHandler", async (req: FastifyRequest, reply: FastifyReply) => {
     const hostHeader = req.headers.host;
@@ -174,6 +197,37 @@ export function buildBridge(ctx: VaultContext, token: string): FastifyInstance {
     const parsed = matter(content);
     const ledger = parsed.data.ledger ?? null;
     return { path: relPath, ledger };
+  });
+
+  app.post("/approvals/:id/approve", async (req: FastifyRequest) => {
+    const { id } = req.params as { id: string };
+    return ctx.approvals.approve(id);
+  });
+
+  app.post("/approvals/:id/reject", async (req: FastifyRequest) => {
+    const { id } = req.params as { id: string };
+    ctx.approvals.reject(id);
+    return { rejected: true };
+  });
+
+  // MUST thread ctx.lockDir into the undo deps so this bridge's undo
+  // mutually excludes with any other host (MCP server, CLI) mutating the
+  // same vault via the same lockDir (concurrency correctness).
+  app.post("/undo", async (req: FastifyRequest) => {
+    const body = (req.body ?? {}) as { target?: string };
+    const target = body.target ?? "";
+    const undoDeps = {
+      git: ctx.git,
+      journal: ctx.journal,
+      now: ctx.now,
+      genId: ctx.genId,
+      lockDir: ctx.lockDir,
+    };
+    if (target.startsWith("session:")) {
+      const reverted = await undoSession(undoDeps, target.slice("session:".length));
+      return { reverted };
+    }
+    return undoTransaction(undoDeps, target);
   });
 
   app.setErrorHandler((err: unknown, _req: FastifyRequest, reply: FastifyReply) => {
