@@ -99,10 +99,30 @@ promote, via `MemoryStore.setStatus` which itself routes through a broker
 the broker's mutating operations (and `undo*`)**, and everything else reaches
 mutation through them.
 
+**Lock staleness must exceed the slowest transaction.** A transaction holds the
+lock across a Git commit, which can be slow (first commit on a large vault, cold
+disk). If stale-detection fires shorter than a slow commit, a second process
+reclaims the lock **mid-transaction** — the exact corruption the lock exists to
+prevent. `proper-lockfile` refreshes the lock's mtime on an `update` interval;
+the config MUST keep `update` comfortably below `stale` (e.g. `update: 2000`,
+`stale: 20000`) so an active holder is never seen as stale. This is asserted in
+the lock config and covered by a test with an **artificially slow commit**
+(inject a delay into the git step) proving a second acquirer waits rather than
+stealing the lock.
+
 **Journal in WAL.** `openJournal` sets `PRAGMA journal_mode = WAL` and
 `PRAGMA busy_timeout = 5000` so concurrent readers (the plugin polling status)
 don't block the writer and a brief contention retries rather than erroring.
 (WAL was slated for v1.0; concurrency pulls it forward.)
+
+**Concurrent startup reindex must converge, not duplicate.** Two processes
+starting on the same vault (serve + MCP) can both observe an empty journal and
+both run `ensureJournal`/`reconcile`. WAL serializes the writes, but the rebuild
+must be **idempotent** — memory upserts keyed on `ledger.id`, transaction inserts
+skipped when `hasCommit(sha)` — so a double-run converges rather than duplicating
+rows. v0.1 `reindex` already upserts + skips-by-commit; v0.2 adds an explicit
+test (run reindex twice / concurrently → identical row counts), since v0.2 makes
+simultaneous startup routine.
 
 **Scope note:** the lock covers vault+Git mutations. Pure reads (recall, status)
 take the journal in WAL without the mutation lock. Test: a two-process test in
@@ -151,7 +171,9 @@ Test: `/provenance?path=Private/secret.md` (excluded) → 403; a `..`/symlink pa
 fastify on `127.0.0.1:<port>` (0 = OS-assigned free port, the default).
 
 **Runtime discovery file — NOT in the vault.** On serve start, write
-`<app-support>/<vaultId>/bridge.json` = `{ port, token, pid, startedAt }`.
+`<app-support>/<vaultId>/bridge.json` = `{ port, token, pid, startedAt }`,
+**written with mode `0o600`** (owner read/write only) — it holds a token granting
+approve/undo and must not be group/world-readable even within app-support.
 - **Why not `.ledger/config.json`:** `.ledger/` **syncs** with the vault (iCloud /
   Obsidian Sync) and is committed if the vault is a Git repo. A bearer token that
   grants approve/undo must never ride along. `.ledger/config.json` keeps only the
