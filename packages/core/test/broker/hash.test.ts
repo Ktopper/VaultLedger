@@ -53,4 +53,20 @@ describe("hashFile", () => {
       expect((e as BrokerError).code).toBe("NOT_FOUND");
     }
   });
+
+  test("does not mask a non-ENOENT fs error (e.g. a directory) as NOT_FOUND", () => {
+    dir = mkdtempSync(join(tmpdir(), "vl-hash-"));
+    // Reading a directory yields EISDIR, not ENOENT — it must NOT be reported
+    // as NOT_FOUND. The original errno error should propagate.
+    try {
+      hashFile(dir);
+      throw new Error("expected hashFile to throw");
+    } catch (e) {
+      if (e instanceof BrokerError) {
+        expect(e.code).not.toBe("NOT_FOUND");
+      } else {
+        expect((e as NodeJS.ErrnoException).code).toBe("EISDIR");
+      }
+    }
+  });
 });

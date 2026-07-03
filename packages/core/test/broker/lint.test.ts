@@ -41,4 +41,27 @@ describe("assertStructurePreserved", () => {
       expect((e as BrokerError).code).toBe("SYNTAX_BREAK");
     }
   });
+
+  test("does not throw for a content-only edit that preserves callout headers", () => {
+    const before =
+      "# Notes\n\n> [!warning] Heads up\n> Be careful here.\n\n> [!note] Aside\n> More context.\n";
+    const after =
+      "# Notes\n\n> [!warning] Heads up\n> Be careful here, really.\n\n> [!note] Aside\n> More context, expanded.\n";
+
+    expect(() => assertStructurePreserved(before, after)).not.toThrow();
+  });
+
+  test("throws SYNTAX_BREAK when after drops a callout header present in before", () => {
+    const before =
+      "# Notes\n\n> [!warning] Heads up\n> Be careful here.\n\n> [!note] Aside\n> More context.\n";
+    const after = "# Notes\n\n> [!warning] Heads up\n> Be careful here.\n\nMore context.\n";
+
+    try {
+      assertStructurePreserved(before, after);
+      throw new Error("expected assertStructurePreserved to throw");
+    } catch (e) {
+      expect(e).toBeInstanceOf(BrokerError);
+      expect((e as BrokerError).code).toBe("SYNTAX_BREAK");
+    }
+  });
 });

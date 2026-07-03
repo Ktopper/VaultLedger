@@ -6,7 +6,7 @@ import { BrokerError } from "../errors.js";
  *
  * The spec's ideal check is "byte-identical outside the hunks" (see §12),
  * which requires diff-aware tooling this package doesn't yet have. Until
- * that lands, `assertStructurePreserved` uses three deterministic,
+ * that lands, `assertStructurePreserved` uses four deterministic,
  * count-based heuristics instead:
  *
  *   1. Frontmatter integrity — if `before` has a closed YAML frontmatter
@@ -17,14 +17,22 @@ import { BrokerError } from "../errors.js";
  *      conservative: a legitimate patch that *removes* a wikilink is
  *      rejected. Acceptable for v0.1.
  *   3. Block-reference non-decrease — same rule, for `^block-id` markers.
+ *   4. Callout-header non-decrease — same rule, for `> [!type]` callout
+ *      headers.
  *
- * The signature is stable so a stricter (byte-identical-outside-hunks)
- * checker can replace this implementation later without touching callers.
+ * NOTE ON THE SIGNATURE: the current `(before, after)` signature is what v0.1
+ * needs — these heuristics only compare aggregate token counts, so the patch
+ * text is genuinely not required and is intentionally not a parameter. A
+ * stricter future checker (byte-identical outside the hunks, per §12) will
+ * need the patch text — specifically the hunk line ranges — to know which
+ * regions are allowed to change, and will therefore likely change this
+ * signature. Do not treat the current signature as permanently stable.
  */
 
 const FRONTMATTER_BLOCK = /^---\r?\n[\s\S]*?\r?\n---\r?\n/;
 const WIKILINK = /\[\[[^\]]+\]\]/g;
 const BLOCK_REF = /\s\^[A-Za-z0-9-]+$/gm;
+const CALLOUT_HEADER = /^\s*>\s*\[![A-Za-z]+\]/gm;
 
 function count(re: RegExp, text: string): number {
   return text.match(re)?.length ?? 0;
@@ -60,6 +68,15 @@ export function assertStructurePreserved(before: string, after: string): void {
     throw new BrokerError(
       "SYNTAX_BREAK",
       `block-reference count decreased (${beforeRefs} -> ${afterRefs})`,
+    );
+  }
+
+  const beforeCallouts = count(CALLOUT_HEADER, before);
+  const afterCallouts = count(CALLOUT_HEADER, after);
+  if (afterCallouts < beforeCallouts) {
+    throw new BrokerError(
+      "SYNTAX_BREAK",
+      `callout-header count decreased (${beforeCallouts} -> ${afterCallouts})`,
     );
   }
 }
