@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema, type CallToolResult } from "@modelcontextprotocol/sdk/types.js";
@@ -136,8 +137,14 @@ async function main(): Promise<void> {
 
 // Only run main() when this file is the process entrypoint (the `bin`
 // script), not when a test imports `createServer`/`listToolNames`/
-// `parseVaultArg` from it.
-const isMainModule = process.argv[1] !== undefined && import.meta.url === `file://${process.argv[1]}`;
+// `parseVaultArg` from it. Compares via pathToFileURL (not a bare
+// `file://${process.argv[1]}` template) so this still matches when the path
+// contains characters (spaces, unicode, ...) that import.meta.url
+// percent-encodes — a bare template-literal comparison would silently never
+// match (and so never run main()) for any install/vault path containing a
+// space, which is common enough (this very repo's path included) to be a
+// real bug rather than a hypothetical one.
+const isMainModule = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isMainModule) {
   main().catch((e) => {
     console.error(e instanceof Error ? e.message : String(e));
