@@ -726,11 +726,13 @@ Wire the stages. `Broker` takes `{ vaultRoot, git, journal, manifest, config }`.
 - [ ] **Step 1: Failing tests:**
   - `enqueue(op, zone, …)` inserts pending row.
   - `list()` returns pending items.
-  - `approve(id)` re-runs the held op through the broker via **approved-execution context** (bypasses only the trusted-zone gate) and applies with all checks; row → approved.
-  - **stale approval:** if the note changed so `expected_hash` no longer matches, approve() surfaces STALE_HASH and marks the row `stale` (not applied) (§6.3).
+  - `approve(id)` **dispatches on the held op's `op` field** (parsed from `held_operation` JSON):
+    - held `revise`/`propose_edit`/`create` → re-run through the broker via **approved-execution context** `broker.apply(op, {approved:true})` (bypasses only the trusted-zone gate; all other checks — containment, hashCheck, patch, lint, commit, journal — still run); row → approved.
+    - held `promote` (canonical promotion, enqueued by MemoryStore in WU3a) → do NOT call `broker.apply` (the broker throws NOT_FOUND for promote ops by design). Instead apply the canonical status change directly: `journal.setMemoryStatus(op.id, "canonical")`; row → approved. (This is the execution contract WU3a documented at the enqueue site.)
+  - **stale approval:** for a held `revise`/`propose_edit`, if the note changed so `expected_hash` no longer matches, approve() surfaces STALE_HASH and marks the row `stale` (not applied) (§6.3).
   - `reject(id)` → row rejected, nothing written.
 - [ ] **Step 2: FAIL**
-- [ ] **Step 3: Implement** — Broker gains an `apply(op, { approved: true })` path that skips the trusted-gate but runs hashCheck/patch/lint/commit/journal. `approve` catches BrokerError STALE_HASH → mark `stale`.
+- [ ] **Step 3: Implement** — Broker already has the `apply(op, { approved: true })` path (from WU2c) that skips the trusted-gate but runs all other checks. `approve` parses `held_operation`, dispatches by op type (broker-runnable vs promote), catches BrokerError STALE_HASH → mark `stale`. Note the approval's `zone` column may carry the display sentinel `"canonical-promotion"` for promote approvals — dispatch on the op field, not the zone.
 - [ ] **Step 4: PASS** — [ ] **Step 5: Commit** `feat(core): approval queue with approved-execution + stale handling`
 
 ### Task 3.5: TTL sweep & staleness
