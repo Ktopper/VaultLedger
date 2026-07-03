@@ -124,6 +124,19 @@ rows. v0.1 `reindex` already upserts + skips-by-commit; v0.2 adds an explicit
 test (run reindex twice / concurrently → identical row counts), since v0.2 makes
 simultaneous startup routine.
 
+> **Scope note (final-review):** the concurrent-startup test races two
+> `openVault` calls in one Node process; that converges reliably (the
+> reindex/reconcile insert loops have no `await` in the body, so each runs
+> atomically w.r.t. the event loop). The narrower **cross-OS-process** startup
+> race (two genuinely separate processes both rebuilding the *same empty*
+> journal in the same instant) still relies on the app-level `hasCommit` check
+> rather than a `UNIQUE(commit_sha)` DB constraint — a carryover of the v0.1
+> `ensureJournal` check-then-act limitation. Worst case is a duplicate
+> transaction *index* row (cosmetic; the vault + Git remain the source of truth,
+> and a later reindex from scratch de-dups), never vault corruption. Promoting
+> this to a DB-level `UNIQUE(commit_sha)` + `ON CONFLICT DO NOTHING` is a
+> low-risk v0.3 hardening.
+
 **Scope note:** the lock covers vault+Git mutations. Pure reads (recall, status)
 take the journal in WAL without the mutation lock. Test: a two-process test in
 the server suite spawns a competing writer and asserts serialized, non-corrupt
