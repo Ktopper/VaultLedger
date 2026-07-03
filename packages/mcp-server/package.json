@@ -6,11 +6,15 @@
   "types": "./dist/index.d.ts",
   "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
   "bin": { "vaultledger-mcp": "./dist/index.js" },
-  "scripts": { "build": "tsc -b" },
+  "scripts": { "build": "tsc -b", "test": "vitest run" },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@vaultledger/core": "workspace:*",
-    "zod": "^3.23.0"
+    "zod": "^3.23.0",
+    "zod-to-json-schema": "^3.23.0",
+    "yaml": "^2.5.0"
   },
-  "devDependencies": {}
+  "devDependencies": {
+    "diff": "^7.0.0"
+  }
 }
