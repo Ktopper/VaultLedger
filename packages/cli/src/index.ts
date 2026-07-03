@@ -130,8 +130,10 @@ export function buildProgram(): Command {
     .action(async (vault: string, opts: { port?: string; rotateToken: boolean }) => {
       let port: number | undefined;
       if (opts.port !== undefined) {
-        if (!/^\d+$/.test(opts.port) || Number.parseInt(opts.port, 10) < 1) {
-          console.error(`invalid --port: ${opts.port} (expected a positive integer)`);
+        // Accept 0 — the documented OS-assign sentinel (startBridge reads the
+        // actual bound port back afterward). Reject negatives / non-integers.
+        if (!/^\d+$/.test(opts.port) || Number.parseInt(opts.port, 10) < 0) {
+          console.error(`invalid --port: ${opts.port} (expected a non-negative integer)`);
           process.exitCode = 1;
           return;
         }

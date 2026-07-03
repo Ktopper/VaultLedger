@@ -1,20 +1,21 @@
 import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { BrokerError, readConfig, vaultLockDir } from "@vaultledger/core";
 import { startBridge } from "@vaultledger/server";
 
 export interface ServeOptions {
   port?: number;
+  /** Mint a fresh bridge token even when a prior (crashed) serve left a
+   * reusable one behind — i.e. deliberately REVOKE the previous session
+   * token. Without this flag a dead-pid bridge.json's token is reused so a
+   * client that already read it keeps working across the restart. */
   rotateToken?: boolean;
   now?: () => string;
   genId?: (prefix: string) => string;
   env?: NodeJS.ProcessEnv;
   /** Injectable token minter — makes tests deterministic. Defaults to a
-   * crypto-random 24-byte hex string. A fresh `serveCommand` call ALWAYS
-   * mints a new token (v0.1 simplicity: there is no "reuse the previous
-   * token" path); `--rotate-token` is simply the documented name for this
-   * same always-mint behavior. */
+   * crypto-random 24-byte hex string. */
   mintToken?: () => string;
   out?: (s: string) => void;
   /** Register real process-level SIGINT/SIGTERM handlers that call the
@@ -32,10 +33,69 @@ export interface ServeHandle {
   close(): Promise<void>;
 }
 
+interface BridgeFile {
+  port: number;
+  token: string;
+  pid: number;
+  startedAt: string;
+}
+
 const NOT_INITIALIZED_MESSAGE = "not a VaultLedger vault (run `ledger init` first)";
 
 function defaultMintToken(): string {
   return randomBytes(24).toString("hex");
+}
+
+/**
+ * Is `pid` a live process? `process.kill(pid, 0)` sends no signal but still
+ * performs the existence + permission check: it succeeds for a live process
+ * we own, throws EPERM for a live process we DON'T own (still alive → true),
+ * and throws ESRCH when no such process exists (dead → false).
+ */
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/** Read + validate an existing bridge.json. Returns undefined if it's absent
+ * or malformed (a corrupt discovery file is treated as "no incumbent" — the
+ * fresh serve simply overwrites it). */
+function readBridgeFile(bridgePath: string): BridgeFile | undefined {
+  if (!existsSync(bridgePath)) return undefined;
+  try {
+    const parsed = JSON.parse(readFileSync(bridgePath, "utf8")) as Partial<BridgeFile>;
+    if (
+      typeof parsed.port === "number" &&
+      typeof parsed.token === "string" &&
+      typeof parsed.pid === "number" &&
+      typeof parsed.startedAt === "string"
+    ) {
+      return parsed as BridgeFile;
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Publish bridge.json atomically: write the JSON to a freshly-created temp
+ * file in the SAME app-support dir with `{ mode: 0o600 }` (the create mode is
+ * honored because the inode is brand new — no pre-existing, possibly
+ * world-readable, permissions to inherit), then renameSync it into place. The
+ * rename is atomic on one filesystem and preserves the temp file's 0600, so
+ * there is never an observable window where the new content is world-readable
+ * (closing the TOCTOU a write-then-chmod on the final path would leave open),
+ * and a crash mid-write can never leave a truncated discovery file.
+ */
+function writeBridgeFile(appDir: string, bridgePath: string, data: BridgeFile): void {
+  const tmp = join(appDir, `.bridge.json.${process.pid}.tmp`);
+  writeFileSync(tmp, JSON.stringify(data, null, 2), { mode: 0o600 });
+  renameSync(tmp, bridgePath);
 }
 
 /**
@@ -47,6 +107,13 @@ function defaultMintToken(): string {
  * the only in-vault footprint) and a bridge token must never leave this
  * machine. It's created 0o600 (owner-only) since it grants approve/undo
  * over the vault via the bridge.
+ *
+ * Token lifecycle is pid-aware, keyed off any pre-existing bridge.json:
+ *  - LIVE pid  → a bridge is already serving this vault; REFUSE to start (do
+ *    not clobber its discovery file — a client is pointed at it).
+ *  - DEAD pid  → a prior serve exited; REUSE its token by default (session
+ *    continuity), or mint a fresh one under `--rotate-token` (revocation).
+ *  - no file   → mint a fresh token.
  */
 export async function serveCommand(vaultDir: string, opts: ServeOptions = {}): Promise<ServeHandle> {
   let vaultId: string;
@@ -71,7 +138,19 @@ export async function serveCommand(vaultDir: string, opts: ServeOptions = {}): P
   const bridgePath = join(appDir, "bridge.json");
   mkdirSync(appDir, { recursive: true });
 
-  const token = mintToken();
+  const existing = readBridgeFile(bridgePath);
+  if (existing && isPidAlive(existing.pid)) {
+    // A bridge is already running for this vault. Refuse rather than clobber
+    // its discovery file — the incumbent's client is pointed at that port.
+    throw new Error(
+      `a VaultLedger bridge is already running for this vault (pid ${existing.pid}, ` +
+        `port ${existing.port}). Stop it first, or point your client at that port.`,
+    );
+  }
+
+  // Dead-pid incumbent: reuse its token for session continuity, unless the
+  // caller explicitly rotated. No incumbent (or corrupt file): mint fresh.
+  const token = existing && !opts.rotateToken ? existing.token : mintToken();
 
   const running = await startBridge(vaultDir, {
     token,
@@ -82,12 +161,7 @@ export async function serveCommand(vaultDir: string, opts: ServeOptions = {}): P
   });
 
   const startedAt = now();
-  const contents = JSON.stringify({ port: running.port, token, pid: process.pid, startedAt }, null, 2);
-  writeFileSync(bridgePath, contents, { mode: 0o600 });
-  // umask can weaken the mode passed to writeFileSync's own create — chmod
-  // explicitly so the file is never group/world readable regardless of the
-  // process umask (it holds a live bridge token granting approve/undo).
-  chmodSync(bridgePath, 0o600);
+  writeBridgeFile(appDir, bridgePath, { port: running.port, token, pid: process.pid, startedAt });
 
   out(`VaultLedger bridge on http://127.0.0.1:${running.port} (token in ${bridgePath})`);
 
@@ -96,20 +170,38 @@ export async function serveCommand(vaultDir: string, opts: ServeOptions = {}): P
 
   const close = async (): Promise<void> => {
     if (closed) return;
-    closed = true;
-    if (installSignalHandlers && onSignal) {
-      process.off("SIGINT", onSignal);
-      process.off("SIGTERM", onSignal);
-    }
-    await running.close();
-    if (existsSync(bridgePath)) {
-      unlinkSync(bridgePath);
+    try {
+      if (installSignalHandlers && onSignal) {
+        process.off("SIGINT", onSignal);
+        process.off("SIGTERM", onSignal);
+      }
+      await running.close();
+    } finally {
+      // Only remove the discovery file if it STILL describes THIS instance.
+      // A newer serve may have taken over bridge.json since we started; a
+      // late close() must not delete that newer instance's live file.
+      try {
+        const current = readBridgeFile(bridgePath);
+        if (current && current.pid === process.pid && current.port === running.port) {
+          unlinkSync(bridgePath);
+        }
+      } catch {
+        // best-effort teardown: never let an unlink error mask close().
+      }
+      // Mark closed only AFTER the teardown attempt so a transient
+      // running.close() failure doesn't permanently wedge a retry.
+      closed = true;
     }
   };
 
   if (installSignalHandlers) {
     onSignal = (): void => {
-      void close().then(() => process.exit(0));
+      // Even if close() rejects, still exit (non-zero) rather than leaving an
+      // unhandled rejection to crash the process obscurely.
+      void close().then(
+        () => process.exit(0),
+        () => process.exit(1),
+      );
     };
     process.on("SIGINT", onSignal);
     process.on("SIGTERM", onSignal);
