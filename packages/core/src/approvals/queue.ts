@@ -1,10 +1,12 @@
 import { BrokerError } from "../errors.js";
 import type { Broker } from "../broker/broker.js";
 import type { ApprovalRow, Journal } from "../journal/journal.js";
+import type { MemoryStore } from "../memory/store.js";
 import type { ProposedOperation } from "../schemas/operation.js";
 
 export interface ApprovalsOptions {
   broker: Broker;
+  store: MemoryStore;
   journal: Journal;
   now: () => string;
 }
@@ -31,18 +33,23 @@ export type ApproveResult = { applied: true } | { stale: true };
  *     which runs the real hash-check + patch + commit path.
  *   - `promote`: a canonical promotion is not a path-based broker op at all
  *     (`Broker.apply` rejects `promote` with NOT_FOUND by design — see
- *     broker.ts). It is applied directly against the journal
- *     (`setMemoryStatus(id, "canonical")`).
+ *     broker.ts). It is applied via `MemoryStore.setStatus`, which writes the
+ *     new status into the note's FILE frontmatter (design §6.0, durable
+ *     status) AND mirrors it onto the journal row — NOT a bare
+ *     `journal.setMemoryStatus`, which would leave the file stale and lose the
+ *     promotion on the next reindex.
  *   - anything else: INVALID_TRANSITION (an unrecognized held op is a
  *     journal-integrity problem, not a normal rejection path).
  */
 export class Approvals {
   private readonly broker: Broker;
+  private readonly store: MemoryStore;
   private readonly journal: Journal;
   private readonly now: () => string;
 
   constructor(opts: ApprovalsOptions) {
     this.broker = opts.broker;
+    this.store = opts.store;
     this.journal = opts.journal;
     this.now = opts.now;
   }
@@ -91,8 +98,14 @@ export class Approvals {
         return this.dispatchApply(id, reviseOp);
       }
       case "promote": {
+        // Durable status (design §6.0): flip the FILE frontmatter (and the
+        // journal row) to canonical via the store, not a bare
+        // journal.setMemoryStatus — otherwise the promotion is lost on the
+        // next reindex.
         const memoryId = op.id as string;
-        this.journal.setMemoryStatus(memoryId, "canonical");
+        const reason = typeof op.reason === "string" ? op.reason : "approved canonical promotion";
+        const session = typeof op.session === "string" ? op.session : "approval";
+        await this.store.setStatus(memoryId, "canonical", reason, session);
         this.journal.setApprovalState(id, "approved", this.now());
         return { applied: true };
       }
@@ -125,8 +138,18 @@ export class Approvals {
         this.journal.setApprovalState(id, "stale", this.now());
         return { stale: true };
       }
+      // Any OTHER BrokerError (FORBIDDEN_ZONE, PATCH_TOO_LARGE, SYNTAX_BREAK,
+      // NOT_FOUND, ...) propagates and INTENTIONALLY leaves the approval row
+      // pending: the write did not happen, and a human can inspect and
+      // reject() it. Only STALE_HASH auto-resolves the row (to "stale").
       throw e;
     }
+    // v0.1 KNOWN LIMITATION: there is a crash gap between the broker's write
+    // (file + commit + transaction row all landing) and this setApprovalState.
+    // If the process dies here, the edit is applied but the approval row stays
+    // "pending" forever — reconcile() repairs missing transaction rows but has
+    // no approval-vs-applied reconciliation yet. Acceptable for v0.1; a future
+    // version should cross-check pending approvals against applied transactions.
     this.journal.setApprovalState(id, "approved", this.now());
     return { applied: true };
   }

@@ -1,5 +1,7 @@
-import { join } from "node:path";
+import { basename, join } from "node:path";
+import { readFileSync } from "node:fs";
 import matter from "gray-matter";
+import { createPatch } from "diff";
 import type { z } from "zod";
 import { Broker } from "../broker/broker.js";
 import { hashFile } from "../broker/hash.js";
@@ -195,7 +197,11 @@ export class MemoryStore {
     }
 
     if (mem.status === "scratch" && input.target_status === "working") {
-      this.journal.updateMemory(input.id, { status: "working" });
+      // Durable status (design §6.0): the note's `ledger:` frontmatter is the
+      // source of truth for status, so the transition must be written into the
+      // FILE (one audited revise commit) — not just the journal — or a reindex
+      // after a journal loss would silently revert the promotion.
+      await this.setStatus(input.id, "working", input.reason, input.session);
       return { promoted: true };
     }
 
@@ -241,6 +247,13 @@ export class MemoryStore {
       throw new BrokerError("NOT_FOUND", `no memory with id ${input.id}`);
     }
 
+    // Durable status (design §6.0): flip the note's `ledger.status` to
+    // "forgotten" in the FILE before archiving, so the archived note is
+    // self-describing and a reindex recovers status "forgotten" from the file
+    // rather than whatever status it last carried on disk. This is a separate
+    // audited revise commit ahead of the archive move.
+    await this.flipFrontmatterStatus(mem, "forgotten", input.reason, input.session);
+
     const archivePath = `${ARCHIVE_DIR}/${input.id}.md`;
     const result = await this.broker.archive(mem.path, archivePath, input.session, input.reason);
 
@@ -248,6 +261,75 @@ export class MemoryStore {
     // Link the forget (archive) transaction to this memory for undo/audit.
     if (result.txnId !== undefined) {
       this.journal.setTransactionMemoryId(result.txnId, input.id);
+    }
+  }
+
+  /**
+   * Durable status transition (design §6.0): write `ledger.status = newStatus`
+   * into the note's FILE frontmatter through the broker (a real revise commit),
+   * then mirror the change onto the journal row. The file — not the journal —
+   * is the source of truth for status, so `reindex` can rebuild the correct
+   * status after a journal loss. `approved: true` is passed to the broker so a
+   * (hypothetical) trusted-zone note wouldn't hit the approval gate; agent-zone
+   * memory notes never hit it anyway, so this is harmless there.
+   */
+  async setStatus(
+    id: string,
+    newStatus: MemoryStatusValue,
+    reason: string,
+    session: string,
+  ): Promise<void> {
+    const mem = this.journal.getMemory(id);
+    if (!mem) {
+      throw new BrokerError("NOT_FOUND", `no memory with id ${id}`);
+    }
+    await this.flipFrontmatterStatus(mem, newStatus, reason, session);
+    this.journal.setMemoryStatus(id, newStatus);
+  }
+
+  /**
+   * Rewrite only the `ledger.status` field of a note's frontmatter and route
+   * the resulting minimal unified diff through the broker as an (approved)
+   * revise. Reads the current on-disk bytes so the patch's expected_hash and
+   * context match exactly. Does not touch the journal — callers decide what
+   * journal bookkeeping to pair with the file change (setStatus mirrors the
+   * status; forget updates status + path together).
+   */
+  private async flipFrontmatterStatus(
+    mem: MemoryRow,
+    newStatus: MemoryStatusValue,
+    reason: string,
+    session: string,
+  ): Promise<void> {
+    const abs = join(this.vaultRoot, mem.path);
+    const before = readFileSync(abs, "utf8");
+    const parsed = matter(before);
+    const currentLedger =
+      typeof parsed.data.ledger === "object" && parsed.data.ledger !== null
+        ? (parsed.data.ledger as Record<string, unknown>)
+        : {};
+    const after = matter.stringify(parsed.content, {
+      ...parsed.data,
+      ledger: { ...currentLedger, status: newStatus },
+    });
+    // Idempotent: nothing to commit if the status is already what we want.
+    if (after === before) return;
+
+    const patch = createPatch(basename(mem.path), before, after);
+    const result = await this.broker.apply(
+      {
+        op: "revise",
+        path: mem.path,
+        expected_hash: hashFile(abs),
+        patch,
+        entity: mem.entity ?? undefined,
+        reason,
+        session,
+      },
+      { approved: true },
+    );
+    if (!("queued" in result) && result.txnId !== undefined) {
+      this.journal.setTransactionMemoryId(result.txnId, mem.id);
     }
   }
 }

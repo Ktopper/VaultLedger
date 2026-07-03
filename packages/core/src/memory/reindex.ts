@@ -25,13 +25,30 @@ export interface ReindexResult {
   memories: number;
   /** NEW transaction rows inserted this run (commits already in the journal are skipped). */
   transactions: number;
+  /** Vault-relative paths of notes that could NOT be parsed (bad YAML or a
+   * `ledger:` block that fails provenance validation). A single corrupt note
+   * must not abort disaster recovery — it is skipped and recorded here. */
+  skipped: string[];
+  /** Vault-relative paths of notes carrying a `ledger.id` already claimed by an
+   * earlier-walked note. The FIRST occurrence wins; later duplicates are not
+   * upserted (they'd silently clobber the winner) and are recorded here. */
+  conflicts: string[];
+}
+
+interface ParsedMemoryNote {
+  id: string;
+  entity: string | null;
+  tags: string[];
+  patch: Partial<Omit<MemoryRow, "id">>;
 }
 
 function globToDir(glob: string): string {
   return glob.replace(/\/\*\*?$/, "");
 }
 
-/** Recursively collect absolute paths of every .md file under `absDir` (which may not exist). */
+/** Recursively collect absolute paths of every .md file under `absDir` (which
+ * may not exist), sorted lexicographically so the walk order — and therefore
+ * which file "wins" a duplicate-id conflict — is deterministic. */
 function walkMarkdownFiles(absDir: string): string[] {
   if (!existsSync(absDir)) return [];
   const out: string[] = [];
@@ -47,21 +64,22 @@ function walkMarkdownFiles(absDir: string): string[] {
       }
     }
   }
-  return out;
+  return out.sort();
 }
 
 /**
- * Upsert one memory row (+ tags) from a note's `ledger:` frontmatter block.
- * Returns true if the file had a valid ledger block (and was therefore
- * counted), false if it was skipped (no `ledger.id`, e.g. a non-memory note
- * that happens to live under the walked directories).
+ * Parse a note's `ledger:` provenance into a memory-row patch. Returns null if
+ * the file has no `ledger.id` (a non-memory note that merely lives under the
+ * walked dirs — not an error). THROWS if the frontmatter is unparseable or the
+ * `ledger:` block fails provenance validation — the caller catches that and
+ * records the file in `skipped`.
  */
-function upsertFromFile(journal: Journal, vaultRoot: string, absPath: string): boolean {
+function parseMemoryNote(vaultRoot: string, absPath: string): ParsedMemoryNote | null {
   const raw = readFileSync(absPath, "utf8");
   const parsed = matter(raw);
   const ledgerData = (parsed.data as Record<string, unknown>).ledger;
   if (!ledgerData || typeof ledgerData !== "object" || !("id" in ledgerData)) {
-    return false;
+    return null;
   }
 
   const provenance = MemoryProvenance.parse(ledgerData);
@@ -71,33 +89,39 @@ function upsertFromFile(journal: Journal, vaultRoot: string, absPath: string): b
   const rawTags = (parsed.data as Record<string, unknown>).tags;
   const tags = Array.isArray(rawTags) ? rawTags.map((t) => String(t)) : [];
 
-  const patch: Partial<Omit<MemoryRow, "id">> = {
-    path: relPath,
+  return {
+    id: provenance.id,
     entity,
-    status: provenance.status,
-    confidence: provenance.confidence,
-    created: provenance.created,
-    source: provenance.source,
-    supersedes: provenance.supersedes,
-    expires: provenance.expires,
+    tags,
+    patch: {
+      path: relPath,
+      entity,
+      status: provenance.status,
+      confidence: provenance.confidence,
+      created: provenance.created,
+      source: provenance.source,
+      supersedes: provenance.supersedes,
+      expires: provenance.expires,
+    },
   };
+}
 
-  const existing = journal.getMemory(provenance.id);
+/** Upsert a parsed memory row (+ tags) into the journal. */
+function upsertMemory(journal: Journal, note: ParsedMemoryNote): void {
+  const existing = journal.getMemory(note.id);
   if (existing) {
-    journal.updateMemory(provenance.id, patch);
+    journal.updateMemory(note.id, note.patch);
   } else {
-    const row: MemoryRow = { id: provenance.id, ...patch, last_referenced: null } as MemoryRow;
+    const row: MemoryRow = { id: note.id, ...note.patch, last_referenced: null } as MemoryRow;
     journal.insertMemory(row);
   }
 
   // Idempotency guard: only (re-)add tags the first time this memory has
   // none recorded yet, so re-running reindex against the same files never
   // duplicates memory_tags rows (Journal has no removeTags primitive).
-  if (tags.length > 0 && journal.getTags(provenance.id).length === 0) {
-    journal.addTags(provenance.id, tags);
+  if (note.tags.length > 0 && journal.getTags(note.id).length === 0) {
+    journal.addTags(note.id, note.tags);
   }
-
-  return true;
 }
 
 /**
@@ -116,11 +140,32 @@ export async function reindex(opts: ReindexOptions): Promise<ReindexResult> {
     : DEFAULT_AGENT_DIRS;
 
   let memories = 0;
+  const skipped: string[] = [];
+  const conflicts: string[] = [];
+  const seenIds = new Set<string>();
   for (const dir of dirs) {
     for (const absPath of walkMarkdownFiles(join(vaultRoot, dir))) {
-      if (upsertFromFile(journal, vaultRoot, absPath)) {
-        memories += 1;
+      const relPath = relative(vaultRoot, absPath).split(sep).join("/");
+      let note: ParsedMemoryNote | null;
+      try {
+        note = parseMemoryNote(vaultRoot, absPath);
+      } catch {
+        // Bad YAML or a ledger block that fails provenance validation: skip
+        // this one note and keep going — one corrupt file must not abort the
+        // whole rebuild.
+        skipped.push(relPath);
+        continue;
       }
+      if (!note) continue; // not a memory note (no ledger.id) — silently ignore
+      if (seenIds.has(note.id)) {
+        // A later note re-using an already-seen id: keep the first, record the
+        // collision rather than letting the last writer silently win.
+        conflicts.push(relPath);
+        continue;
+      }
+      seenIds.add(note.id);
+      upsertMemory(journal, note);
+      memories += 1;
     }
   }
 
@@ -154,7 +199,7 @@ export async function reindex(opts: ReindexOptions): Promise<ReindexResult> {
     transactions += 1;
   }
 
-  return { memories, transactions };
+  return { memories, transactions, skipped, conflicts };
 }
 
 export interface EnsureJournalOptions {
@@ -176,6 +221,10 @@ export interface EnsureJournalOptions {
  */
 export async function ensureJournal(opts: EnsureJournalOptions): Promise<boolean> {
   const { journal } = opts;
+  // v0.1: this is a check-then-act with no lock. Two processes starting against
+  // the same brand-new journal could both see it empty and both run reindex.
+  // reindex's upserts are idempotent (same ids, hasCommit-guarded transactions)
+  // so a double run is harmless beyond wasted work — acceptable for v0.1.
   const hasMemories = journal.queryMemories({ limit: 1 }).length > 0;
   const hasTransactions = journal.listTransactions({ limit: 1 }).length > 0;
   if (hasMemories || hasTransactions) return false;

@@ -7,9 +7,11 @@ import { Broker } from "../../src/broker/broker.js";
 import { LedgerGit } from "../../src/broker/git.js";
 import { Journal } from "../../src/journal/journal.js";
 import { openJournal } from "../../src/journal/db.js";
+import matter from "gray-matter";
 import { hashFile } from "../../src/broker/hash.js";
 import { BrokerError } from "../../src/errors.js";
 import { Approvals } from "../../src/approvals/queue.js";
+import { MemoryStore } from "../../src/memory/store.js";
 import type { PermissionsManifest } from "../../src/schemas/manifest.js";
 
 const MANIFEST: PermissionsManifest = {
@@ -52,6 +54,7 @@ describe("Approvals", () => {
   async function makeHarness(): Promise<{
     approvals: Approvals;
     broker: Broker;
+    store: MemoryStore;
     journal: Journal;
     git: LedgerGit;
     vaultRoot: string;
@@ -66,8 +69,9 @@ describe("Approvals", () => {
     const journal = new Journal(db);
     const { now, genId } = makeClock();
     const broker = new Broker({ vaultRoot, git, journal, manifest: MANIFEST, now, genId });
-    const approvals = new Approvals({ broker, journal, now });
-    return { approvals, broker, journal, git, vaultRoot, now, genId };
+    const store = new MemoryStore({ broker, journal, now, genId, vaultRoot });
+    const approvals = new Approvals({ broker, store, journal, now });
+    return { approvals, broker, store, journal, git, vaultRoot, now, genId };
   }
 
   /** Write a trusted note directly to disk and commit it, so it exists at HEAD. */
@@ -164,22 +168,18 @@ describe("Approvals", () => {
     expect(journal.getApproval(queued.approvalId)!.state).toBe("rejected");
   });
 
-  test("approve() dispatches a held promote op directly against the journal (never through broker.apply)", async () => {
-    const { approvals, journal, now, genId } = await makeHarness();
+  test("approve() dispatches a held promote op to store.setStatus, flipping BOTH the file and the journal to canonical", async () => {
+    const { approvals, store, journal, vaultRoot, genId } = await makeHarness();
 
-    const memId = "mem_seed";
-    journal.insertMemory({
-      id: memId,
-      path: "Agent/Memory/mem_seed.md",
-      entity: null,
-      status: "working",
-      confidence: "medium",
-      created: now(),
-      source: "s1",
-      supersedes: null,
-      expires: null,
-      last_referenced: null,
+    // Seed a real working memory (a file on disk with ledger frontmatter), so
+    // the canonical promotion has a file to flip — this proves the held
+    // promote is applied via store.setStatus, not broker.apply.
+    const { id: memId, path } = await store.remember({
+      content: "well established fact",
+      reason: "seed",
+      session: "s1",
     });
+    await store.promote({ id: memId, target_status: "working", reason: "confirmed", session: "s1" });
 
     const approvalId = approvals.enqueue(
       { op: "promote", id: memId, target_status: "canonical", reason: "well established", session: "s1" },
@@ -192,6 +192,8 @@ describe("Approvals", () => {
     const result = await approvals.approve(approvalId);
     expect(result).toEqual({ applied: true });
     expect(journal.getMemory(memId)!.status).toBe("canonical");
+    // Durable: the file frontmatter must also read canonical.
+    expect(matter(readFileSync(join(vaultRoot, path), "utf8")).data.ledger.status).toBe("canonical");
     expect(journal.getApproval(approvalId)!.state).toBe("approved");
   });
 

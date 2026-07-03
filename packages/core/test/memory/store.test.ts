@@ -170,6 +170,35 @@ describe("MemoryStore", () => {
     expect(journal.getMemory(id)!.status).toBe("working");
   });
 
+  test("promote scratch -> working writes status 'working' into the file frontmatter (durable)", async () => {
+    const { store, vaultRoot } = await makeStore();
+    const { id, path } = await store.remember({ content: "durable fact", reason: "seed", session: "s1" });
+
+    // Before promotion the file's ledger status is 'scratch'.
+    expect(matter(readFileSync(join(vaultRoot, path), "utf8")).data.ledger.status).toBe("scratch");
+
+    await store.promote({ id, target_status: "working", reason: "confirmed", session: "s1" });
+
+    const onDisk = matter(readFileSync(join(vaultRoot, path), "utf8"));
+    expect(onDisk.data.ledger.status).toBe("working");
+    // The note body must be preserved through the frontmatter-only status edit.
+    expect(onDisk.content.trim()).toBe("durable fact");
+  });
+
+  test("setStatus flips the file frontmatter, updates the journal row, and links the txn", async () => {
+    const { store, journal, vaultRoot } = await makeStore();
+    const { id, path } = await store.remember({ content: "note body", reason: "seed", session: "s1" });
+
+    await store.setStatus(id, "working", "manual set", "s1");
+
+    expect(matter(readFileSync(join(vaultRoot, path), "utf8")).data.ledger.status).toBe("working");
+    expect(journal.getMemory(id)!.status).toBe("working");
+    const reviseTxn = journal
+      .listTransactions({})
+      .find((t) => t.op === "revise" && t.memory_id === id);
+    expect(reviseTxn).toBeDefined();
+  });
+
   test("promote working -> canonical enqueues an approval and returns promoted:false", async () => {
     const { store, journal } = await makeStore();
     const { id } = await store.remember({ content: "x", reason: "seed", session: "s1" });
@@ -225,6 +254,17 @@ describe("MemoryStore", () => {
       .listTransactions({})
       .find((t) => t.op === "forget" && t.memory_id === id);
     expect(forgetTxn).toBeDefined();
+  });
+
+  test("forget flips the archived note's frontmatter status to 'forgotten' (durable)", async () => {
+    const { store, vaultRoot } = await makeStore();
+    const { id } = await store.remember({ content: "soon gone", reason: "seed", session: "s1" });
+
+    await store.forget({ id, reason: "no longer relevant", session: "s1" });
+
+    const archivePath = `Agent/Archive/${id}.md`;
+    const archived = matter(readFileSync(join(vaultRoot, archivePath), "utf8"));
+    expect(archived.data.ledger.status).toBe("forgotten");
   });
 
   test("revise links its transaction to the memory id", async () => {

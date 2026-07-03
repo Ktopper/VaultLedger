@@ -1,5 +1,5 @@
 import { describe, expect, test, afterEach } from "vitest";
-import { mkdtempSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Broker } from "../../src/broker/broker.js";
@@ -166,5 +166,42 @@ describe("ttl sweep", () => {
 
     const second = await sweep({ store, journal, now: fixedNow, ttlDays: 14, stalenessDays: 30 });
     expect(second.archived).toEqual([]);
+  });
+
+  test("sweep continues past a failed forget, records it in `failed`, and still computes staleness", async () => {
+    const { store, journal, vaultRoot } = await makeHarness();
+
+    // Two expired scratch memories; delete one's file on disk so its forget throws.
+    const broken = await store.remember({ content: "broken scratch", reason: "seed", session: "s1" });
+    journal.updateMemory(broken.id, { created: daysAgo(20) });
+    unlinkSync(join(vaultRoot, broken.path));
+
+    const good = await store.remember({ content: "good scratch", reason: "seed", session: "s1" });
+    journal.updateMemory(good.id, { created: daysAgo(20) });
+
+    // Plus a stale working memory so we can confirm the staleness pass still runs.
+    const stale = await store.remember({ content: "stale working", reason: "seed", session: "s1" });
+    await store.promote({ id: stale.id, target_status: "working", reason: "r", session: "s1" });
+    journal.updateMemory(stale.id, { last_referenced: daysAgo(40) });
+
+    const result = await sweep({ store, journal, now: fixedNow, ttlDays: 14, stalenessDays: 30 });
+
+    expect(result.archived).toEqual([good.id]);
+    expect(result.failed.map((f) => f.id)).toEqual([broken.id]);
+    expect(result.staleFlagged).toContain(stale.id);
+  });
+
+  test("sweep surfaces a NaN-dated scratch memory in `malformed` instead of silently skipping it", async () => {
+    const { store, journal } = await makeHarness();
+
+    const bad = await store.remember({ content: "bad date", reason: "seed", session: "s1" });
+    journal.updateMemory(bad.id, { created: "not-a-date" });
+
+    const result = await sweep({ store, journal, now: fixedNow, ttlDays: 14, stalenessDays: 30 });
+
+    expect(result.malformed).toContain(bad.id);
+    // Not archived (we don't mutate a memory we can't date).
+    expect(result.archived).not.toContain(bad.id);
+    expect(journal.getMemory(bad.id)!.status).toBe("scratch");
   });
 });

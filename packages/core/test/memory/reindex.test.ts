@@ -8,6 +8,22 @@ import { Journal } from "../../src/journal/journal.js";
 import { openJournal } from "../../src/journal/db.js";
 import { recall } from "../../src/recall/recall.js";
 import { reindex, ensureJournal } from "../../src/memory/reindex.js";
+import { Broker } from "../../src/broker/broker.js";
+import { MemoryStore } from "../../src/memory/store.js";
+import { Approvals } from "../../src/approvals/queue.js";
+import type { PermissionsManifest } from "../../src/schemas/manifest.js";
+
+const MANIFEST: PermissionsManifest = {
+  version: 1,
+  mode: "assisted",
+  zones: {
+    agent: ["Agent/**"],
+    scratch: ["Agent/Scratch/**"],
+    excluded: ["Private/**"],
+    trusted: ["**"],
+  },
+  overrides: [],
+};
 
 function makeClock(): { now: () => string; genId: (prefix: string) => string } {
   let tick = 0;
@@ -191,5 +207,89 @@ describe("reindex", () => {
 
     const second = await ensureJournal({ vaultRoot, git, journal, now, genId });
     expect(second).toBe(false);
+  });
+
+  test("a canonical promotion survives a reindex into a fresh empty journal (status is durable in the file)", async () => {
+    const { journal, git, vaultRoot, now, genId } = await makeHarness();
+    const broker = new Broker({ vaultRoot, git, journal, manifest: MANIFEST, now, genId });
+    const store = new MemoryStore({ broker, journal, now, genId, vaultRoot });
+    const approvals = new Approvals({ broker, store, journal, now });
+
+    const { id } = await store.remember({ content: "canonical truth", reason: "seed", session: "s1" });
+    await store.promote({ id, target_status: "working", reason: "confirmed", session: "s1" });
+    const promotion = await store.promote({ id, target_status: "canonical", reason: "well established", session: "s1" });
+    await approvals.approve(promotion.approvalId!);
+    expect(journal.getMemory(id)!.status).toBe("canonical");
+
+    // Simulate total journal loss: rebuild a fresh empty journal from disk + git.
+    const freshJournal = new Journal(openJournal(":memory:"));
+    expect(freshJournal.getMemory(id)).toBeNull();
+
+    const result = await reindex({ vaultRoot, git, journal: freshJournal, now, genId });
+    expect(result.memories).toBe(1);
+    // The canonical status was recovered purely from the file frontmatter.
+    expect(freshJournal.getMemory(id)!.status).toBe("canonical");
+  });
+
+  test("reindex skips a corrupted note and records it in `skipped`, without throwing", async () => {
+    const { journal, git, vaultRoot, now, genId } = await makeHarness();
+
+    // One valid memory note...
+    await seedMemoryNote(git, vaultRoot, {
+      id: "mem_good",
+      status: "working",
+      entity: "eve",
+      tags: [],
+      created: now(),
+      body: "A good note.",
+    });
+
+    // ...and one file with broken YAML frontmatter that gray-matter cannot parse.
+    mkdirSync(join(vaultRoot, "Agent/Memory"), { recursive: true });
+    const badRel = "Agent/Memory/broken.md";
+    writeFileSync(
+      join(vaultRoot, badRel),
+      "---\nledger:\n  id: mem_bad\n  status: working\n  created: [unclosed\n---\n\nbody\n",
+      "utf8",
+    );
+    await git.commitFile(badRel, formatMessage({ op: "create", basename: "broken.md", session: "s1" }));
+
+    const result = await reindex({ vaultRoot, git, journal, now, genId });
+    expect(result.memories).toBe(1);
+    expect(result.skipped).toContain(badRel);
+    expect(journal.getMemory("mem_good")).not.toBeNull();
+  });
+
+  test("reindex records a duplicate ledger.id in `conflicts` and keeps the first occurrence", async () => {
+    const { journal, git, vaultRoot, now, genId } = await makeHarness();
+
+    mkdirSync(join(vaultRoot, "Agent/Memory"), { recursive: true });
+    const noteFor = (entity: string) =>
+      matter.stringify(`body of ${entity}`, {
+        entity,
+        ledger: {
+          id: "mem_dup",
+          status: "working",
+          created: now(),
+          source: "s1",
+          reason: "seed",
+          confidence: "medium",
+          supersedes: null,
+          expires: null,
+        },
+      });
+
+    // "aaa.md" sorts before "zzz.md"; the walk visits aaa first, so it wins.
+    writeFileSync(join(vaultRoot, "Agent/Memory/aaa.md"), noteFor("alice"), "utf8");
+    writeFileSync(join(vaultRoot, "Agent/Memory/zzz.md"), noteFor("zoe"), "utf8");
+    await git.commitFile("Agent/Memory/aaa.md", formatMessage({ op: "create", basename: "aaa.md", session: "s1" }));
+    await git.commitFile("Agent/Memory/zzz.md", formatMessage({ op: "create", basename: "zzz.md", session: "s1" }));
+
+    const result = await reindex({ vaultRoot, git, journal, now, genId });
+    expect(result.memories).toBe(1);
+    expect(result.conflicts.length).toBe(1);
+    // Exactly one row for mem_dup, and it kept the first-walked file's entity.
+    expect(journal.queryMemories({}).filter((m) => m.id === "mem_dup")).toHaveLength(1);
+    expect(journal.getMemory("mem_dup")!.entity).toBe("alice");
   });
 });
