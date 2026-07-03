@@ -583,9 +583,9 @@ export class BrokerError extends Error {
 
 **Files:** Create `packages/core/src/broker/patch.ts`; Test alongside.
 
-Use the `diff` package: `applyPatch(original, patchText)` returns `string | false`. Size guard: count changed lines in the diff; if `changed / max(originalLines,1) > threshold` (default 0.5) → PATCH_TOO_LARGE.
+Use the `diff` package: `applyPatch(original, patchText)` returns `string | false` (and THROWS a raw Error on multi-file input — must be handled). Guards: (1) reject `parsedPatch.length !== 1` (multi-file) with SYNTAX_BREAK; (2) size guard — trigger PATCH_TOO_LARGE if EITHER the changed-line ratio OR the changed-byte ratio exceeds `threshold` (default 0.5), so a single very long line can't rewrite the file under the radar; normalize the line denominator so a trailing `\n` isn't miscounted; (3) wrap `diffApply` in try/catch → SYNTAX_BREAK.
 
-- [ ] **Step 1: Failing tests** — clean hunk applies; malformed patch → SYNTAX_BREAK (or false → reject); >50% lines changed → PATCH_TOO_LARGE.
+- [ ] **Step 1: Failing tests** — clean hunk applies; malformed patch → SYNTAX_BREAK; multi-file patch → SYNTAX_BREAK; >50% lines changed → PATCH_TOO_LARGE; single 5000-char line replaced in an otherwise-short file → PATCH_TOO_LARGE (byte guard); context mismatch (diffApply false) → SYNTAX_BREAK.
 - [ ] **Step 2: FAIL**
 - [ ] **Step 3: Implement**
 
@@ -617,9 +617,9 @@ export function applyPatch(original: string, patchText: string, threshold = 0.5)
 
 Assert structural tokens **outside changed hunks** are byte-identical (§5). v0.1 heuristic: extract the set of wikilinks `[[...]]`, block refs `^id`, callout headers `> [!type]`, and the frontmatter block from `before` and `after`; any structural token that existed before and is not in a changed hunk must still exist after. Simpler robust check for v0.1: the frontmatter block (delimited by `---`) must remain valid YAML and parse via gray-matter; and the count of wikilinks/blockrefs must not decrease outside the patched line ranges.
 
-- [ ] **Step 1: Failing tests** — a patch that corrupts frontmatter → SYNTAX_BREAK; a patch that deletes a wikilink outside its hunk → SYNTAX_BREAK; a clean content edit passes.
+- [ ] **Step 1: Failing tests** — a patch that corrupts frontmatter → SYNTAX_BREAK; an `after` that drops a wikilink present in `before` → SYNTAX_BREAK; an `after` that drops a callout header → SYNTAX_BREAK; a clean content edit passes.
 - [ ] **Step 2: FAIL**
-- [ ] **Step 3: Implement** `assertStructurePreserved(before, after, patchText)`. Keep it deterministic; document the heuristic in comments. Throw BrokerError SYNTAX_BREAK on violation.
+- [ ] **Step 3: Implement** `assertStructurePreserved(before, after)` (v0.1 signature — `patchText` is not needed for the count-based heuristic; a future byte-identical-outside-hunks checker will require the hunk ranges and may change this signature — document that honestly). Checks: frontmatter closed-block integrity (via gray-matter parse), and non-decrease of wikilink, block-ref, AND callout-header counts. Keep it deterministic; document the heuristic in comments. Throw BrokerError SYNTAX_BREAK on violation.
 - [ ] **Step 4: PASS** — [ ] **Step 5: Commit** `feat(core): markdown structure preservation lint`
 
 ### Task 2.5: Git wrapper with ledger identity
