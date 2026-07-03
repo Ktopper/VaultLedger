@@ -1,14 +1,22 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import {
-  readConfig,
-  vaultLockDir,
-  type ApprovalRow,
-  type ListTransactionsFilters,
-  type MemoryRow,
-  type QueryMemoriesFilters,
-  type RecallResult,
-  type TransactionRow,
+// Value imports come from the narrow "@vaultledger/core/config" subpath
+// (fs/path only — no better-sqlite3/simple-git) rather than the package's
+// main barrel: the barrel's "export *" chain pulls in journal/db.ts, which
+// imports better-sqlite3's native addon. Bundled into main.js (this plugin's
+// esbuild target), an unconditional top-level require of a native .node
+// binary that isn't shipped alongside main.js would crash the plugin the
+// instant Obsidian loads it. The type-only imports below are erased
+// entirely at compile time (no runtime import at all), so they're safe to
+// pull from the full barrel for its richer public type surface.
+import { readConfig, vaultLockDir } from "@vaultledger/core/config";
+import type {
+  ApprovalRow,
+  ListTransactionsFilters,
+  MemoryRow,
+  QueryMemoriesFilters,
+  RecallResult,
+  TransactionRow,
 } from "@vaultledger/core";
 
 /**
