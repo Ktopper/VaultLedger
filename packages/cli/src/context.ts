@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
+import { dirname } from "node:path";
 import type Database from "better-sqlite3";
 import * as YAML from "yaml";
 import {
@@ -79,6 +80,10 @@ export async function loadContext(
   const genId = deps?.genId ?? defaultGenId;
 
   const dbPath = journalPath(config.vaultId, deps?.env);
+  // journalPath lives under the OS app-support dir (or a temp HOME injected
+  // by tests via deps.env), which may not exist yet for a brand-new vaultId
+  // — openJournal itself does not create parent directories.
+  mkdirSync(dirname(dbPath), { recursive: true });
   const db = openJournal(dbPath);
   const journal = new Journal(db);
 
