@@ -37,4 +37,17 @@ describe("resolveZone", () => {
     const empty = PermissionsManifest.parse({});
     expect(resolveZone("anything/here.md", empty)).toBe("trusted");
   });
+
+  test("a shallow override always beats a deeply-nested base-zone match", () => {
+    // Invariant: overrides ALWAYS beat base zones regardless of specificity.
+    // The override glob has specificity 1; the agent base glob has specificity 6
+    // and matches the same path. The override must still win.
+    const m = PermissionsManifest.parse({
+      zones: {
+        agent: ["Agent/a/b/c/d/pinned.md"],
+      },
+      overrides: [{ glob: "**/pinned.md", zone: "trusted" }],
+    });
+    expect(resolveZone("Agent/a/b/c/d/pinned.md", m)).toBe("trusted");
+  });
 });

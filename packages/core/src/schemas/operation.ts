@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { MemoryStatus } from "./provenance.js";
 
-const base = {
+const commonOpFields = {
   reason: z.string().min(1),
   session: z.string().min(1),
 };
@@ -13,7 +13,7 @@ export const CreateOp = z
     content: z.string(),
     entity: z.string().optional(),
     tags: z.array(z.string()).optional(),
-    ...base,
+    ...commonOpFields,
   })
   .strict();
 
@@ -24,7 +24,7 @@ export const ReviseOp = z
     expected_hash: z.string().min(1),
     patch: z.string().min(1),
     entity: z.string().optional(),
-    ...base,
+    ...commonOpFields,
   })
   .strict();
 
@@ -35,7 +35,7 @@ export const PromoteOp = z
     op: z.literal("promote"),
     id: z.string().min(1),
     target_status: MemoryStatus,
-    ...base,
+    ...commonOpFields,
   })
   .strict();
 
@@ -43,7 +43,7 @@ export const ForgetOp = z
   .object({
     op: z.literal("forget"),
     id: z.string().min(1),
-    ...base,
+    ...commonOpFields,
   })
   .strict();
 

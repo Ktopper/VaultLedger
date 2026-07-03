@@ -56,6 +56,36 @@ describe("ProposedOperation", () => {
     }
   });
 
+  test("propose_edit op parses when expected_hash and patch present", () => {
+    const input = {
+      op: "propose_edit",
+      path: "Notes/foo.md",
+      expected_hash: "abc123",
+      patch: "--- a\n+++ b\n",
+      reason: "suggest edit",
+      session: "sess-1",
+    };
+    const parsed = ProposedOperation.parse(input);
+    expect(parsed.op).toBe("propose_edit");
+    if (parsed.op === "propose_edit") {
+      expect(parsed.expected_hash).toBe("abc123");
+      expect(parsed.patch).toBe("--- a\n+++ b\n");
+    }
+  });
+
+  test("propose_edit op rejects an unknown extra key (strict survives extend)", () => {
+    const input = {
+      op: "propose_edit",
+      path: "Notes/foo.md",
+      expected_hash: "abc123",
+      patch: "--- a\n+++ b\n",
+      bogus: "nope",
+      reason: "suggest edit",
+      session: "sess-1",
+    };
+    expect(() => ProposedOperation.parse(input)).toThrow();
+  });
+
   test("promote op parses with target_status", () => {
     const input = {
       op: "promote",
