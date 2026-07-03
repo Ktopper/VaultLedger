@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { resolve } from "node:path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema, type CallToolResult } from "@modelcontextprotocol/sdk/types.js";
@@ -85,25 +86,57 @@ export function createServer(ctx: ServerContext): CreatedServer {
   return { server, tools, callTool };
 }
 
-function parseVaultArg(argv: string[]): string {
+/**
+ * Extract and normalize the required `--vault <path>` argument. Resolves the
+ * path to absolute (`path.resolve`) so a relative `--vault` never depends on
+ * the unpredictable cwd of whatever host process launched the server. Throws
+ * a clear, prefixed diagnostic (surfaced to stderr + a non-zero exit by
+ * `main`) when the flag is missing. Exported for unit testing. */
+export function parseVaultArg(argv: string[]): string {
   const idx = argv.indexOf("--vault");
   const value = idx === -1 ? undefined : argv[idx + 1];
   if (!value) {
-    throw new Error("usage: vaultledger-mcp --vault <path>");
+    throw new Error("vaultledger-mcp: --vault <path> is required");
   }
-  return value;
+  return resolve(value);
 }
 
 async function main(): Promise<void> {
   const vaultRoot = parseVaultArg(process.argv.slice(2));
   const ctx = await loadServerContext(vaultRoot);
-  const { server } = createServer(ctx);
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+
+  let server: Server;
+  try {
+    ({ server } = createServer(ctx));
+    const transport = new StdioServerTransport();
+    await server.connect(transport);
+  } catch (e) {
+    // If wiring/connecting the transport fails after the context loaded, the
+    // caller (main's catch) never gets a running server to shut down — honor
+    // the "caller owns db.close()" contract by closing here before rethrowing.
+    ctx.db.close();
+    throw e;
+  }
+
+  // The server is long-running, so there is no `finally` to close the db on —
+  // instead, close both the transport and the journal handle on a termination
+  // signal. idempotent-ish: the process exits immediately after.
+  let shuttingDown = false;
+  const shutdown = (): void => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    void server.close().finally(() => {
+      ctx.db.close();
+      process.exit(0);
+    });
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
 }
 
 // Only run main() when this file is the process entrypoint (the `bin`
-// script), not when a test imports `createServer`/`listToolNames` from it.
+// script), not when a test imports `createServer`/`listToolNames`/
+// `parseVaultArg` from it.
 const isMainModule = process.argv[1] !== undefined && import.meta.url === `file://${process.argv[1]}`;
 if (isMainModule) {
   main().catch((e) => {

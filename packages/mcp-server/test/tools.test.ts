@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { createPatch } from "diff";
 import { loadServerContext, type ServerContext } from "../src/context.js";
 import { buildTools, type ToolDef } from "../src/tools.js";
+import { listToolNames, parseVaultArg } from "../src/index.js";
 import { makeTestVault, type TestVault } from "./helpers.js";
 
 let vault: TestVault;
@@ -51,6 +52,11 @@ describe("buildTools", () => {
         "vault_propose_edit",
       ].sort(),
     );
+  });
+
+  test("listToolNames() stays in sync with the names buildTools registers", async () => {
+    const { tools } = await setup();
+    expect(listToolNames().sort()).toEqual([...tools.keys()].sort());
   });
 
   test("memory_remember creates a memory with provenance, and the note lands on disk", async () => {
@@ -227,5 +233,35 @@ describe("buildTools", () => {
     expect(result.error).toBeTruthy();
     const error = result.error as { code: string };
     expect(error.code).toBe("INVALID_ARGS");
+  });
+
+  test("memory_recall rejects the now-removed `query` param (spec §9 filter set only)", async () => {
+    const { tools } = await setup();
+    const recall = tools.get("memory_recall")!;
+
+    const result = await recall.handler({ query: "free text" });
+
+    expect(result.memories).toBeUndefined();
+    expect(result.error).toBeTruthy();
+    const error = result.error as { code: string };
+    expect(error.code).toBe("INVALID_ARGS");
+  });
+});
+
+describe("parseVaultArg", () => {
+  test("throws a clear diagnostic when --vault is missing", () => {
+    expect(() => parseVaultArg([])).toThrow(/--vault <path> is required/);
+    expect(() => parseVaultArg(["--other", "x"])).toThrow(/--vault <path> is required/);
+  });
+
+  test("resolves a relative --vault to an absolute path", () => {
+    const result = parseVaultArg(["--vault", "some/rel/vault"]);
+    expect(isAbsolute(result)).toBe(true);
+    expect(result).toBe(resolve("some/rel/vault"));
+  });
+
+  test("leaves an already-absolute --vault unchanged", () => {
+    const abs = resolve("/tmp/vault");
+    expect(parseVaultArg(["--vault", abs])).toBe(abs);
   });
 });

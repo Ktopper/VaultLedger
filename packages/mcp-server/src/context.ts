@@ -18,6 +18,7 @@ import {
   reconcile,
   sweep,
   type LedgerConfig,
+  type SweepResult,
 } from "@vaultledger/core";
 
 export interface ServerContext {
@@ -62,6 +63,30 @@ function defaultSession(): string {
 const NOT_INITIALIZED_MESSAGE = "not a VaultLedger vault (run `ledger init` first)";
 const PERMISSIONS_BROKEN_MESSAGE =
   "permissions file missing or corrupt (run `ledger init` to repair)";
+
+/**
+ * Surface the startup TTL sweep's outcome (design: the MCP server IS the
+ * review layer, and CLAUDE.md's auditability rule means a sweep that
+ * archived, flagged, failed, or found malformed memories must not vanish
+ * silently). Written to STDERR only — stdout is the JSON-RPC transport and
+ * must never carry human-readable diagnostics. Stays quiet when the sweep
+ * was a complete no-op so a clean startup produces no noise.
+ */
+function reportSweep(result: SweepResult): void {
+  const { archived, staleFlagged, failed, malformed } = result;
+  if (
+    archived.length === 0 &&
+    staleFlagged.length === 0 &&
+    failed.length === 0 &&
+    malformed.length === 0
+  ) {
+    return;
+  }
+  console.error(
+    `vaultledger: TTL sweep — archived ${archived.length}, staleFlagged ${staleFlagged.length}, ` +
+      `failed ${failed.length}, malformed ${malformed.length}`,
+  );
+}
 
 /**
  * Build the full set of core objects the MCP server needs, from a vault root
@@ -133,7 +158,7 @@ export async function loadServerContext(
 
     await ensureJournal({ vaultRoot, git, journal, now, genId });
     await reconcile({ git, journal, now, genId });
-    await sweep({
+    const sweepResult = await sweep({
       store,
       journal,
       now,
@@ -141,6 +166,7 @@ export async function loadServerContext(
       stalenessDays: config.stalenessDays,
       session,
     });
+    reportSweep(sweepResult);
 
     return {
       vaultRoot,

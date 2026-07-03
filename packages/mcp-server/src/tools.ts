@@ -54,7 +54,6 @@ async function guarded(fn: () => Promise<ToolResult>): Promise<ToolResult> {
 
 const RecallInput = z
   .object({
-    query: z.string().optional(),
     entity: z.string().optional(),
     tag: z.string().optional(),
     status: z.enum(["scratch", "working", "canonical", "forgotten", "reverted"]).optional(),
@@ -129,16 +128,11 @@ export function buildTools(ctx: ServerContext): ToolDef[] {
         guarded(async () => {
           const parsed = RecallInput.safeParse(rawArgs ?? {});
           if (!parsed.success) return invalidArgs(parsed.error.message);
-          const { query, entity, tag, status, since, limit } = parsed.data;
-          const filters: RecallFilters = {
-            // v0.1 has no semantic search; `query` is treated as an entity
-            // filter passthrough when `entity` itself isn't given.
-            entity: entity ?? query,
-            tag,
-            status,
-            since,
-            limit,
-          };
+          const { entity, tag, status, since, limit } = parsed.data;
+          // Spec §9 filter set only: entity/tag/status/since/limit. Recall is
+          // journal-indexed (exact matches); there is no free-text search in
+          // v0.1, so there is deliberately no `query` param.
+          const filters: RecallFilters = { entity, tag, status, since, limit };
           const memories = recall(ctx.journal, filters, ctx.now);
           return { memories };
         }),
