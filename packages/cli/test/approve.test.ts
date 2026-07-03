@@ -97,4 +97,27 @@ describe("approveCommand", () => {
     expect(result).toEqual({ ok: false, code: "NOT_FOUND" });
     expect(messages.join("\n")).toContain("NOT_FOUND");
   });
+
+  test("stale approval: file changed after queueing -> returns stale, file untouched", async () => {
+    vault = await makeInitializedVault();
+    const { approvalId, relPath } = await seedProposeEdit(vault);
+
+    // Mutate the target file out from under the queued propose_edit so its
+    // expected_hash no longer matches on-disk bytes.
+    const abs = join(vault.vaultDir, relPath);
+    const drifted = "Line one\nLine two\nDrifted\nLine four\nLine five\n";
+    writeFileSync(abs, drifted, "utf8");
+
+    const messages: string[] = [];
+    const result = await approveCommand(
+      vault.vaultDir,
+      { id: approvalId, out: (s) => messages.push(s) },
+      vault.deps,
+    );
+
+    expect(result).toEqual({ stale: true });
+    expect(messages.join("\n")).toContain("stale");
+    // The proposed edit was NOT applied; the file keeps the drifted content.
+    expect(readFileSync(abs, "utf8")).toBe(drifted);
+  });
 });

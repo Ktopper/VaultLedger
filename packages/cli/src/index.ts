@@ -51,10 +51,24 @@ export function buildProgram(): Command {
     .description("list transactions")
     .option("--entity <entity>", "filter by memory entity")
     .option("--session <session>", "filter by session id")
-    .option("--limit <limit>", "max rows (default 20)", (v) => Number.parseInt(v, 10))
-    .action(async (vaultDir: string, opts: { entity?: string; session?: string; limit?: number }) => {
+    // Keep the raw string here and validate in the action — a commander
+    // coercion callback can only throw a CommanderError, which is noisier than
+    // the friendly one-line message we want for a bad --limit.
+    .option("--limit <limit>", "max rows (default 20)")
+    .action(async (vaultDir: string, opts: { entity?: string; session?: string; limit?: string }) => {
+      let limit: number | undefined;
+      if (opts.limit !== undefined) {
+        // Reject anything that isn't a positive integer BEFORE it can reach
+        // the sqlite query as NaN.
+        if (!/^\d+$/.test(opts.limit) || Number.parseInt(opts.limit, 10) < 1) {
+          console.error(`invalid --limit: ${opts.limit} (expected a positive integer)`);
+          process.exitCode = 1;
+          return;
+        }
+        limit = Number.parseInt(opts.limit, 10);
+      }
       try {
-        await logCommand(vaultDir, opts);
+        await logCommand(vaultDir, { entity: opts.entity, session: opts.session, limit });
       } catch (e) {
         reportError(e);
       }

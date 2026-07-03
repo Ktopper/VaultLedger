@@ -1,5 +1,6 @@
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
+import { dirname } from "node:path";
 import * as YAML from "yaml";
 import {
   DEFAULT_LEDGER_CONFIG,
@@ -7,6 +8,7 @@ import {
   configPath,
   mintVaultId,
   permissionsPath,
+  readConfig,
   scanVault,
   writeConfig,
   type PermissionsManifest,
@@ -49,12 +51,29 @@ function describeProfile(profile: VaultProfile, manifest: PermissionsManifest, o
   );
 }
 
+function writePermissions(vaultDir: string, manifest: PermissionsManifest): void {
+  const path = permissionsPath(vaultDir);
+  // Ensure `.ledger/` exists: since permissions.yaml is now written BEFORE
+  // config.json (whose writeConfig used to create the dir), nothing else has
+  // made `.ledger/` yet on a fresh init.
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, YAML.stringify(manifest), "utf8");
+}
+
 /**
  * Onboard a vault directory into VaultLedger. Read-only (no writes at all)
  * unless `opts.confirm` is true, in which case it writes ONLY inside
- * `.ledger/` (config.json, permissions.yaml) and `.git/` — user notes are
+ * `.ledger/` (permissions.yaml, config.json) and `.git/` — user notes are
  * never touched. Idempotent: if `.ledger/config.json` already exists, does
- * NOT re-mint a vaultId or overwrite anything.
+ * NOT re-mint a vaultId.
+ *
+ * Write ordering is deliberate: permissions.yaml FIRST, config.json LAST, so
+ * that the config.json sentinel (which every later `init` short-circuits on)
+ * can only exist once permissions.yaml already does. A crash between the two
+ * writes leaves config.json absent — a subsequent init re-runs cleanly. And
+ * if config.json somehow exists WITHOUT permissions.yaml (older layout, or a
+ * deleted permissions file), init repairs it by rewriting permissions.yaml
+ * from the scan without touching the existing vaultId.
  */
 export async function initCommand(vaultDir: string, opts: InitOptions): Promise<InitResult> {
   const out = opts.out ?? console.log;
@@ -66,7 +85,19 @@ export async function initCommand(vaultDir: string, opts: InitOptions): Promise<
     return { created: false, profile, manifest: proposedManifest };
   }
 
+  // TOCTOU note: this existsSync → later write is a check-then-act race, but
+  // VaultLedger is single-user-local in v0.1 so a concurrent initializer
+  // racing this process is an accepted (non-)risk.
   if (existsSync(configPath(vaultDir))) {
+    // Already initialized — but a missing permissions.yaml means a
+    // half-initialized (or partially-deleted) vault. Repair it in place from
+    // the scan, preserving the existing vaultId (never re-mint).
+    if (!existsSync(permissionsPath(vaultDir))) {
+      writePermissions(vaultDir, proposedManifest);
+      const existing = readConfig(vaultDir);
+      out(`repaired permissions.yaml for vault ${existing.vaultId}`);
+      return { created: false, profile, manifest: proposedManifest };
+    }
     out("already initialized");
     return { created: false, profile, manifest: proposedManifest };
   }
@@ -76,8 +107,9 @@ export async function initCommand(vaultDir: string, opts: InitOptions): Promise<
 
   const rand = opts.rand ?? defaultRand;
   const vaultId = mintVaultId(rand);
+  // permissions.yaml FIRST, config.json LAST (see the write-ordering note above).
+  writePermissions(vaultDir, proposedManifest);
   writeConfig(vaultDir, { ...DEFAULT_LEDGER_CONFIG, vaultId });
-  writeFileSync(permissionsPath(vaultDir), YAML.stringify(proposedManifest), "utf8");
 
   out(`Initialized vault ${vaultId}`);
   return { created: true, profile, manifest: proposedManifest };

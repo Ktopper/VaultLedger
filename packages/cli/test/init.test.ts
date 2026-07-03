@@ -61,4 +61,22 @@ describe("initCommand", () => {
     const configAfterSecond = readFileSync(join(dir, ".ledger", "config.json"), "utf8");
     expect(configAfterSecond).toBe(configAfterFirst);
   });
+
+  test("repairs a half-initialized vault: restores a missing permissions.yaml without re-minting", async () => {
+    await initCommand(dir, { confirm: true, rand: () => "abcd1234" });
+    const configBefore = readFileSync(join(dir, ".ledger", "config.json"), "utf8");
+
+    // Simulate a crash between the two writes: permissions.yaml never landed.
+    rmSync(join(dir, ".ledger", "permissions.yaml"), { force: true });
+    expect(existsSync(join(dir, ".ledger", "permissions.yaml"))).toBe(false);
+
+    const result = await initCommand(dir, { confirm: true, rand: () => "zzzzzzzz" });
+
+    // Repaired, not a fresh create; config (and thus vaultId) is untouched.
+    expect(result.created).toBe(false);
+    expect(existsSync(join(dir, ".ledger", "permissions.yaml"))).toBe(true);
+    const configAfter = readFileSync(join(dir, ".ledger", "config.json"), "utf8");
+    expect(configAfter).toBe(configBefore);
+    expect(JSON.parse(configAfter).vaultId).toBe("vault_abcd1234");
+  });
 });

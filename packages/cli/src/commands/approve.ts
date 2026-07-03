@@ -33,6 +33,17 @@ function colorizeDiff(patchText: string): string {
     .join("\n");
 }
 
+// Cap how much of a proposed diff we dump to the terminal. A `create` proposal
+// can carry an arbitrarily large (or binary) body; rendering it whole would
+// flood the console. Patches (revise/propose_edit) are already bounded by the
+// broker's patch-size guard, so only the derived `create` diff needs a cap.
+const MAX_RENDERED_DIFF_CHARS = 4_000;
+
+function truncateDiff(text: string): string {
+  if (text.length <= MAX_RENDERED_DIFF_CHARS) return text;
+  return `${text.slice(0, MAX_RENDERED_DIFF_CHARS)}\n… [truncated ${text.length - MAX_RENDERED_DIFF_CHARS} more chars]`;
+}
+
 /** Render a held operation's diff. `create`/`revise`/`propose_edit` ops carry
  * (or can derive) a unified diff; `promote` has no file diff, just a status
  * transition to describe. */
@@ -41,7 +52,7 @@ function renderHeldOperation(op: Record<string, unknown>): string {
     return op.patch;
   }
   if (op.op === "create" && typeof op.content === "string" && typeof op.path === "string") {
-    return createPatch(op.path, "", op.content as string);
+    return truncateDiff(createPatch(op.path, "", op.content as string));
   }
   if (op.op === "promote") {
     return `(no file diff) promote memory ${op.id as string} -> ${op.target_status as string}`;

@@ -16,7 +16,6 @@ import {
   permissionsPath,
   readConfig,
   reconcile,
-  sweep,
   type LedgerConfig,
 } from "@vaultledger/core";
 
@@ -41,9 +40,10 @@ export interface LoadContextDeps {
   now?: () => string;
   genId?: (prefix: string) => string;
   env?: NodeJS.ProcessEnv;
-  /** Skip the startup TTL sweep (e.g. for commands that don't need it, or in
-   * tests that want to inspect scratch memories before they age out). */
-  skipSweep?: boolean;
+  /** Skip the startup `ensureJournal` auto-heal walk. Set by `reindex`, which
+   * does its own full disk+git walk immediately after loading — running
+   * ensureJournal first would walk the vault twice for no benefit. */
+  skipEnsure?: boolean;
 }
 
 /** Real, collision-safe id generator: `<prefix>_<8 hex chars>`. Tests inject
@@ -53,13 +53,22 @@ function defaultGenId(prefix: string): string {
 }
 
 const NOT_INITIALIZED_MESSAGE = "not a VaultLedger vault (run `ledger init` first)";
+const PERMISSIONS_BROKEN_MESSAGE =
+  "permissions file missing or corrupt (run `ledger init` to repair)";
 
 /**
  * Build the full set of core objects a CLI command needs, from a vault root
  * on disk. Thin orchestration only: reads config + permissions, opens the
  * journal, wires Broker/MemoryStore/Approvals, then runs the startup
- * auto-heal (ensureJournal), crash-recovery (reconcile), and TTL sweep passes
- * before handing the context back. Callers must call `db.close()` when done.
+ * auto-heal (ensureJournal) and crash-recovery (reconcile) — both of which
+ * only ever write the disposable journal DB, never the vault or git.
+ *
+ * The TTL sweep is deliberately NOT run here: sweep mutates the vault
+ * (forget archives files + commits), so running it on every CLI invocation
+ * would make read-only commands (`status`, `log`) silently write to git. In
+ * v0.1 the sweep runs at MCP-server startup instead.
+ *
+ * Callers must call `db.close()` when done.
  */
 export async function loadContext(
   vaultRoot: string,
@@ -75,8 +84,17 @@ export async function loadContext(
     throw e;
   }
 
-  const manifestRaw = readFileSync(permissionsPath(vaultRoot), "utf8");
-  const manifest = PermissionsManifest.parse(YAML.parse(manifestRaw));
+  // Guard the whole permissions read (ENOENT from readFileSync, a YAML syntax
+  // error, or a zod validation failure) behind one friendly message rather
+  // than surfacing a raw stack — a config.json without a valid permissions.yaml
+  // is a broken/half-initialized vault the user can repair via `ledger init`.
+  let manifest: PermissionsManifest;
+  try {
+    const manifestRaw = readFileSync(permissionsPath(vaultRoot), "utf8");
+    manifest = PermissionsManifest.parse(YAML.parse(manifestRaw));
+  } catch {
+    throw new Error(PERMISSIONS_BROKEN_MESSAGE);
+  }
 
   const now = deps?.now ?? (() => new Date().toISOString());
   const genId = deps?.genId ?? defaultGenId;
@@ -87,32 +105,33 @@ export async function loadContext(
   // — openJournal itself does not create parent directories.
   mkdirSync(dirname(dbPath), { recursive: true });
   const db = openJournal(dbPath);
-  const journal = new Journal(db);
 
-  const git = new LedgerGit(vaultRoot);
-  const broker = new Broker({
-    vaultRoot,
-    git,
-    journal,
-    manifest,
-    now,
-    genId,
-    patchThreshold: config.patchThreshold,
-  });
-  const store = new MemoryStore({ broker, journal, now, genId, vaultRoot });
-  const approvals = new Approvals({ broker, journal, store, now });
-
-  await ensureJournal({ vaultRoot, git, journal, now, genId });
-  await reconcile({ git, journal, now, genId });
-  if (!deps?.skipSweep) {
-    await sweep({
-      store,
+  // Everything after the handle is open must run inside this guard: if
+  // ensureJournal/reconcile throws, the caller never receives a context and so
+  // never runs its own `finally { db.close() }`, leaking the sqlite fd.
+  try {
+    const journal = new Journal(db);
+    const git = new LedgerGit(vaultRoot);
+    const broker = new Broker({
+      vaultRoot,
+      git,
       journal,
+      manifest,
       now,
-      ttlDays: config.ttlDays,
-      stalenessDays: config.stalenessDays,
+      genId,
+      patchThreshold: config.patchThreshold,
     });
-  }
+    const store = new MemoryStore({ broker, journal, now, genId, vaultRoot });
+    const approvals = new Approvals({ broker, journal, store, now });
 
-  return { vaultRoot, config, manifest, journal, git, broker, store, approvals, now, genId, db };
+    if (!deps?.skipEnsure) {
+      await ensureJournal({ vaultRoot, git, journal, now, genId });
+    }
+    await reconcile({ git, journal, now, genId });
+
+    return { vaultRoot, config, manifest, journal, git, broker, store, approvals, now, genId, db };
+  } catch (e) {
+    db.close();
+    throw e;
+  }
 }

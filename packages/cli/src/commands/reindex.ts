@@ -6,9 +6,9 @@ export async function reindexCommand(
   deps?: LoadContextDeps,
 ): Promise<ReindexResult> {
   const out = console.log;
-  // Reindex rebuilds the journal itself, so skip the startup sweep — running
-  // it against a journal loadContext just (re)populated would be redundant.
-  const ctx = await loadContext(vaultDir, { ...deps, skipSweep: true });
+  // Reindex does its own full disk+git walk below, so skip loadContext's
+  // ensureJournal auto-heal (which would walk the vault a second time).
+  const ctx = await loadContext(vaultDir, { ...deps, skipEnsure: true });
   try {
     const result = await reindex({
       vaultRoot: ctx.vaultRoot,
