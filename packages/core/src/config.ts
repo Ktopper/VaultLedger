@@ -81,6 +81,22 @@ export function journalPath(
   return join(appSupportBase(env, platform), vaultId, "journal.db");
 }
 
+/**
+ * Absolute path to the directory the cross-process vault mutation lock
+ * (concurrency/lock.ts) is rooted at for a given vaultId — the same
+ * per-vault app-support directory `journalPath` uses, minus the
+ * `journal.db` filename, so the lockfile lives alongside the journal it
+ * protects.
+ */
+export function vaultLockDir(
+  vaultId: string,
+  env: EnvLike = process.env,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  assertValidVaultId(vaultId);
+  return join(appSupportBase(env, platform), vaultId);
+}
+
 /** Absolute path to `.ledger/config.json` under a vault root. */
 export function configPath(vaultRoot: string): string {
   return join(vaultRoot, ".ledger", "config.json");
