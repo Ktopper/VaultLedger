@@ -219,11 +219,20 @@ whole-file-rewrite guard, threshold configurable, default ~50%) →
 **forget path:** `validate` (source exists) → move to `Agent/Archive/` + flip
 frontmatter → `gitCommit` → `journal.record`.
 
+**Path containment (trust-boundary invariant).** Every filesystem access in the
+broker resolves the op path against `vaultRoot` and rejects (`FORBIDDEN_ZONE`)
+unless the resolved absolute path stays under the vault root — so a `..`
+traversal in an op path can never read/write/delete outside the vault, even on
+the approved-execution path. This is enforced in code (not deferred to the v1.0
+security pass, since the approved-execution path ships in v0.1). Symlink-escape
+and case-insensitive-filesystem hardening remain v1.0 (§12).
+
 ### 5.1 Rejection codes
 
-`FORBIDDEN_ZONE`, `STALE_HASH`, `PATCH_TOO_LARGE`, `SYNTAX_BREAK`, `NOT_FOUND`,
-`TARGET_EXISTS` (create onto an existing path), `APPROVAL_REQUIRED`,
-`REVERT_CONFLICT` (undo cannot cleanly revert — see §5.3).
+`FORBIDDEN_ZONE` (also covers a path escaping the vault root), `STALE_HASH`,
+`PATCH_TOO_LARGE`, `SYNTAX_BREAK`, `NOT_FOUND`, `TARGET_EXISTS` (create onto an
+existing path), `APPROVAL_REQUIRED`, `REVERT_CONFLICT` (undo cannot cleanly
+revert — see §5.3), `ALREADY_REVERTED` (undo of a transaction already reverted).
 
 ### 5.2 Git identity
 
