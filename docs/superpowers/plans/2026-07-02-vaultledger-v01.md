@@ -489,31 +489,35 @@ function specificity(glob: string): number {
 }
 
 export function resolveZone(path: string, m: PermissionsManifest): ZoneName {
-  const norm = path.replace(/\\/g, "/").replace(/^\.\//, "");
-  // 1. excluded always wins
-  if (m.zones.excluded.some((g) => picomatch(g, { dot: true })(norm))) {
-    return "excluded";
-  }
-  // 2. overrides (most-specific override wins, but excluded already returned)
-  let best: { zone: ZoneName; score: number } | null = null;
+  const norm = path.replace(/\\/g, "/").replace(/^(\.\/)+/, "");
+
+  // Excluded always wins.
+  if (m.zones.excluded.some((g) => picomatch(g, { dot: true })(norm))) return "excluded";
+
+  // Tier 1: overrides. ANY matching override beats ALL base-zone matches
+  // regardless of specificity; specificity only breaks ties AMONG overrides.
+  // (Two explicit tiers — no numeric bonus that a deep base glob could defeat.)
+  let bestOverride: { zone: ZoneName; score: number } | null = null;
   for (const o of m.overrides) {
     if (picomatch(o.glob, { dot: true })(norm)) {
-      const s = specificity(o.glob) + 100; // overrides beat base zones
-      if (!best || s > best.score) best = { zone: o.zone, score: s };
+      const s = specificity(o.glob);
+      if (!bestOverride || s > bestOverride.score) bestOverride = { zone: o.zone, score: s };
     }
   }
-  // 3. base zones, most-specific glob wins
+  if (bestOverride) return bestOverride.zone;
+
+  // Tier 2: base zones. Most-specific glob wins; scratch/agent/trusted breaks ties.
   const order: ZoneName[] = ["scratch", "agent", "trusted"];
+  let bestBase: { zone: ZoneName; score: number } | null = null;
   for (const zone of order) {
     for (const g of m.zones[zone]) {
       if (picomatch(g, { dot: true })(norm)) {
         const s = specificity(g);
-        if (!best || s > best.score) best = { zone, score: s };
+        if (!bestBase || s > bestBase.score) bestBase = { zone, score: s };
       }
     }
   }
-  // 4. fallback
-  return best?.zone ?? "trusted";
+  return bestBase?.zone ?? "trusted";
 }
 ```
 
