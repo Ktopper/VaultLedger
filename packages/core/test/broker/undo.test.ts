@@ -425,7 +425,7 @@ describe("undo", () => {
   });
 
   test("undoing the CREATE transaction still marks the memory reverted and drops it from recall", async () => {
-    const { store, journal, git, vaultRoot, now, genId } = await makeMemoryHarness();
+    const { store, journal, git, now, genId } = await makeMemoryHarness();
 
     const { id, path, txnId } = await store.remember({
       content: "ephemeral fact",
