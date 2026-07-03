@@ -209,9 +209,19 @@ rejection `{ code, message, retriable }`. The agent can react to the code.
 `validate(op, manifest)` → `hashCheck(file, expected_hash)` →
 `applyPatch` (patch-level only; **reject if > threshold % of lines changed** —
 whole-file-rewrite guard, threshold configurable, default ~50%) →
-`markdownLint` (assert wikilinks, frontmatter, callouts, and block refs
-**outside the patch hunks** are byte-identical) →
+`markdownLint` (v0.1 heuristic — see below) →
 `gitCommit` (structured message) → `journal.record`.
+
+**`markdownLint` — what v0.1 actually enforces.** The ideal is "structural tokens
+(wikilinks, frontmatter, callouts, block refs) outside the changed hunks are
+byte-identical." v0.1 does NOT compute hunk ranges; it uses a deterministic
+*count* heuristic over the whole before/after: the frontmatter block must still
+parse as a closed YAML block, and the counts of wikilinks, callout headers, and
+block refs must not decrease. This is a conservative approximation with two known
+edges: it **rejects** an edit that legitimately removes a link/callout, and it
+does **not** catch a structural edit made *inside* a hunk. Tightening to the true
+byte-identical-outside-hunks check (which requires threading the patch's hunk
+ranges into the linter) is deferred to a later milestone (§12).
 
 **create path (remember):** `validate` (zone + target-absent) → write file →
 `gitCommit` → `journal.record`. No hashCheck/patch guard.
@@ -219,13 +229,26 @@ whole-file-rewrite guard, threshold configurable, default ~50%) →
 **forget path:** `validate` (source exists) → move to `Agent/Archive/` + flip
 frontmatter → `gitCommit` → `journal.record`.
 
-**Path containment (trust-boundary invariant).** Every filesystem access in the
-broker resolves the op path against `vaultRoot` and rejects (`FORBIDDEN_ZONE`)
-unless the resolved absolute path stays under the vault root — so a `..`
-traversal in an op path can never read/write/delete outside the vault, even on
-the approved-execution path. This is enforced in code (not deferred to the v1.0
-security pass, since the approved-execution path ships in v0.1). Symlink-escape
-and case-insensitive-filesystem hardening remain v1.0 (§12).
+**Trust-boundary hardening (all enforced in code in v0.1 — the write path ships
+now, so the boundary is defended now, not deferred to a v1.0 "security pass"):**
+- **Path containment.** Every filesystem access resolves the op path against
+  `vaultRoot` and rejects (`FORBIDDEN_ZONE`) unless the resolved absolute path
+  stays under the vault root — a `..` traversal can never read/write/delete
+  outside the vault, even on the approved-execution path.
+- **Symlink containment.** Containment is also checked against the *canonical*
+  (realpath-resolved) nearest existing ancestor of the target, so a symlink
+  planted inside the vault (e.g. `Agent/evil → /etc`) cannot be used to escape;
+  legitimate not-yet-existing nested creates still work.
+- **`.ledger/` and `.git/` are always excluded**, hard-coded in `resolveZone`
+  (not just scanner defaults and not overridable by any manifest) — an agent can
+  never `propose_edit` its own security policy (`.ledger/permissions.yaml`) or
+  git internals.
+- **Case-insensitive zone matching.** Zone globs match with `nocase`, so on a
+  case-insensitive filesystem (macOS/APFS, Windows/NTFS) `private/secret.md`
+  cannot dodge an excluded `Private/**` glob.
+
+Remaining hardening for a later milestone (§12): TOCTOU between check and write,
+symlink races, and patch-bomb size ceilings beyond the current patch-size guard.
 
 ### 5.1 Rejection codes
 
@@ -350,6 +373,14 @@ Two distinct outcomes from the same trusted-zone gate, by entry tool:
   it is **rejected** with `APPROVAL_REQUIRED` (retriable via `propose_edit`),
   rather than being silently queued. This keeps the agent's tool intent explicit.
 
+**`propose_edit` on a non-trusted path (v0.1 behavior).** `propose_edit`
+conservatively **queues any non-excluded path** — including agent/scratch — rather
+than applying it directly; an excluded (or `.ledger/`/`.git/`) path is rejected
+`FORBIDDEN_ZONE` and never queued. Queuing an agent-zone `propose_edit` is
+harmless over-gating (the human just approves a write the agent could have made
+directly via `memory_revise`); the intended use is trusted notes. Routing an
+agent-zone `propose_edit` straight to an apply is a possible v0.2 refinement.
+
 ---
 
 ## 7. Onboarding scanner (Prompt 5)
@@ -433,15 +464,25 @@ checkpoint after each package.
 
 ## 12. Deferred to later milestones
 
+**Already hardened in v0.1** (moved forward from the planned v1.0 security pass,
+because v0.1 ships the write path): path-traversal containment, symlink-escape
+containment (realpath), `.ledger/`+`.git/` always-excluded, case-insensitive zone
+matching. See §5.
+
 **Known v0.1 limitations (accepted):**
 - Multi-step operations (e.g. `forget` = frontmatter-flip commit **then** archive
   move; approval-row state **after** the applied op) are not single-commit atomic.
   A crash between steps leaves a transient inconsistency, self-healing on the next
   `reindex` (file frontmatter is the source of truth) or visible on retry. A
   reconcile pass for the approval-row-vs-applied-op gap is future work.
+- `markdownLint` is a count heuristic, not the true byte-identical-outside-hunks
+  check (§5) — tightening needs hunk ranges threaded into the linter.
+- TOCTOU between the containment check and the write, and symlink races, are not
+  closed (a later hardening pass).
 
 **Later milestones:**
 - Obsidian plugin (v0.2) — stub compiles this cycle.
 - Contradiction/negation detection + `conflicts` population (v0.3).
-- Embeddings-assisted recall/conflict, team tier, WAL, Windows path hardening,
-  symlink/path-traversal/patch-bomb security pass, installers (v1.0).
+- Embeddings-assisted recall/conflict, team tier, WAL, Windows path specifics,
+  byte-identical-outside-hunks lint, TOCTOU/symlink-race + patch-bomb hardening,
+  installers (v1.0).
