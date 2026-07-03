@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readdirSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { scanVault } from "../../src/scan/scanner.js";
+import { BrokerError } from "../../src/errors.js";
 
 let dir: string | undefined;
 
@@ -80,9 +81,14 @@ describe("scanVault", () => {
     // wikilinks: Home.md=2, Note A.md=1, Daily note=1, Projects/Proj1.md=1 => 5 total
     expect(result.profile.linkCount).toBe(5);
 
-    expect(result.profile.folders.sort()).toEqual(
-      ["Attachments", "Daily", "Private", "Projects", "Templates"].sort(),
-    );
+    // folders must already be sorted (deterministic, human-diffable output).
+    expect(result.profile.folders).toEqual([
+      "Attachments",
+      "Daily",
+      "Private",
+      "Projects",
+      "Templates",
+    ]);
 
     expect(result.profile.detected.dailyNotes).toBe(true);
     expect(result.profile.detected.templates).toBe(true);
@@ -127,14 +133,86 @@ describe("scanVault", () => {
     expect(existsSync(join(dir, ".ledger"))).toBe(false);
   });
 
-  test("skips unreadable/binary files without crashing", () => {
+  test("survives a read that throws (EISDIR) without crashing", () => {
     dir = makeVault();
-    // Write an invalid-utf8 byte file with a .md extension to simulate a corrupt note
-    writeFileSync(join(dir, "Corrupt.md"), Buffer.from([0xff, 0xfe, 0x00, 0xff, 0xff]));
+    // A DIRECTORY named with a .md extension. It is not a file, so it is not
+    // counted as a note, but the scan must not crash walking it. (This also
+    // guards the per-file read try/catch against EISDIR-style failures.)
+    mkdirSync(join(dir, "Weird.md"), { recursive: true });
 
     const result = scanVault(dir);
 
-    // scan should complete without throwing; noteCount should count only .md files (including Corrupt.md itself as a file, just not crash)
-    expect(result.profile.noteCount).toBeGreaterThanOrEqual(9);
+    // scan completes; the directory-with-a-.md-name is not counted as a note.
+    expect(result.profile.noteCount).toBe(9);
+  });
+
+  test("bounded wikilink regex does not hang on adversarial unterminated [[ (ReDoS)", () => {
+    dir = mkdtempSync(join(tmpdir(), "vaultledger-scan-redos-"));
+    // 50,000 unterminated "[[" sequences: an O(n^2) regex would take seconds.
+    writeFileSync(join(dir, "Evil.md"), "[[".repeat(50_000));
+
+    const start = Date.now();
+    const result = scanVault(dir);
+    const elapsed = Date.now() - start;
+
+    expect(result.profile.noteCount).toBe(1);
+    expect(result.profile.linkCount).toBe(0); // no closed wikilink present
+    expect(elapsed).toBeLessThan(1_000);
+  });
+
+  test("throws NOT_FOUND when root does not exist", () => {
+    const missing = join(tmpdir(), "vaultledger-scan-does-not-exist-xyz");
+    expect(() => scanVault(missing)).toThrow(BrokerError);
+    try {
+      scanVault(missing);
+      throw new Error("expected throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(BrokerError);
+      expect((err as BrokerError).code).toBe("NOT_FOUND");
+    }
+  });
+
+  test("throws NOT_FOUND when root is a file, not a directory", () => {
+    dir = mkdtempSync(join(tmpdir(), "vaultledger-scan-fileroot-"));
+    const filePath = join(dir, "not-a-vault.md");
+    writeFileSync(filePath, "I am a file.\n");
+
+    expect(() => scanVault(filePath)).toThrow(BrokerError);
+    try {
+      scanVault(filePath);
+      throw new Error("expected throw");
+    } catch (err) {
+      expect((err as BrokerError).code).toBe("NOT_FOUND");
+    }
+  });
+
+  test("deeply nested note counts and attributes to its top-level folder", () => {
+    dir = mkdtempSync(join(tmpdir(), "vaultledger-scan-deep-"));
+    mkdirSync(join(dir, "Projects", "Sub", "Deep"), { recursive: true });
+    writeFileSync(join(dir, "Projects", "Sub", "Deep", "note.md"), "Deep [[Home]] link.\n");
+    // two more notes so Projects clears the >=3 md heuristic on its own name too
+    writeFileSync(join(dir, "Projects", "a.md"), "a\n");
+    writeFileSync(join(dir, "Projects", "b.md"), "b\n");
+
+    const result = scanVault(dir);
+
+    expect(result.profile.noteCount).toBe(3);
+    expect(result.profile.linkCount).toBe(1);
+    expect(result.profile.detected.likelyProjects).toContain("Projects");
+  });
+
+  test("likelyProjects output is sorted deterministically", () => {
+    dir = mkdtempSync(join(tmpdir(), "vaultledger-scan-sort-"));
+    // Two project-like folders; create in reverse-alpha order to prove sorting.
+    mkdirSync(join(dir, "Work"), { recursive: true });
+    mkdirSync(join(dir, "Areas"), { recursive: true });
+    writeFileSync(join(dir, "Work", "w.md"), "w\n");
+    writeFileSync(join(dir, "Areas", "a.md"), "a\n");
+
+    const result = scanVault(dir);
+
+    const lp = result.profile.detected.likelyProjects;
+    expect([...lp]).toEqual([...lp].sort());
+    expect(lp).toEqual(["Areas", "Work"]);
   });
 });
