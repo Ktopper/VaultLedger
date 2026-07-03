@@ -1,5 +1,22 @@
 import { createPatch } from "diff";
 
+/** Max characters of a rendered approval diff returned to the client. A
+ * queued propose_edit's held patch is caller-supplied and unbounded, and
+ * `/approvals` renders EVERY pending row on every call — one oversized diff
+ * would otherwise bloat the whole response. Anything longer is truncated
+ * with a trailing marker; the reviewer can still open the note to see the
+ * full change. */
+export const DIFF_RENDER_LIMIT = 20_000;
+
+const TRUNCATION_MARKER = "\n…(truncated)";
+
+/** Cap a rendered diff at DIFF_RENDER_LIMIT chars, appending a marker when
+ * truncated. */
+function capDiff(rendered: string): string {
+  if (rendered.length <= DIFF_RENDER_LIMIT) return rendered;
+  return rendered.slice(0, DIFF_RENDER_LIMIT) + TRUNCATION_MARKER;
+}
+
 /**
  * Render a human-reviewable plain-text diff for a held (queued) operation, so
  * the Obsidian plugin's approval UI can show a reviewer exactly what a
@@ -31,12 +48,12 @@ export function renderApprovalDiff(heldOperationJson: string): string {
     case "revise":
     case "propose_edit": {
       const patch = typeof op.patch === "string" ? op.patch : undefined;
-      return patch ?? "(no patch present on held operation)";
+      return capDiff(patch ?? "(no patch present on held operation)");
     }
     case "create": {
       const path = typeof op.path === "string" ? op.path : "(unknown path)";
       const content = typeof op.content === "string" ? op.content : "";
-      return createPatch(path, "", content);
+      return capDiff(createPatch(path, "", content));
     }
     case "promote": {
       const id = typeof op.id === "string" ? op.id : "(unknown id)";

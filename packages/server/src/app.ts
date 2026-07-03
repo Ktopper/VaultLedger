@@ -62,6 +62,20 @@ function isLoopbackHostname(hostname: string): boolean {
   return LOOPBACK_HOSTNAMES.has(hostname);
 }
 
+/**
+ * Pure loopback check over a raw `Host`/`Origin` header value, extracted so
+ * it's unit-testable directly (the missing-Host branch in particular can't
+ * be exercised via `fastify.inject`, which always injects a default Host).
+ * `undefined`/empty -> false (a request with no Host header is not trusted).
+ * A rebinding attempt that merely embeds the loopback IP as a label of a
+ * public hostname (e.g. `127.0.0.1.evil.com`) is NOT loopback: the extracted
+ * hostname is the full string, which isn't in the exact loopback set.
+ */
+export function isLoopbackHost(hostHeader: string | undefined): boolean {
+  if (!hostHeader) return false;
+  return isLoopbackHostname(extractHostname(hostHeader));
+}
+
 interface ErrorBody {
   error: { code: string; message: string; retriable?: boolean };
 }
@@ -73,7 +87,7 @@ function errorBody(code: string, message: string): ErrorBody {
 /**
  * Build the fastify HTTP bridge over an already-open VaultContext (design
  * v0.2 §2, Phase 2). THIN adapter: every route delegates to core — no zone/
- * hash/patch logic lives here. A single global `preHandler` enforces two
+ * hash/patch logic lives here. A single global `onRequest` hook enforces two
  * independent guards before any route runs:
  *
  *  1. Loopback guard: the request's `Host` (and, if present, `Origin`)
@@ -86,6 +100,14 @@ function errorBody(code: string, message: string): ErrorBody {
  *     first, since `timingSafeEqual` throws on a length mismatch rather
  *     than returning false) so a wrong-length guess doesn't short-circuit
  *     the comparison in a way that leaks timing information.
+ *
+ * The guard runs in `onRequest` — NOT `preHandler` — deliberately: onRequest
+ * fires before Fastify's body-parsing phase, so a malformed/oversized body
+ * from an unauthenticated or non-loopback caller is rejected by the guard
+ * BEFORE it ever reaches the JSON parser. A preHandler guard runs AFTER
+ * parsing, which would let a bad body trip the parser (and the error
+ * handler) without ever passing the gate — a real bypass of the "single
+ * global gate before any route runs" invariant.
  */
 export function buildBridge(ctx: VaultContext, token: string): FastifyInstance {
   const app = Fastify({ logger: false });
@@ -106,19 +128,24 @@ export function buildBridge(ctx: VaultContext, token: string): FastifyInstance {
       try {
         done(null, JSON.parse(body));
       } catch (e) {
-        done(e as Error, undefined);
+        // A malformed JSON body is a CLIENT error (400), not a server fault.
+        // The raw JSON.parse SyntaxError carries no statusCode, so annotate
+        // it — the error handler honors err.statusCode for a 4xx and would
+        // otherwise mislabel this as a 500.
+        const err = e as Error & { statusCode?: number };
+        err.statusCode = 400;
+        done(err, undefined);
       }
     },
   );
 
-  app.addHook("preHandler", async (req: FastifyRequest, reply: FastifyReply) => {
-    const hostHeader = req.headers.host;
-    if (!hostHeader || !isLoopbackHostname(extractHostname(hostHeader))) {
+  app.addHook("onRequest", async (req: FastifyRequest, reply: FastifyReply) => {
+    if (!isLoopbackHost(req.headers.host)) {
       await reply.code(403).send(errorBody("FORBIDDEN_ORIGIN", "request Host is not loopback"));
       return;
     }
     const originHeader = req.headers.origin;
-    if (originHeader && !isLoopbackHostname(extractHostname(originHeader))) {
+    if (originHeader && !isLoopbackHost(originHeader)) {
       await reply.code(403).send(errorBody("FORBIDDEN_ORIGIN", "request Origin is not loopback"));
       return;
     }
@@ -231,14 +258,32 @@ export function buildBridge(ctx: VaultContext, token: string): FastifyInstance {
   });
 
   app.setErrorHandler((err: unknown, _req: FastifyRequest, reply: FastifyReply) => {
+    // BrokerError: the intended machine-readable rejection — keep its real
+    // code + message and map its code to the right HTTP status.
     if (err instanceof BrokerError) {
       const status = BROKER_ERROR_STATUS[err.code] ?? 400;
       void reply.code(status).send({ error: err.toRejection() });
       return;
     }
-    // Never leak a raw stack — everything else is a generic 500.
-    const message = err instanceof Error ? err.message : String(err);
-    void reply.code(500).send({ error: { code: "INTERNAL", message } });
+
+    // Non-BrokerError: honor Fastify's own `statusCode` when it's a genuine
+    // CLIENT error (a malformed body is 400, an unsupported content-type is
+    // 415, ...) — forcing every such case to 500 would mislabel the caller's
+    // mistake as a server fault. A 4xx client error is safe to surface with
+    // its (Fastify-generated, non-sensitive) message.
+    const statusCode = (err as { statusCode?: unknown }).statusCode;
+    if (typeof statusCode === "number" && statusCode >= 400 && statusCode < 500) {
+      const message = err instanceof Error ? err.message : String(err);
+      void reply.code(statusCode).send({ error: { code: "BAD_REQUEST", message } });
+      return;
+    }
+
+    // A genuine internal (5xx) error: log the real detail SERVER-SIDE only
+    // (logger is disabled on this instance), and return a FIXED generic
+    // message — never echo err.message to the client, since it can carry fs
+    // paths or library internals.
+    console.error("vaultledger bridge: internal error", err);
+    void reply.code(500).send({ error: { code: "INTERNAL", message: "internal error" } });
   });
 
   return app;

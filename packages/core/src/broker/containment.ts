@@ -5,6 +5,26 @@ import type { PermissionsManifest } from "../schemas/manifest.js";
 import { resolveZone } from "../zones.js";
 
 /**
+ * Cache of resolved-vaultRoot -> its realpath. `realpathSync(root)` hits the
+ * filesystem on every call, and this helper runs on every broker write AND
+ * every server `/provenance` read — memoizing it (the realpath of a given
+ * root is stable for the process's lifetime) avoids a redundant stat per
+ * request. Keyed by the lexically-resolved root (the input to realpathSync)
+ * so two callers passing the same vaultRoot share one entry. Module-level
+ * rather than per-Broker so the server's route (which doesn't hold a Broker)
+ * benefits too.
+ */
+const canonicalRootCache = new Map<string, string>();
+
+function getCanonicalRoot(resolvedRoot: string): string {
+  const cached = canonicalRootCache.get(resolvedRoot);
+  if (cached !== undefined) return cached;
+  const canonical = realpathSync(resolvedRoot);
+  canonicalRootCache.set(resolvedRoot, canonical);
+  return canonical;
+}
+
+/**
  * Resolve a vault-relative path to an absolute path AND enforce that it
  * stays inside the vault root AND is not in the (always-forbidden) excluded
  * zone. This is the SINGLE shared trust-boundary gate — the Broker uses it
@@ -50,7 +70,7 @@ export function assertContainedAndReadable(
     throw new BrokerError("FORBIDDEN_ZONE", `path escapes vault root: ${relPath}`);
   }
 
-  const canonicalRoot = realpathSync(root);
+  const canonicalRoot = getCanonicalRoot(root);
 
   let ancestor: string | undefined = abs;
   while (ancestor !== undefined && !existsSync(ancestor)) {

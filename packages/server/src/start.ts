@@ -39,14 +39,22 @@ export async function startBridge(vaultRoot: string, opts: StartBridgeOptions): 
     env: opts.env,
   });
 
-  let app: FastifyInstance;
+  const app: FastifyInstance = buildBridge(ctx, opts.token);
   try {
-    app = buildBridge(ctx, opts.token);
     await app.listen({ host: "127.0.0.1", port: opts.port ?? 0 });
   } catch (e) {
     // Mirror openVault's own "close what we opened" contract on a startup
     // failure — a caller that never receives a RunningBridge must not be left
-    // to guess whether the journal db handle leaked.
+    // to guess whether the journal db handle (or the half-started fastify
+    // instance) leaked. Close BOTH: the fastify app (best-effort — it may
+    // have bound partially / registered listeners before listen() rejected)
+    // AND the journal db handle.
+    try {
+      await app.close();
+    } catch {
+      // best-effort: never mask the original listen() failure with a
+      // close() error.
+    }
     ctx.close();
     throw e;
   }
