@@ -290,8 +290,12 @@ later commit touched the same file. Behavior:
   `status = forgotten`). Git retains history; never hard-deleted.
 - **TTL sweep** → scratch older than config TTL (default 14 days) → archived;
   emit staleness flags for working memories unreferenced for N days. There is no
-  daemon in v0.1: the sweep triggers **lazily at CLI and MCP-server startup**
-  (and can be run on demand). Later milestones may add a scheduled sweep.
+  daemon in v0.1: the sweep triggers lazily at **MCP-server startup** (a genuine
+  long-running session). The **CLI does NOT auto-sweep** — a read-only command
+  like `status`/`log` must never silently write commits or move files
+  (auditability), so `loadContext` runs only journal-DB repairs
+  (`ensureJournal` + `reconcile`), never a vault-mutating sweep. Sweep stays
+  available as a core API and can be wired to an explicit command later.
 - **Approval queue** → SQLite `approvals` table + core API
   (`list` / `approve` / `reject`). Approving **re-runs the held operation
   through the broker** (does not blind-apply a stored diff) — but through the
