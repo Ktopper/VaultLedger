@@ -12,6 +12,7 @@
     "esbuild": "^0.24.0",
     "@vaultledger/server": "workspace:*",
     "diff": "^7.0.0",
-    "@types/diff": "^6.0.0"
+    "@types/diff": "^6.0.0",
+    "jsdom": "^25.0.0"
   }
 }
