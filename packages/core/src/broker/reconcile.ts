@@ -13,7 +13,9 @@ export interface ReconcileDeps {
 // "My Note.md") still parses: op is the first token, session the LAST token,
 // an optional `[memoryId]` sits immediately before session, and basename is
 // everything in between (non-greedy so it doesn't swallow the [memoryId]).
-const MESSAGE_RE = /^ledger:\s+(\S+)\s+(.+?)(?:\s+\[([^\]]+)\])?\s+(\S+)\s*$/;
+// Exported so `reindex` (memory/reindex.ts) can reuse the exact same parser
+// instead of drifting a second copy of this regex.
+export const MESSAGE_RE = /^ledger:\s+(\S+)\s+(.+?)(?:\s+\[([^\]]+)\])?\s+(\S+)\s*$/;
 
 /**
  * Startup reconciliation (design §5, crash-recovery): a process can crash
