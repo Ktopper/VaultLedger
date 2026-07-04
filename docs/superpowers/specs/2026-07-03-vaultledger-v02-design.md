@@ -275,6 +275,14 @@ parsed elements. It is a test, not a convention.
 
 - Conflicts population + the contradiction engine (v0.3).
 - cli/mcp adopting `openVault` (cleanup follow-up).
+- **v0.3 hardening backlog (from the v0.2 final review — all low-severity):**
+  - `UNIQUE(commit_sha)` + `ON CONFLICT DO NOTHING` on `transactions`, to make the
+    cross-process empty-journal reindex race converge at the DB level (§3 note).
+  - Approval-vs-transaction reconcile cross-check: the approve→apply crash gap can
+    leave an approval `pending` after its write already landed; `reconcile` should
+    detect an applied op whose approval is still pending and resolve it.
+  - An explicit `bodyLimit` on `POST /undo` (and mutation routes) for
+    defense-in-depth against oversized request bodies.
 - Multi-vault serve, packaged Obsidian community-plugin submission, auto-start of
   `serve` from the plugin, richer diff UI (v1.0).
 - TOCTOU/symlink-race hardening and the byte-identical-outside-hunks lint (carried
