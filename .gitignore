@@ -28,6 +28,12 @@ coverage/
 .idea/
 *.swp
 
+# macOS/iCloud "filename 2.ext" duplicate-on-conflict copies. This project dir
+# sits under an iCloud-synced Documents folder; a stray auto-commit swept a batch
+# of these into git once (reverted in c3f3a13). Keep them out for good.
+* [0-9].*
+* [0-9][0-9].*
+
 # Harness / local config
 .claude/
 
