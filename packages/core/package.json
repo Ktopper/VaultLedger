@@ -1,10 +1,13 @@
 {
   "name": "@vaultledger/core",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+    "./config": { "types": "./dist/config.d.ts", "default": "./dist/config.js" }
+  },
   "scripts": { "build": "tsc -b", "test": "vitest run" },
   "dependencies": {
     "zod": "^3.23.0",
@@ -13,11 +16,13 @@
     "picomatch": "^4.0.0",
     "gray-matter": "^4.0.3",
     "diff": "^7.0.0",
-    "yaml": "^2.5.0"
+    "yaml": "^2.5.0",
+    "proper-lockfile": "^4.1.2"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.0",
     "@types/picomatch": "^3.0.0",
-    "@types/diff": "^6.0.0"
+    "@types/diff": "^6.0.0",
+    "@types/proper-lockfile": "^4.1.4"
   }
 }

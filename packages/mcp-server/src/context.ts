@@ -17,6 +17,7 @@ import {
   readConfig,
   reconcile,
   sweep,
+  vaultLockDir,
   type LedgerConfig,
   type SweepResult,
 } from "@vaultledger/core";
@@ -144,6 +145,10 @@ export async function loadServerContext(
   try {
     const journal = new Journal(db);
     const git = new LedgerGit(vaultRoot);
+    // Same lockDir every host wired against this vaultId must use (see
+    // core's openVault/vaultLockDir) — this is what makes the MCP server's
+    // mutations mutually exclusive with `ledger serve`/the CLI's.
+    const lockDir = vaultLockDir(config.vaultId, deps?.env);
     const broker = new Broker({
       vaultRoot,
       git,
@@ -152,6 +157,7 @@ export async function loadServerContext(
       now,
       genId,
       patchThreshold: config.patchThreshold,
+      lockDir,
     });
     const store = new MemoryStore({ broker, journal, now, genId, vaultRoot });
     const approvals = new Approvals({ broker, journal, store, now });

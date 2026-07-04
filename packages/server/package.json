@@ -1,0 +1,20 @@
+{
+  "name": "@vaultledger/server",
+  "version": "0.2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
+  "scripts": { "build": "tsc -b", "test": "vitest run" },
+  "dependencies": {
+    "@vaultledger/core": "workspace:*",
+    "fastify": "^5.0.0",
+    "diff": "^7.0.0",
+    "gray-matter": "^4.0.3"
+  },
+  "devDependencies": {
+    "@types/diff": "^6.0.0",
+    "yaml": "^2.5.0",
+    "@vaultledger/cli": "workspace:*"
+  }
+}

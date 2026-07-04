@@ -1,3 +1,3 @@
 import { expect, test } from "vitest";
 import { VERSION } from "../src/index.js";
-test("core exposes version", () => { expect(VERSION).toBe("0.1.0"); });
+test("core exposes version", () => { expect(VERSION).toBe("0.2.0"); });

@@ -16,6 +16,7 @@ import {
   permissionsPath,
   readConfig,
   reconcile,
+  vaultLockDir,
   type LedgerConfig,
 } from "@vaultledger/core";
 
@@ -30,6 +31,12 @@ export interface LedgerContext {
   approvals: Approvals;
   now: () => string;
   genId: (prefix: string) => string;
+  /** Directory the cross-process vault mutation lock is rooted at (see core's
+   * vaultLockDir). Threaded into the Broker AND exposed here so mutating
+   * commands that don't go through the Broker — notably `ledger undo`, whose
+   * undoTransaction/undoSession take their own lockDir — participate in the
+   * same cross-process mutual exclusion. */
+  lockDir: string;
   /** The typed as the return of `openJournal` rather than importing
    * `better-sqlite3` directly — the CLI stays a thin adapter over core's own
    * dependency, with no type dependency of its own to manage. */
@@ -112,6 +119,10 @@ export async function loadContext(
   try {
     const journal = new Journal(db);
     const git = new LedgerGit(vaultRoot);
+    // Same lockDir every host wired against this vaultId must use (see
+    // core's openVault/vaultLockDir) — this is what makes `ledger serve`/CLI
+    // mutations mutually exclusive with the MCP server's.
+    const lockDir = vaultLockDir(config.vaultId, deps?.env);
     const broker = new Broker({
       vaultRoot,
       git,
@@ -120,6 +131,7 @@ export async function loadContext(
       now,
       genId,
       patchThreshold: config.patchThreshold,
+      lockDir,
     });
     const store = new MemoryStore({ broker, journal, now, genId, vaultRoot });
     const approvals = new Approvals({ broker, journal, store, now });
@@ -129,7 +141,7 @@ export async function loadContext(
     }
     await reconcile({ git, journal, now, genId });
 
-    return { vaultRoot, config, manifest, journal, git, broker, store, approvals, now, genId, db };
+    return { vaultRoot, config, manifest, journal, git, broker, store, approvals, now, genId, lockDir, db };
   } catch (e) {
     db.close();
     throw e;

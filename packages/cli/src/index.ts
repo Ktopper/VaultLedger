@@ -5,6 +5,7 @@ import { approveCommand } from "./commands/approve.js";
 import { initCommand } from "./commands/init.js";
 import { logCommand } from "./commands/log.js";
 import { reindexCommand } from "./commands/reindex.js";
+import { serveCommand } from "./commands/serve.js";
 import { statusCommand } from "./commands/status.js";
 import { undoCommand } from "./commands/undo.js";
 
@@ -18,6 +19,7 @@ export { approveCommand, type ApproveOptions, type ApproveCommandResult } from "
 export { initCommand, type InitOptions, type InitResult } from "./commands/init.js";
 export { logCommand, type LogFilters } from "./commands/log.js";
 export { reindexCommand } from "./commands/reindex.js";
+export { serveCommand, type ServeOptions, type ServeHandle } from "./commands/serve.js";
 export { statusCommand, type StatusResult } from "./commands/status.js";
 export { undoCommand, type UndoOptions, type UndoCommandResult } from "./commands/undo.js";
 export { loadContext, type LedgerContext, type LoadContextDeps } from "./context.js";
@@ -115,6 +117,35 @@ export function buildProgram(): Command {
         if (!Array.isArray(result) && "ok" in result && result.ok === false) {
           process.exitCode = 1;
         }
+      } catch (e) {
+        reportError(e);
+      }
+    });
+
+  program
+    .command("serve <vault>")
+    .description("start the local HTTP bridge (for the Obsidian plugin) and publish its discovery file")
+    .option("--port <n>", "port to listen on (default: OS-assigned)")
+    .option("--rotate-token", "mint a fresh bridge token", false)
+    .action(async (vault: string, opts: { port?: string; rotateToken: boolean }) => {
+      let port: number | undefined;
+      if (opts.port !== undefined) {
+        // Accept 0 — the documented OS-assign sentinel (startBridge reads the
+        // actual bound port back afterward). Reject negatives / non-integers.
+        if (!/^\d+$/.test(opts.port) || Number.parseInt(opts.port, 10) < 0) {
+          console.error(`invalid --port: ${opts.port} (expected a non-negative integer)`);
+          process.exitCode = 1;
+          return;
+        }
+        port = Number.parseInt(opts.port, 10);
+      }
+      try {
+        // No process.exit here, and the returned handle's close() is never
+        // called from this action: serveCommand's own SIGINT/SIGTERM
+        // handlers own shutdown, and the open HTTP server keeps the process
+        // alive (Node's event loop doesn't exit while a listening server
+        // handle is open) until one of those signals fires.
+        await serveCommand(vault, { port, rotateToken: opts.rotateToken });
       } catch (e) {
         reportError(e);
       }
