@@ -1,5 +1,0 @@
-{
-  "mcpServers": {
-    "vaultledger": { "command": "vaultledger-mcp", "args": ["--vault", "/absolute/path/to/vault"] }
-  }
-}
