@@ -211,6 +211,87 @@ describe("BridgeClient", () => {
     expect(undoUnknown.status).toBe(404);
   });
 
+  test("conflicts()/resolveConflict()/dismissConflict() hit the bridge and return typed results", async () => {
+    vault = await makeTestVault();
+    const clock = makeClock();
+    bridge = await startBridge(vault.vaultDir, { token: TOKEN, now: clock.now, genId: clock.genId, env: vault.env });
+
+    // Seed one open conflict directly via the journal (no dedicated "create a
+    // contradiction" route exists on the bridge) — same direct-insert
+    // approach packages/server/test/conflicts.test.ts uses.
+    const seedCtx = await openVault(vault.vaultDir, {
+      now: clock.now,
+      genId: clock.genId,
+      env: vault.env,
+      session: "seed-session",
+    });
+    try {
+      seedCtx.journal.insertMemory({
+        id: "mem_a",
+        path: "Notes/trusted.md",
+        entity: "nova",
+        status: "canonical",
+        confidence: "high",
+        created: clock.now(),
+        source: "chat",
+        supersedes: null,
+        expires: null,
+        last_referenced: null,
+      });
+      seedCtx.journal.insertMemory({
+        id: "mem_b",
+        path: "Notes/trusted.md",
+        entity: "nova",
+        status: "scratch",
+        confidence: "high",
+        created: clock.now(),
+        source: "chat",
+        supersedes: null,
+        expires: null,
+        last_referenced: null,
+      });
+      seedCtx.journal.insertConflict({
+        id: "cf_1",
+        memory_a: "mem_a",
+        memory_b: "mem_b",
+        pair_lo: "mem_a",
+        pair_hi: "mem_b",
+        kind: "value-conflict",
+        fact_key: "deadline",
+        entity: "nova",
+        detail: 'deadline: "2026-08-15" vs "2026-09-01"',
+        created_at: clock.now(),
+        state: "open",
+        resolved_at: null,
+      });
+    } finally {
+      seedCtx.close();
+    }
+
+    const client = new BridgeClient(`http://127.0.0.1:${bridge.port}`, TOKEN);
+
+    const list = await client.conflicts();
+    expect(list.ok).toBe(true);
+    if (!list.ok) throw new Error("expected ok conflicts");
+    expect(list.data).toHaveLength(1);
+    expect(list.data[0]?.row.id).toBe("cf_1");
+    expect(list.data[0]?.memoryA?.id).toBe("mem_a");
+    expect(list.data[0]?.memoryB?.id).toBe("mem_b");
+
+    const resolveResult = await client.resolveConflict("cf_1");
+    expect(resolveResult).toEqual({ ok: true, data: { resolved: true } });
+
+    const afterResolve = await client.conflicts();
+    if (!afterResolve.ok) throw new Error("expected ok conflicts");
+    expect(afterResolve.data).toHaveLength(0);
+
+    const dismissUnknown = await client.dismissConflict("cf_does_not_exist");
+    expect(dismissUnknown.ok).toBe(false);
+    if (dismissUnknown.ok) throw new Error("expected a rejection");
+    expect(dismissUnknown.error.code).toBe("NOT_FOUND");
+    expect(dismissUnknown.status).toBe(404);
+  });
+
   test("fromVault reads vaultId + bridge.json and connects; missing bridge.json throws BridgeUnavailableError", async () => {
     vault = await makeTestVault();
     const clock = makeClock();

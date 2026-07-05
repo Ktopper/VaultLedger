@@ -26,6 +26,25 @@ export interface SessionGroup<T> {
   txns: T[];
 }
 
+/** The minimal subset of a bridge `/conflicts` enriched item `renderConflict`
+ * needs — kept structural/local rather than importing core's ConflictRow /
+ * MemoryRow so this file stays a pure DOM-builder with zero value imports. */
+export interface ConflictMemoryRef {
+  id: string;
+  path: string;
+}
+
+export interface ConflictInfo {
+  row: {
+    id: string;
+    entity: string | null;
+    kind: string | null;
+    detail: string | null;
+  };
+  memoryA: ConflictMemoryRef | null;
+  memoryB: ConflictMemoryRef | null;
+}
+
 /**
  * Render a unified-diff-style text blob as one `<div>` per line inside a
  * `<div class="vl-diff">`. Lines starting with `+`/`-` get an add/del class
@@ -89,6 +108,44 @@ export function renderProvenance(prov: ProvenanceInfo): HTMLElement {
     row.appendChild(valueEl);
     container.appendChild(row);
   }
+
+  return container;
+}
+
+function memoryRefLabel(ref: ConflictMemoryRef | null): string {
+  return ref ? `${ref.id} (${ref.path})` : "?";
+}
+
+/**
+ * Render a single enriched conflict (a bridge `/conflicts` list item):
+ * entity, kind, detail, and both memory sides' id/path. PURE, `textContent`
+ * only — `detail`/`path` are attacker-influenced (drawn from an agent's
+ * proposed note content), same contract as renderDiff/renderProvenance. See
+ * test/render.test.ts's "SECURITY" case for the hostile-fixture proof.
+ */
+export function renderConflict(c: ConflictInfo): HTMLElement {
+  const container = document.createElement("div");
+  container.classList.add("vl-conflict");
+
+  const header = document.createElement("div");
+  header.classList.add("vl-conflict-header");
+  header.textContent = `entity: ${c.row.entity ?? "?"}  kind: ${c.row.kind ?? "?"}`;
+  container.appendChild(header);
+
+  const detail = document.createElement("div");
+  detail.classList.add("vl-conflict-detail");
+  detail.textContent = c.row.detail ?? "";
+  container.appendChild(detail);
+
+  const memoryA = document.createElement("div");
+  memoryA.classList.add("vl-conflict-memory-a");
+  memoryA.textContent = `A: ${memoryRefLabel(c.memoryA)}`;
+  container.appendChild(memoryA);
+
+  const memoryB = document.createElement("div");
+  memoryB.classList.add("vl-conflict-memory-b");
+  memoryB.textContent = `B: ${memoryRefLabel(c.memoryB)}`;
+  container.appendChild(memoryB);
 
   return container;
 }

@@ -1,13 +1,14 @@
 import { ItemView, Notice, type WorkspaceLeaf } from "obsidian";
 import { BridgeClient, BridgeUnavailableError } from "../bridgeClient.js";
-import { groupBySession } from "../render.js";
+import { groupBySession, renderConflict } from "../render.js";
 
 export const ACTIVITY_VIEW_TYPE = "vaultledger-activity";
 
 /**
- * Agent Activity view (design v0.2 Phase 4, Task 4.3): recent transactions
- * grouped by session with a per-transaction Undo button, plus a Conflicts
- * tab placeholder (real conflict detection is v0.3). THIN glue only — see
+ * Agent Activity view (design v0.2 Phase 4, Task 4.3; conflicts tab wired up
+ * in v0.3a Phase 7): recent transactions grouped by session with a
+ * per-transaction Undo button, plus a Conflicts tab listing open conflicts
+ * (via renderConflict) with Resolve/Dismiss buttons. THIN glue only — see
  * SMOKE.md for the manual verification steps (no automated Obsidian-API
  * test coverage; bridgeClient.ts / render.ts carry the tested logic).
  */
@@ -66,7 +67,7 @@ export class ActivityView extends ItemView {
     }
 
     if (this.tab === "conflicts") {
-      contentEl.createEl("p", { text: "none (v0.3)" });
+      await this.renderConflictsTab(client);
       return;
     }
 
@@ -107,6 +108,62 @@ export class ActivityView extends ItemView {
           })();
         });
       }
+    }
+  }
+
+  private async renderConflictsTab(client: BridgeClient): Promise<void> {
+    const { contentEl } = this;
+    contentEl.createEl("h2", { text: "Conflicts" });
+
+    const result = await client.conflicts();
+    if (!result.ok) {
+      contentEl.createEl("p", {
+        text: `Error loading conflicts: ${result.error.code} — ${result.error.message}`,
+      });
+      return;
+    }
+
+    if (result.data.length === 0) {
+      contentEl.createEl("p", { text: "No open conflicts." });
+      return;
+    }
+
+    for (const conflict of result.data) {
+      const row = contentEl.createDiv({ cls: "vl-activity-conflict" });
+      row.appendChild(
+        renderConflict({
+          row: {
+            id: conflict.row.id,
+            entity: conflict.row.entity,
+            kind: conflict.row.kind,
+            detail: conflict.row.detail,
+          },
+          memoryA: conflict.memoryA ? { id: conflict.memoryA.id, path: conflict.memoryA.path } : null,
+          memoryB: conflict.memoryB ? { id: conflict.memoryB.id, path: conflict.memoryB.path } : null,
+        }),
+      );
+
+      const resolveBtn = row.createEl("button", { text: "Resolve" });
+      resolveBtn.addEventListener("click", () => {
+        void (async () => {
+          const resolveResult = await client.resolveConflict(conflict.row.id);
+          if (!resolveResult.ok) {
+            new Notice(`VaultLedger: resolve failed — ${resolveResult.error.message}`);
+          }
+          await this.refresh();
+        })();
+      });
+
+      const dismissBtn = row.createEl("button", { text: "Dismiss" });
+      dismissBtn.addEventListener("click", () => {
+        void (async () => {
+          const dismissResult = await client.dismissConflict(conflict.row.id);
+          if (!dismissResult.ok) {
+            new Notice(`VaultLedger: dismiss failed — ${dismissResult.error.message}`);
+          }
+          await this.refresh();
+        })();
+      });
     }
   }
 
