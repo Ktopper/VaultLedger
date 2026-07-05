@@ -291,4 +291,79 @@ describe("MemoryStore", () => {
     await store.revise({ id, patch: patchText, reason: "add v2", session: "s1" });
     expect(readFileSync(join(vaultRoot, path), "utf8")).toBe(onDisk + "\nv2");
   });
+
+  test("remember queues a conflict when a live (working) same-entity peer already conflicts on a fact", async () => {
+    const { store, journal } = await makeStore();
+    const a = await store.remember({
+      content: "Deadline: 2026-08-15",
+      entity: "nova",
+      reason: "seed",
+      session: "s1",
+    });
+    // "working" (not just "canonical") is already a live status for the
+    // contradiction entity matcher, so this is enough to make A a comparable
+    // peer for B's post-remember check.
+    await store.promote({ id: a.id, target_status: "working", reason: "confirmed", session: "s1" });
+
+    await store.remember({
+      content: "Deadline: 2026-09-01",
+      entity: "nova",
+      reason: "seed",
+      session: "s1",
+    });
+
+    const open = journal.listConflicts("open");
+    expect(open).toHaveLength(1);
+    expect(open[0]!.fact_key).toBe("deadline");
+    expect(open[0]!.kind).toBe("value-conflict");
+  });
+
+  test("remember does not queue a conflict for a non-contradicting same-entity peer", async () => {
+    const { store, journal } = await makeStore();
+    const a = await store.remember({
+      content: "Deadline: 2026-08-15",
+      entity: "nova",
+      reason: "seed",
+      session: "s1",
+    });
+    await store.promote({ id: a.id, target_status: "working", reason: "confirmed", session: "s1" });
+
+    await store.remember({
+      content: "Deadline: 2026-08-15",
+      entity: "nova",
+      reason: "seed",
+      session: "s1",
+    });
+
+    expect(journal.listConflicts("open")).toHaveLength(0);
+  });
+
+  test("revise runs the contradiction check after the patch lands", async () => {
+    const { store, journal, vaultRoot } = await makeStore();
+    const a = await store.remember({
+      content: "Owner: Alice",
+      entity: "nova",
+      reason: "seed",
+      session: "s1",
+    });
+    await store.promote({ id: a.id, target_status: "working", reason: "confirmed", session: "s1" });
+
+    const b = await store.remember({
+      content: "Location: Paris",
+      entity: "nova",
+      reason: "seed",
+      session: "s1",
+    });
+    // Sanity: no conflict yet (differing, unrelated fact).
+    expect(journal.listConflicts("open")).toHaveLength(0);
+
+    const before = readFileSync(join(vaultRoot, b.path), "utf8");
+    const after = before.replace("Location: Paris", "Location: Paris\nOwner: Bob");
+    const patchText = createPatch(b.path, before, after);
+    await store.revise({ id: b.id, patch: patchText, reason: "add owner", session: "s1" });
+
+    const open = journal.listConflicts("open");
+    expect(open).toHaveLength(1);
+    expect(open[0]!.fact_key).toBe("owner");
+  });
 });

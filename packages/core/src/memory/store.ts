@@ -6,6 +6,7 @@ import type { z } from "zod";
 import { Broker } from "../broker/broker.js";
 import { hashFile } from "../broker/hash.js";
 import { BrokerError } from "../errors.js";
+import { checkContradictions } from "../contradiction/check.js";
 import type { Journal, MemoryRow } from "../journal/journal.js";
 import type { Confidence, MemoryStatus } from "../schemas/provenance.js";
 
@@ -149,6 +150,15 @@ export class MemoryStore {
     // row (mark it 'reverted') and listTransactions({entity}) can join.
     this.journal.setTransactionMemoryId(txnId, id);
 
+    // Post-commit, non-blocking contradiction check (design v0.3a §5): runs
+    // AFTER the write is fully committed (broker + journal), never before —
+    // it reads the just-written file back off disk. Lock-free and
+    // self-swallowing; see checkContradictions' own doc comment.
+    checkContradictions(
+      { journal: this.journal, vaultRoot: this.vaultRoot, now: this.now, genId: this.genId },
+      id,
+    );
+
     return { id, path, txnId };
   }
 
@@ -180,6 +190,15 @@ export class MemoryStore {
     if (!("queued" in result) && result.txnId !== undefined) {
       this.journal.setTransactionMemoryId(result.txnId, input.id);
     }
+
+    // Post-commit, non-blocking contradiction check (design v0.3a §5) — see
+    // the matching call in `remember` for rationale. Runs even if the write
+    // was queued for approval (harmless: the file on disk hasn't changed
+    // yet in that case, so the check just re-examines the pre-patch note).
+    checkContradictions(
+      { journal: this.journal, vaultRoot: this.vaultRoot, now: this.now, genId: this.genId },
+      input.id,
+    );
   }
 
   /**
