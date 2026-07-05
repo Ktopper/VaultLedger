@@ -59,7 +59,10 @@ packages/core/src/
 ```
 
 Pluggable by construction:
-- `interface ContradictionDetector { detect(a: MemoryFacts, b: MemoryFacts): Conflict[] }`
+- `interface ContradictionDetector { detect(a: { text: string }, b: { text: string }): DetectedConflict[] }`
+  — the detector takes each memory's note **text** and owns extraction internally
+  (it needs the body text for negation-detection, not just extracted facts); the
+  v1.1 embedding checker implements the same `detect(text, text)` seam.
 - `interface EntityMatcher { comparisonSet(mem: MemoryRow, journal): MemoryRow[] }`
 
 v0.3a ships deterministic implementations; v1.1 swaps in embeddings without

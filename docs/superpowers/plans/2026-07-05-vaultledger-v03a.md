@@ -111,7 +111,7 @@ Read `journal/journal.ts` (`queryMemories`, `getMemory`, `MemoryRow` — has `en
 export interface EntityMatcher { comparisonSet(mem: MemoryRow, journal: Journal): MemoryRow[]; }
 export class DefaultEntityMatcher implements EntityMatcher { /* ... */ }
 ```
-- Same entity: `journal.queryMemories({ entity: mem.entity })` (exact) — if `mem.entity` is null/empty, return `[]` (no entity → no matching). Fold-compare defensively.
+- Same entity: `journal.queryMemories({ entity: mem.entity, limit: <high, e.g. 10000> })` (exact; pass an explicit high limit — the default limit is 100, and the lineage walk must see ALL same-entity memories or it could miss a superseding row and re-open a false positive) — if `mem.entity` is null/empty, return `[]` (no entity → no matching). Fold-compare defensively.
 - Live only: keep status in {`canonical`,`working`} — drop `scratch`/`forgotten`/`reverted`/`retired` and `mem` itself.
 - Non-lineage: build the supersedes chain of `mem` (walk `supersedes` up, and find all memories whose `supersedes` transitively reaches `mem` — i.e. both directions), collect their ids into an exclusion set, drop any candidate in it. Provide the exclusion as a helper `lineageIds(mem, journal): Set<string>` so v0.3b can union derivation ids in.
 - [ ] **Step 1: Failing tests:** seed a journal (in-memory) with memories sharing an entity at various statuses + a supersedes chain.
@@ -134,7 +134,7 @@ export class DefaultEntityMatcher implements EntityMatcher { /* ... */ }
   - `listConflicts(state?)`, `getConflict(id)`, `setConflictState(id, state, resolvedAtIso?)`.
   - `markConflictsMoot(memId, nowIso)` — set state 'moot' for `open` conflicts where `memory_a=memId OR memory_b=memId`.
   - `ConflictRow` interface exported.
-- [ ] **Step 1: Failing tests:** open (file-backed) → conflicts has the new columns + the unique index (`pragma index_list`); migration idempotent (open twice). insertConflict twice with same pair/kind/fact → second returns false, one row. listConflicts by state; setConflictState; markConflictsMoot flips only open rows referencing the id.
+- [ ] **Step 1: Failing tests:** open (file-backed) → conflicts has the new columns + the unique index (`pragma index_list`); migration idempotent (open twice). insertConflict twice with same pair/kind/fact → second returns false, one row. **dismissed-not-resurrected:** insert a conflict, `setConflictState(id,"dismissed")`, then insertConflict again with the SAME pair/kind/fact → returns false (the unique key spans all states), and the row stays `dismissed` (not re-opened). listConflicts by state; setConflictState; markConflictsMoot flips only open rows referencing the id.
 - [ ] **Steps 2–4:** FAIL → implement → PASS. **Step 5: Commit** `feat(core): conflicts schema migration + journal helpers`
 
 ### Task 4.2: `Conflicts` API (both-sides-live filter)
@@ -168,7 +168,7 @@ export function checkContradictions(deps: {
   matcher?: EntityMatcher; detector?: ContradictionDetector;
 }, memId: string): void; // synchronous; reads files + journal, inserts conflict rows
 ```
-- Load `mem = journal.getMemory(memId)`; if absent or status ∈ {scratch? NO — scratch IS checked as the NEW claim} — actually: the NEW memory can be scratch/working/canonical; we check IT against its live canonical/working peers. Compute `peers = matcher.comparisonSet(mem, journal)`. Read `mem`'s file text (from `join(vaultRoot, mem.path)`); for each peer, read its file text, run `detector.detect(mem, peer)`; for each DetectedConflict, normalize the pair `[lo,hi] = [mem.id, peer.id].sort()` and `journal.insertConflict({ id: genId("cf"), memory_a: lo, memory_b: hi, pair_lo: lo, pair_hi: hi, kind, fact_key, entity: mem.entity, detail, created_at: now(), state: "open", resolved_at: null })`.
+- Load `mem = journal.getMemory(memId)` (the NEW/changed memory — it can be scratch/working/canonical; we check IT against its live canonical/working peers). Compute `peers = matcher.comparisonSet(mem, journal)`. Read `mem`'s file text `memText = readFileSync(join(vaultRoot, mem.path), "utf8")`; for each peer read `peerText`, then call **`detector.detect({ text: memText }, { text: peerText })`** — the detector takes TEXT (it owns extraction internally; it needs the body text for negation-detection, not just extracted facts). For each DetectedConflict, normalize the pair `[lo,hi] = [mem.id, peer.id].sort()` and `journal.insertConflict({ id: genId("cf"), memory_a: lo, memory_b: hi, pair_lo: lo, pair_hi: hi, kind, fact_key, entity: mem.entity, detail, created_at: now(), state: "open", resolved_at: null })`.
 - WRAP the whole body in try/catch that logs (console.error) and swallows — detection must never throw into the caller (non-blocking, §4.1). File-read of a missing peer/self → skip that pair, don't abort.
 - [ ] **Step 1: Failing tests (real journal + temp vault files):**
   - remember-style: create memory A (canonical, entity "nova", `deadline: 2026-08-15` in file) + memory B (scratch, entity "nova", `deadline: 2026-09-01`); `checkContradictions(deps, B.id)` → one open conflict (A,B, value-conflict, deadline). **scratch-vs-canonical explicitly covered here.**
@@ -214,7 +214,8 @@ export function checkContradictions(deps: {
 
 **Files:** Modify `packages/core/src/broker/reconcile.ts`; Tests alongside.
 
-- After the commit→transaction repair, add: for each `approvals` row still `pending`, if the journal has an APPLIED transaction matching its held op (same path + a commit after the approval's created_at, OR a memory/txn that corresponds) → set the approval `approved` (resolved_at now) with a reason note. Keep the match conservative (path + applied) to avoid false-closing.
+- After the commit→transaction repair, add: for each `approvals` row still `pending`, if the journal has an APPLIED transaction matching its held op (same path + a commit after the approval's created_at) → set the approval `approved` (resolved_at now) with a reason note. Keep the match conservative (path + applied) to avoid false-closing.
+- **Path-representation note (read `reconcile.ts` ~line 53 first):** normal broker transaction rows carry the FULL vault-relative `path`, but `reconcile`-repaired rows store only the commit-message **basename**. Match on the representation that the held op's path can compare against reliably — prefer matching the held op's path against a transaction's full `path`, and if you also want to match reconciled (basename-only) rows, compare basenames explicitly. Document which you chose in a comment so it's not a silent miss/false-close.
 - [ ] **Step 1: Failing test:** simulate the approve→apply crash gap (an approval left 'pending' whose held propose_edit path has an applied transaction after it) → reconcile closes it to 'approved'; an unrelated pending approval is left untouched.
 - [ ] **Steps 2–4:** FAIL → implement → PASS. **Step 5: Commit** `fix(core): reconcile closes stale pending approvals`
 
@@ -222,7 +223,7 @@ export function checkContradictions(deps: {
 
 **Files:** Modify `packages/server/src/app.ts`; Test `packages/server/test/bodyLimit.test.ts`.
 
-- Set a per-route (or app-level) `bodyLimit` on the mutation routes (`POST /undo`, `/approvals/:id/*`, and the new `/conflicts/:id/*`) — a small cap (e.g. 16 KiB). Oversized body → 413 (fastify default) mapped to a clean error body.
+- Set an **app-level** `bodyLimit` on the fastify instance (a small cap, e.g. 16 KiB) so it covers ALL routes including the `/conflicts/:id/*` routes added later in Task 7.1 — do NOT wire per-route limits on routes that don't exist yet in Phase 6. Oversized body → 413 (fastify default) mapped to a clean error body.
 - [ ] **Step 1: Failing test:** POST /undo with a >16KiB body (authed, loopback) → 413 (not a hang/500). A normal small body still works.
 - [ ] **Steps 2–4:** FAIL → implement → PASS. **Step 5: Commit** `feat(server): bodyLimit on mutation routes`
 
