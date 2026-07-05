@@ -115,15 +115,25 @@ This lineage-awareness is a shared dependency with v0.3b's source-linked stalene
 `extract(memory)` produces `MemoryFacts` = a map of `key -> CanonicalValue`. Keys
 come from non-`ledger` frontmatter fields plus `key: value` / `**key:** value`
 lines in the body. Each value is normalized to a canonical, *typed* form:
-- **dates** → parsed to ISO (`Aug 15`, `August 15, 2026`, `2026-08-15` all →
-  `2026-08-15` when a year is determinable);
-- **numbers** → canonical numeric (strip units/commas where unambiguous);
-- **strings** → case/whitespace-folded.
+- **dates** → parsed to ISO (`August 15, 2026`, `2026-08-15`, `2026/08/15` all →
+  `2026-08-15`) — but ONLY unambiguous forms: month-name dates with a year, and
+  **year-first** `yyyy[-/]mm[-/]dd`. An **ambiguous** `d/d/yyyy` slash-date (M/D vs
+  D/M unknown) → **unparseable**, and a date-shaped value with **no year** →
+  unparseable. Date parsing is deterministic (a month-name table, never
+  `new Date(str)`); a `yyyy-mm-dd` frontmatter scalar that YAML coerces to a
+  `Date` is rendered UTC-invariantly.
+- **numbers** → canonical numeric after stripping commas and a leading/trailing
+  currency symbol (`$€£¥`), so `$1,000` and `$1000.00` compare equal.
+- **strings** → `NFC`-normalized, case+whitespace-folded, trailing sentence
+  punctuation (`.,;:!?`) stripped, so `Alice.` == `Alice` and NFC/NFD forms of
+  the same word compare equal.
 
 **Uncertainty loses to precision:** if a value can't be parsed to a comparable
-canonical form (free prose, ambiguous date with no year, mixed types), it is
+canonical form (ambiguous slash-date, date with no year, mixed types), it is
 marked *unparseable* and **never produces a flag**. A pair is only ever compared
-when both sides canonicalize to the **same comparable type**.
+when both sides canonicalize to the **same comparable type**. (Entity matching is
+likewise folded — `foldEntity`: case + whitespace — so `Nova`/`nova` are the same
+entity.)
 
 ### 3.3 The two signals
 
