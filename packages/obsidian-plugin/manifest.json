@@ -1,7 +1,7 @@
 {
   "id": "vaultledger",
   "name": "VaultLedger",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "minAppVersion": "1.5.0",
   "description": "What does my agent believe? Approval queue, provenance, and one-click rollback for VaultLedger.",
   "author": "Kristopher Dunham",
