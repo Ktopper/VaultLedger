@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LedgerGit, formatMessage } from "../../src/broker/git.js";
-import { Journal, type TransactionRow } from "../../src/journal/journal.js";
+import { Journal, type ApprovalRow, type TransactionRow } from "../../src/journal/journal.js";
 import { openJournal } from "../../src/journal/db.js";
 import { reconcile } from "../../src/broker/reconcile.js";
 
@@ -172,5 +172,171 @@ describe("reconcile", () => {
     expect(repaired.path).toBe("Another Note.md");
     expect(repaired.session).toBe("session-a");
     expect(repaired.memory_id).toBeNull();
+  });
+});
+
+describe("reconcile: closes stale pending approvals (approve->apply crash gap)", () => {
+  let dir: string | undefined;
+
+  afterEach(() => {
+    if (dir) {
+      rmSync(dir, { recursive: true, force: true });
+      dir = undefined;
+    }
+  });
+
+  async function makeHarness(): Promise<{
+    journal: Journal;
+    git: LedgerGit;
+    vaultRoot: string;
+    now: () => string;
+    genId: (prefix: string) => string;
+  }> {
+    const vaultRoot = mkdtempSync(join(tmpdir(), "vl-reconcile-approvals-"));
+    dir = vaultRoot;
+    const git = new LedgerGit(vaultRoot);
+    await git.init();
+    const db = openJournal(":memory:");
+    const journal = new Journal(db);
+    const { now, genId } = makeClock();
+    return { journal, git, vaultRoot, now, genId };
+  }
+
+  function pendingApproval(overrides: Partial<ApprovalRow> = {}): ApprovalRow {
+    return {
+      id: "apr_1",
+      held_operation: JSON.stringify({
+        op: "propose_edit",
+        path: "Projects/Nova.md",
+        expected_hash: "sha256:deadbeef",
+        patch: "--- a\n+++ b\n",
+        reason: "edit nova",
+        session: "session-a",
+      }),
+      zone: "restricted",
+      reason: "needs sign-off",
+      session: "session-a",
+      state: "pending",
+      created_at: "2026-07-01T00:00:00.000Z",
+      resolved_at: null,
+      ...overrides,
+    };
+  }
+
+  function appliedTxn(overrides: Partial<TransactionRow> = {}): TransactionRow {
+    return {
+      id: "txn_1",
+      op: "revise",
+      path: "Projects/Nova.md",
+      hash_before: "sha256:before",
+      hash_after: "sha256:after",
+      session: "session-a",
+      reason: "applied",
+      memory_id: null,
+      commit_sha: "sha-nova-1",
+      created_at: "2026-07-02T00:00:00.000Z",
+      status: "applied",
+      ...overrides,
+    };
+  }
+
+  test("a pending approval with a LATER applied transaction on the same path is closed to 'approved'", async () => {
+    const { journal, git, now, genId } = await makeHarness();
+
+    // Both timestamps come off the SAME injected clock, in the order they'd
+    // really happen: the approval is created first (tick 1), then the crash
+    // gap's applied transaction lands later (tick 2).
+    const approvalCreatedAt = now();
+    journal.insertApproval(pendingApproval({ id: "apr_1", created_at: approvalCreatedAt }));
+    const txnCreatedAt = now();
+    journal.recordTransaction(
+      appliedTxn({ id: "txn_1", commit_sha: "sha-nova-1", created_at: txnCreatedAt }),
+    );
+
+    await reconcile({ git, journal, now, genId });
+
+    const approval = journal.getApproval("apr_1")!;
+    expect(approval.state).toBe("approved");
+    expect(approval.resolved_at).not.toBeNull();
+  });
+
+  test("an unrelated pending approval (no matching applied transaction) is left 'pending'", async () => {
+    const { journal, git, now, genId } = await makeHarness();
+
+    const approvalCreatedAt = now();
+    journal.insertApproval(
+      pendingApproval({
+        id: "apr_unrelated",
+        created_at: approvalCreatedAt,
+        held_operation: JSON.stringify({
+          op: "propose_edit",
+          path: "Projects/Orion.md",
+          expected_hash: "sha256:x",
+          patch: "--- a\n+++ b\n",
+          reason: "edit orion",
+          session: "session-a",
+        }),
+      }),
+    );
+    // An applied transaction exists, but for a DIFFERENT path.
+    const txnCreatedAt = now();
+    journal.recordTransaction(
+      appliedTxn({
+        id: "txn_1",
+        path: "Projects/Nova.md",
+        commit_sha: "sha-nova-1",
+        created_at: txnCreatedAt,
+      }),
+    );
+
+    await reconcile({ git, journal, now, genId });
+
+    const approval = journal.getApproval("apr_unrelated")!;
+    expect(approval.state).toBe("pending");
+    expect(approval.resolved_at).toBeNull();
+  });
+
+  test("a pending approval whose only matching transaction is BEFORE it is left 'pending' (conservative)", async () => {
+    const { journal, git, now, genId } = await makeHarness();
+
+    // The transaction was applied and committed BEFORE the approval was
+    // created (tick 1) — it cannot be the result of approving THIS held op,
+    // so reconcile must not close the approval on its account.
+    const txnCreatedAt = now();
+    journal.recordTransaction(
+      appliedTxn({ id: "txn_1", commit_sha: "sha-nova-1", created_at: txnCreatedAt }),
+    );
+    const approvalCreatedAt = now();
+    journal.insertApproval(pendingApproval({ id: "apr_1", created_at: approvalCreatedAt }));
+
+    await reconcile({ git, journal, now, genId });
+
+    const approval = journal.getApproval("apr_1")!;
+    expect(approval.state).toBe("pending");
+    expect(approval.resolved_at).toBeNull();
+  });
+
+  test("matches a reconcile-repaired row (path stored as BASENAME) against the held op's full path", async () => {
+    const { journal, git, vaultRoot, now, genId } = await makeHarness();
+
+    const approvalCreatedAt = now();
+    journal.insertApproval(pendingApproval({ id: "apr_1", created_at: approvalCreatedAt }));
+
+    // Simulate a commit landing in git AFTER the approval was created, with
+    // no journal row yet (the crash gap) — reconcile's FIRST pass (commit ->
+    // transaction repair) will insert a row whose `path` is the BASENAME
+    // ("Nova.md"), not the held op's full vault-relative path
+    // ("Projects/Nova.md"). The approval cross-check pass must still match.
+    writeFileSync(join(vaultRoot, "Nova.md"), "content\n", "utf8");
+    await git.commitFile(
+      "Nova.md",
+      formatMessage({ op: "revise", basename: "Nova.md", session: "session-a" }),
+    );
+
+    const result = await reconcile({ git, journal, now, genId });
+    expect(result.repaired).toBe(1);
+
+    const approval = journal.getApproval("apr_1")!;
+    expect(approval.state).toBe("approved");
   });
 });
