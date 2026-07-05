@@ -206,11 +206,40 @@ synced-safe `.ledger/config.json`, then the token from app-support). Open the
 **Approval Queue** view to see pending trusted-zone edits with rendered diffs and
 Approve/Reject buttons; open **Agent Activity** to see recent transactions grouped
 by session with Undo; hover any note carrying `ledger:` frontmatter to see its
-provenance (source / reason / date / status). The Conflicts tab is present but
-empty until v0.3. Every mutation still goes through the broker — the plugin is a
-pure client and writes nothing directly.
+provenance (source / reason / date / status). The **Conflicts** tab lists
+detected contradictions (v0.3a) with Resolve/Dismiss. Every mutation still goes
+through the broker — the plugin is a pure client and writes nothing directly.
 
-## Architecture (v0.1 + v0.2)
+## Contradiction detection (v0.3a)
+
+VaultLedger stops just governing writes and starts **protecting truth**: when an
+agent writes a claim that contradicts an existing belief on the same entity, the
+contradiction is surfaced for human resolution instead of letting memory silently
+drift. It runs write-time (on `remember`/`revise`), is **non-blocking** (never
+fails the write) and **precision-first** — a deterministic, lineage-aware
+heuristic that only flags high-confidence contradictions (a differing value for
+the same attribute, or a narrow negation flip) between two *live* memories on the
+same entity, and never between a memory and the one it supersedes. It's a
+"favor precision over recall" design: a noisy conflict queue is useless, so when
+a value can't be canonicalized with confidence it is **not** flagged.
+
+Detected conflicts land in a queue, surfaced three ways:
+
+```sh
+ledger conflicts /path/to/vault                 # list open conflicts (entity, kind, detail, both memories)
+ledger conflicts /path/to/vault resolve <id>    # close a conflict you've handled
+ledger conflicts /path/to/vault dismiss <id>    # dismiss a false positive (permanent — never resurfaces)
+ledger conflicts /path/to/vault --rescan        # re-run detection across the vault
+```
+
+Also via the bridge (`GET /conflicts`, `POST /conflicts/:id/{resolve,dismiss}`)
+and the plugin's **Conflicts** tab. Resolving/dismissing just closes the item —
+you make any actual memory edits through the normal broker ops. Conflicts
+referencing a memory that's later undone/forgotten drop off the queue
+automatically. Embedding/LLM-assisted detection is a later milestone; the
+`ContradictionDetector` interface is the drop-in seam.
+
+## Architecture (v0.1 + v0.2 + v0.3a)
 
 - [`packages/core`](packages/core) — the broker: zone resolution, patch-level
   edits with hash checks, the SQLite journal + reindex/reconcile, the memory
@@ -218,8 +247,11 @@ pure client and writes nothing directly.
   queue, and undo (`git revert` + journal compensation). Everything else is a
   thin adapter over this package.
 - [`packages/cli`](packages/cli) — the `ledger` bin: `init`, `status`, `log`,
-  `reindex`, `approve`, `undo`, each a thin wrapper over a testable command
-  function in `packages/cli/src/commands/`.
+  `reindex`, `approve`, `undo`, `serve`, `conflicts`, each a thin wrapper over a
+  testable command function in `packages/cli/src/commands/`.
+- **Contradiction engine (v0.3a)** — `packages/core/src/contradiction/`
+  (extract → detect → match → check) + the `conflicts/` queue: a precision-first,
+  lineage-aware, pluggable detector run non-blocking on every write.
 - [`packages/mcp-server`](packages/mcp-server) — the `vaultledger-mcp` bin: the
   7 MCP tools listed above, wired over stdio via the official MCP SDK.
 - [`packages/server`](packages/server) — **(v0.2)** the fastify bridge behind
@@ -237,7 +269,7 @@ serve` and `vaultledger-mcp` are safe against one vault at once.
 For the full designs and plans, see
 [`docs/superpowers/specs/`](docs/superpowers/specs/) and
 [`docs/superpowers/plans/`](docs/superpowers/plans/) (v0.1: `2026-07-02-*`; v0.2:
-`2026-07-03-*`).
+`2026-07-03-*`; v0.3a: `2026-07-05-*`).
 
 ## Stack
 
@@ -249,7 +281,10 @@ index).
 - **v0.1** — core broker + MCP server + CLI (approve/undo). Prove the loop. ✅
 - **v0.2** — `ledger serve` bridge + Obsidian review plugin (approval queue,
   activity/undo, provenance hover, staleness); concurrency-safe. ✅
-- **v0.3** — lifecycle automation, contradiction detection + conflicts queue.
+- **v0.3a** — write-time contradiction detection + conflicts queue (CLI / bridge /
+  plugin); reindex/reconcile hardening. ✅
+- **v0.3b** — the Undertow merge: `memory_distill`/`memory_retire`, source
+  relations, source-linked staleness, promotion rules, memory-health report.
 - **v1.0** — polish, packaged installers, community-plugin submission, guides.
 
 ## License
