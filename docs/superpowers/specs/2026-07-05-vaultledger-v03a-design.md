@@ -79,13 +79,19 @@ defeats the feature. Every rule below is tuned to *not flag when uncertain*.
 For a memory `M`, the set of memories it is checked against is built by
 `comparisonSet(M, journal)` and is deliberately narrow:
 
-1. **Same entity.** Candidates share `M`'s `entity` (frontmatter `entity` field,
-   exact after case/whitespace-fold), or a shared `aliases` entry. (Heading/full-
-   text matching is deferred; the interface allows it later.)
+1. **Same entity.** Candidates share `M`'s `entity` (the journal `memories.entity`
+   column / frontmatter `entity` field, matched **exactly** after
+   case/whitespace-fold). v0.3a is **entity-field-exact only** — alias, heading,
+   and full-text matching are **deferred** (alias-matching needs an `aliases`
+   field on the provenance schema + a `memories` column + reindex extraction,
+   which v0.3a does not add; it lands with v0.3b or v1.1). The `EntityMatcher`
+   interface is written so those drop in without restructuring `check.ts`.
 2. **Live only.** Exclude any candidate whose status is `forgotten`, `reverted`,
    or `retired` — a contradiction with a dead belief isn't actionable. Only
    `canonical` and `working` memories are compared against (scratch is provisional
-   and not worth flagging).
+   and not worth flagging). (`retired` is a v0.3b status; filtering for it now is
+   deliberate forward-compat — the journal stores status as free text, so no enum
+   change is needed in v0.3a and none should be made.)
 3. **Not lineage-linked (the single biggest false-positive guard).** Exclude any
    candidate related to `M` by lineage, because those value changes are
    *intentional*, not contradictions:
@@ -230,9 +236,9 @@ detection across the agent zone on demand (respecting the all-states dedup).
 
 - **Core (the bulk):**
   - `extract`: date/number/string normalization; unparseable → not comparable.
-  - `matcher`: same-entity + alias matching; **excludes supersedes-chain pairs**
-    (transitive), forgotten/reverted/retired, and scratch; a lineage-linked
-    revise produces **no** candidate.
+  - `matcher`: same-entity (exact) matching; **excludes supersedes-chain pairs**
+    (transitive, both directions), forgotten/reverted/retired, and scratch; a
+    lineage-linked revise produces **no** candidate.
   - `detector`: value-conflict + narrow negation flagged; `Aug 15` vs `2026-08-15`,
     unparseable prose, and type-mismatches **not** flagged (precision guards).
   - `check`: post-commit hook queues a conflict for a true contradiction; a
