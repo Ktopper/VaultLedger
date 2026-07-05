@@ -23,3 +23,8 @@ export * from "./memory/reindex.js";
 export * from "./scan/scanner.js";
 export * from "./concurrency/lock.js";
 export * from "./host/openVault.js";
+export * from "./contradiction/extract.js";
+export * from "./contradiction/detector.js";
+export * from "./contradiction/matcher.js";
+export * from "./contradiction/check.js";
+export * from "./conflicts/queue.js";
