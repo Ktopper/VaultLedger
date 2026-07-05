@@ -1,9 +1,28 @@
 import type { Journal, MemoryRow } from "../journal/journal.js";
+import { foldEntity } from "./extract.js";
 
 const LIVE_STATUSES = new Set(["canonical", "working"]);
 
 export interface EntityMatcher {
   comparisonSet(mem: MemoryRow, journal: Journal): MemoryRow[];
+}
+
+/**
+ * Same-entity candidates for `mem`, matched on the case/whitespace-folded
+ * entity name. SQL folds case + surrounding whitespace (`lower(trim(...))`);
+ * we JS-refilter with `foldEntity` to additionally collapse *internal*
+ * whitespace runs, giving full "Nova" == " n o v a "-style parity. Returns
+ * [] for a null/empty entity.
+ */
+function sameEntityCandidates(mem: MemoryRow, journal: Journal): MemoryRow[] {
+  if (!mem.entity) return [];
+  const folded = foldEntity(mem.entity);
+  if (folded === "") return [];
+  // Explicit high limit: the lineage walk must see every same-entity row,
+  // not just the default page (queryMemories defaults to 100).
+  return journal
+    .queryMemoriesByEntityFolded(folded, 10000)
+    .filter((c) => c.entity !== null && foldEntity(c.entity) === folded);
 }
 
 /**
@@ -17,9 +36,7 @@ export function lineageIds(mem: MemoryRow, journal: Journal): Set<string> {
   const ids = new Set<string>([mem.id]);
   if (!mem.entity) return ids;
 
-  // Explicit high limit: the lineage walk must see every same-entity row,
-  // not just the default page (queryMemories defaults to 100).
-  const sameEntity = journal.queryMemories({ entity: mem.entity, limit: 10000 });
+  const sameEntity = sameEntityCandidates(mem, journal);
 
   let changed = true;
   while (changed) {
@@ -35,7 +52,10 @@ export function lineageIds(mem: MemoryRow, journal: Journal): Set<string> {
       }
     }
 
-    // Down: any same-entity memory whose supersedes points at a member.
+    // Down: any same-entity memory whose supersedes points at a member. This
+    // inner scan can take up to O(chain depth) outer passes to reach a fixed
+    // point (each pass extends the frontier by one link); always terminates
+    // since `ids` only grows and is bounded by the same-entity row count.
     for (const candidate of sameEntity) {
       if (candidate.supersedes && ids.has(candidate.supersedes) && !ids.has(candidate.id)) {
         ids.add(candidate.id);
@@ -57,7 +77,7 @@ export class DefaultEntityMatcher implements EntityMatcher {
   comparisonSet(mem: MemoryRow, journal: Journal): MemoryRow[] {
     if (!mem.entity) return [];
 
-    const candidates = journal.queryMemories({ entity: mem.entity, limit: 10000 });
+    const candidates = sameEntityCandidates(mem, journal);
     const lineage = lineageIds(mem, journal);
 
     return candidates.filter(

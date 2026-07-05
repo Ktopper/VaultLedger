@@ -39,7 +39,17 @@ const MONTHS: Record<string, string> = {
   december: "12",
 };
 
-const ISO_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+// Year-first (yyyy-mm-dd / yyyy/mm/dd) is unambiguous — order is fixed, so we
+// can parse it regardless of separator.
+const ISO_DATE_RE = /^(\d{4})[-/](\d{2})[-/](\d{2})$/;
+// Slash date with a 1-2 digit leading field (m/d/y vs d/m/y) is genuinely
+// ambiguous — we cannot know which of the first two fields is the month.
+// Precision-first: mark unparseable rather than guess a convention.
+const AMBIGUOUS_SLASH_DATE_RE = /^\d{1,2}\/\d{1,2}\/\d{2,4}$/;
+// Leading/trailing currency symbols stripped before the number test.
+const CURRENCY_RE = /^[$€£¥]\s*|\s*[$€£¥]$/g;
+// Trailing sentence punctuation stripped before folding a string value.
+const TRAILING_PUNCT_RE = /[.,;:!?]+$/;
 // "Mon day[, year]" / "Month day[, year]" — year is optional so we can
 // detect the date-shaped-but-yearless case (-> unparseable) separately.
 const MONTH_DAY_YEAR_RE = /^([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s*(\d{4})?$/;
@@ -57,7 +67,11 @@ const NUMBER_RE = /^-?\d+(\.\d+)?$/;
 function tryDate(trimmed: string): CanonicalValue | null {
   const iso = ISO_DATE_RE.exec(trimmed);
   if (iso) {
-    return { type: "date", value: trimmed };
+    return { type: "date", value: `${iso[1]!}-${iso[2]!}-${iso[3]!}` };
+  }
+
+  if (AMBIGUOUS_SLASH_DATE_RE.test(trimmed)) {
+    return { type: "unparseable", raw: trimmed };
   }
 
   const monDayYear = MONTH_DAY_YEAR_RE.exec(trimmed);
@@ -99,21 +113,40 @@ export function canonicalize(raw: string): CanonicalValue {
     return dateResult;
   }
 
-  const numberCandidate = trimmed.replace(/,/g, "");
+  const numberCandidate = trimmed.replace(CURRENCY_RE, "").replace(/,/g, "");
   if (NUMBER_RE.test(numberCandidate)) {
     return { type: "number", value: parseFloat(numberCandidate) };
   }
 
-  return { type: "string", value: trimmed.toLowerCase().replace(/\s+/g, " ").trim() };
+  // NFC-normalize so composed/decomposed unicode forms (e.g. "café") fold to
+  // the same value; strip trailing sentence punctuation so "Alice." == "Alice".
+  const folded = trimmed
+    .normalize("NFC")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(TRAILING_PUNCT_RE, "");
+  return { type: "string", value: folded };
 }
 
 function foldKey(key: string): string {
   return key.toLowerCase().replace(/\s+/g, " ").trim();
 }
 
-// Body lines: an optional bold-markdown label, then a colon, then a value.
-// e.g. "deadline: 2026-08-15" or "**owner:** Alice".
-const FACT_LINE_RE = /^\s*(?:\*\*)?([A-Za-z][\w \-]*?)(?:\*\*)?\s*:\s*(.+?)\s*$/;
+/**
+ * Case/whitespace-fold for entity names (shared by the entity matcher):
+ * lowercase, collapse internal runs of whitespace to single spaces, trim.
+ * Same folding `extract` applies to fact keys, so "Nova", "nova", and
+ * " nova " all fold to one canonical form.
+ */
+export function foldEntity(s: string): string {
+  return s.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+// Body lines: an optional bold-markdown label, then a colon (ASCII ":" or the
+// CJK fullwidth colon U+FF1A), then a value. e.g. "deadline: 2026-08-15",
+// "**owner:** Alice", or "owner：Alice".
+const FACT_LINE_RE = /^\s*(?:\*\*)?([A-Za-z][\w \-]*?)(?:\*\*)?\s*[:：]\s*(.+?)\s*$/;
 
 export function extract(noteText: string): MemoryFacts {
   const { data, content } = matter(noteText);

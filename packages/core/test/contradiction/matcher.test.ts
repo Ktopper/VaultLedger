@@ -73,6 +73,19 @@ describe("DefaultEntityMatcher.comparisonSet", () => {
     expect(resultC).toEqual(["mem_d"]);
   });
 
+  test("entity matching is case/whitespace-folded: 'Nova', 'nova', ' nova ' all compare", () => {
+    const j = makeJournal();
+    j.insertMemory(memRow({ id: "mem_1", entity: "Nova", status: "canonical" }));
+    j.insertMemory(memRow({ id: "mem_2", entity: "nova", status: "canonical" }));
+    j.insertMemory(memRow({ id: "mem_3", entity: " nova ", status: "canonical" }));
+    // A genuinely different entity is still excluded.
+    j.insertMemory(memRow({ id: "mem_4", entity: "Orion", status: "canonical" }));
+
+    const mem = j.getMemory("mem_1")!;
+    const result = matcher.comparisonSet(mem, j).map((m) => m.id).sort();
+    expect(result).toEqual(["mem_2", "mem_3"]);
+  });
+
   test("different-entity memories are excluded; null-entity mem returns []", () => {
     const j = makeJournal();
     j.insertMemory(memRow({ id: "mem_1", entity: "Nova", status: "canonical" }));

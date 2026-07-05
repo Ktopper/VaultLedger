@@ -245,6 +245,23 @@ export class Journal {
     return this.db.prepare<Record<string, unknown>, MemoryRow>(sql).all(params);
   }
 
+  /**
+   * Same-entity lookup with SQL-side case + surrounding-whitespace folding
+   * (`lower(trim(entity)) = @folded`). Callers pass an already-folded key
+   * (see `foldEntity`) and should still JS-refilter to collapse *internal*
+   * whitespace, which SQL trim() does not. Used by the contradiction entity
+   * matcher, which must treat "Nova"/"nova"/" nova " as one entity.
+   */
+  queryMemoriesByEntityFolded(folded: string, limit: number): MemoryRow[] {
+    const sql = `
+      SELECT m.* FROM memories m
+      WHERE lower(trim(m.entity)) = @folded
+      ORDER BY m.created DESC
+      LIMIT @limit
+    `;
+    return this.db.prepare<Record<string, unknown>, MemoryRow>(sql).all({ folded, limit });
+  }
+
   touchMemory(id: string, isoNow: string): void {
     this.db
       .prepare(`UPDATE memories SET last_referenced = @isoNow WHERE id = @id`)

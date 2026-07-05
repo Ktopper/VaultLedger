@@ -15,7 +15,9 @@ export interface ContradictionDetector {
 }
 
 // Simple declarative statement: "<subject> is [not|no longer|isn't] <object>".
-// Exact normalized subject+object match only — no fuzzy matching.
+// Exact normalized subject+object match only — no fuzzy matching. Intentionally
+// narrow: one "X is Y" clause per line; compound sentences (multiple clauses /
+// conjunctions) are scoped out by design to keep precision high.
 const NEGATION_LINE_RE = /^\s*(.+?)\s+is\s+(not\s+|no longer\s+|isn't\s+)?(.+?)\s*$/i;
 
 function fold(s: string): string {

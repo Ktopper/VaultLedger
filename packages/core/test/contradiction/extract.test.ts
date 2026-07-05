@@ -37,6 +37,34 @@ describe("canonicalize", () => {
   test("internal whitespace is folded to single spaces", () => {
     expect(canonicalize("  Big   Deal  ")).toEqual({ type: "string", value: "big deal" });
   });
+
+  test("currency-prefixed amounts canonicalize to the bare number", () => {
+    expect(canonicalize("$1,000")).toEqual({ type: "number", value: 1000 });
+    expect(canonicalize("$1000.00")).toEqual({ type: "number", value: 1000 });
+    expect(canonicalize("€1,000")).toEqual({ type: "number", value: 1000 });
+  });
+
+  test("trailing punctuation is stripped from string values", () => {
+    expect(canonicalize("Alice.")).toEqual({ type: "string", value: "alice" });
+    expect(canonicalize("Alice")).toEqual({ type: "string", value: "alice" });
+  });
+
+  test("ambiguous slash dates are unparseable (never guessed)", () => {
+    expect(canonicalize("8/15/2026")).toEqual({ type: "unparseable", raw: "8/15/2026" });
+    expect(canonicalize("08/15/2026")).toEqual({ type: "unparseable", raw: "08/15/2026" });
+  });
+
+  test("year-first slash date parses to ISO (unambiguous)", () => {
+    expect(canonicalize("2026/08/15")).toEqual({ type: "date", value: "2026-08-15" });
+  });
+
+  test("NFC/NFD unicode forms canonicalize equal", () => {
+    const nfc = "café".normalize("NFC");
+    const nfd = "café".normalize("NFD");
+    expect(nfc).not.toBe(nfd); // genuinely different byte sequences
+    expect(canonicalize(nfc)).toEqual(canonicalize(nfd));
+    expect(canonicalize(nfd)).toEqual({ type: "string", value: "café".normalize("NFC") });
+  });
 });
 
 describe("extract", () => {
@@ -71,6 +99,17 @@ status: body-value
 `;
     const facts = extract(note);
     expect(facts.get("status")).toEqual({ type: "string", value: "frontmatter-value" });
+  });
+
+  test("body line with a fullwidth colon (U+FF1A) is extracted as a fact", () => {
+    const note = `---
+ledger:
+  id: mem_1
+---
+owner：Alice
+`;
+    const facts = extract(note);
+    expect(facts.get("owner")).toEqual({ type: "string", value: "alice" });
   });
 
   test("skips array/object frontmatter values", () => {
