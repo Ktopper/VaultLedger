@@ -97,23 +97,28 @@ describe("renderConflict", () => {
     expect(el.textContent).toContain("?");
   });
 
-  // SECURITY: detail/path fields come from an agent's proposed note content —
-  // attacker-influenced. renderConflict must NEVER use innerHTML — only
-  // createElement + textContent — or a hostile conflict never executes.
-  test("SECURITY: hostile detail/path content never executes — rendered as literal text", () => {
+  // SECURITY: every field (entity/kind/detail/id/path) comes from an agent's
+  // proposed note content — attacker-influenced. renderConflict must NEVER use
+  // innerHTML — only createElement + textContent — so a hostile conflict in
+  // ANY field never executes.
+  test("SECURITY: hostile content in EVERY field (entity/kind/detail/path) never executes — rendered as literal text", () => {
     const el = renderConflict({
       row: {
         id: "cf_1",
-        entity: "nova",
-        kind: "value-conflict",
+        entity: "<img src=e onerror=alert('entity')>",
+        kind: "<script>kind()</script>",
         detail: "<img src=x onerror=alert(1)>",
       },
-      memoryA: { id: "mem_a", path: "<script>evil()</script>" },
-      memoryB: { id: "mem_b", path: "Agent/Memory/mem_b.md" },
+      memoryA: { id: "<script>ida()</script>", path: "<script>evil()</script>" },
+      memoryB: { id: "mem_b", path: "<img src=b onerror=alert('pathB')>" },
     });
+    // Exhaustive: no field's payload materializes as a live element.
     expect(el.querySelectorAll("img,script").length).toBe(0);
+    expect(el.textContent).toContain("<img src=e onerror=alert('entity')>");
+    expect(el.textContent).toContain("<script>kind()</script>");
     expect(el.textContent).toContain("<img src=x onerror=alert(1)>");
     expect(el.textContent).toContain("<script>evil()</script>");
+    expect(el.textContent).toContain("<img src=b onerror=alert('pathB')>");
   });
 });
 

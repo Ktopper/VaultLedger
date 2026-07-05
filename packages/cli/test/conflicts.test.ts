@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ConflictRow, EnrichedConflict, MemoryRow } from "@vaultledger/core";
+import { BrokerError, type ConflictRow, type EnrichedConflict, type MemoryRow } from "@vaultledger/core";
 import { conflictsCommand } from "../src/commands/conflicts.js";
 import { loadContext } from "../src/context.js";
 import { makeInitializedVault, type TestVault } from "./helpers.js";
@@ -121,6 +121,34 @@ describe("conflictsCommand", () => {
     expect(after).toHaveLength(0);
   });
 
+  test("resolve on an unknown id errors (NOT_FOUND) instead of falsely claiming success", async () => {
+    vault = await makeInitializedVault();
+
+    const messages: string[] = [];
+    await expect(
+      conflictsCommand(vault.vaultDir, { ...vault.deps, action: "resolve", id: "cf_nope", out: (s) => messages.push(s) }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+    // Never printed a false "resolved cf_nope" confirmation.
+    expect(messages.join("\n")).not.toContain("resolved cf_nope");
+  });
+
+  test("dismiss on an unknown id errors (NOT_FOUND) instead of falsely claiming success", async () => {
+    vault = await makeInitializedVault();
+
+    const messages: string[] = [];
+    const err = await conflictsCommand(vault.vaultDir, {
+      ...vault.deps,
+      action: "dismiss",
+      id: "cf_nope",
+      out: (s) => messages.push(s),
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(BrokerError);
+    expect((err as BrokerError).code).toBe("NOT_FOUND");
+    expect(messages.join("\n")).not.toContain("dismissed cf_nope");
+  });
+
   test("--rescan re-detects a real contradiction, idempotently (still 1, not 2)", async () => {
     vault = await makeInitializedVault();
     await seedContradictingMemories(vault);
@@ -130,5 +158,35 @@ describe("conflictsCommand", () => {
 
     const second = await conflictsCommand(vault.vaultDir, { ...vault.deps, rescan: true, out: () => {} });
     expect(second).toHaveLength(1);
+  });
+
+  test("--rescan skips dead (forgotten) memories: no fresh conflict row for a forgotten peer", async () => {
+    vault = await makeInitializedVault();
+    // A forgotten memory that (were it live) would contradict a canonical peer
+    // on `deadline`. rescan must NOT run detection off the dead memory, and the
+    // canonical peer's own detection must skip the dead peer — so no open
+    // conflict ever surfaces.
+    const dir = join(vault.vaultDir, "Agent", "Memory");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "mem_live.md"), "# Live\n\ndeadline: 2026-08-15\n", "utf8");
+    writeFileSync(join(dir, "mem_dead.md"), "# Dead\n\ndeadline: 2026-09-01\n", "utf8");
+
+    const ctx = await loadContext(vault.vaultDir, vault.deps);
+    ctx.journal.insertMemory(
+      memRow({ id: "mem_live", path: "Agent/Memory/mem_live.md", entity: "nova", status: "canonical" }),
+    );
+    ctx.journal.insertMemory(
+      memRow({ id: "mem_dead", path: "Agent/Memory/mem_dead.md", entity: "nova", status: "forgotten" }),
+    );
+    ctx.db.close();
+
+    const result = await conflictsCommand(vault.vaultDir, { ...vault.deps, rescan: true, out: () => {} });
+    expect(result).toHaveLength(0);
+
+    // And no conflict row was inserted at all (not merely filtered from the
+    // open view) — the dead memory never seeded a zombie row.
+    const after = await loadContext(vault.vaultDir, vault.deps);
+    expect(after.journal.listConflicts()).toHaveLength(0);
+    after.db.close();
   });
 });

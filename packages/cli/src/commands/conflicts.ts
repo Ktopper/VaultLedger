@@ -1,5 +1,12 @@
-import { Conflicts, checkContradictions, type EnrichedConflict } from "@vaultledger/core";
+import { BrokerError, Conflicts, checkContradictions, type EnrichedConflict } from "@vaultledger/core";
 import { loadContext, type LoadContextDeps } from "../context.js";
+
+// Statuses a memory can hold that mean it's dead — forgotten/reverted/retired
+// (mirrors core's Conflicts DEAD_STATUSES). A rescan must not run detection
+// off a dead memory: it wastes I/O and, worse, can insert a zombie conflict
+// row (one side dead) that the both-sides-live view will always hide but that
+// still sits as dead weight in the table. So iterate LIVE memories only.
+const DEAD_STATUSES = new Set(["forgotten", "reverted", "retired"]);
 
 export interface ConflictsOptions extends LoadContextDeps {
   action?: "resolve" | "dismiss";
@@ -38,6 +45,14 @@ export async function conflictsCommand(
     const conflicts = new Conflicts(ctx.journal);
 
     if (opts.action && opts.id) {
+      // Mirror the bridge route: an unconditional setConflictState is a 0-row
+      // no-op on an unknown id, which would let us print a false "resolved
+      // <id>" and exit 0 — a false success report. Check existence first and
+      // surface a NOT_FOUND so the commander wrapper prints it and exits
+      // non-zero (CLAUDE.md: choose auditability over convenience).
+      if (!conflicts.get(opts.id)) {
+        throw new BrokerError("NOT_FOUND", `conflict ${opts.id} not found`);
+      }
       if (opts.action === "resolve") {
         conflicts.resolve(opts.id, ctx.now());
       } else {
@@ -50,6 +65,10 @@ export async function conflictsCommand(
     if (opts.rescan) {
       const all = ctx.journal.queryMemories({ limit: 100000 });
       for (const mem of all) {
+        // Skip dead memories: running detection off a forgotten/reverted/
+        // retired memory can only ever insert a zombie conflict row (its own
+        // side is dead) that the both-sides-live view will always hide.
+        if (DEAD_STATUSES.has(mem.status)) continue;
         checkContradictions(
           { journal: ctx.journal, vaultRoot: ctx.vaultRoot, now: ctx.now, genId: ctx.genId },
           mem.id,
