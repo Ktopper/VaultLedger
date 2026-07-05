@@ -59,6 +59,7 @@ export async function reconcile(
       reason: "reconciled from commit",
       memory_id: memoryId ?? null,
       commit_sha: sha,
+      approval_id: null,
       created_at: now(),
       status: "applied",
     };
@@ -83,63 +84,38 @@ export async function reconcile(
  * — leaving an approval that LOOKS like it's still awaiting a human, when
  * the edit it describes has already gone through.
  *
- * Matched CONSERVATIVELY: an approval is only closed when there's a clear
- * applied transaction, on the same path, with a created_at strictly AFTER
- * the approval's own created_at. No such transaction -> the approval is left
- * untouched. This can never resurrect a rejected/already-approved row (only
- * 'pending' rows are considered) and can never mis-close a genuinely
- * still-pending approval just because some unrelated later edit touched the
- * same path before the approval existed (the created_at ordering rules that
- * out) — worst case a stale approval survives one more reconcile cycle,
- * which is the safe direction to err in.
+ * SOUND id-link match (not a heuristic): when `Approvals.approve` re-runs a
+ * held op through the broker, it passes the approval's id as
+ * `broker.apply(op, { approvalId })`, which stamps the resulting transaction
+ * row's `approval_id`. So an approval is closed to 'approved' IFF the journal
+ * has an APPLIED transaction whose `approval_id` equals the approval's id —
+ * the EXACT row produced by applying THAT approval, nothing else.
  *
- * PATH REPRESENTATION NOTE: a transaction row's `path` is the full
- * vault-relative path when recorded by the normal broker write path, but
- * only the BASENAME when recorded by this same reconcile function's
- * commit-repair pass above (see its doc comment). A held operation's path is
- * always the full vault-relative path. We match on FULL PATH ONLY
- * (`t.path === path`) and deliberately do NOT fall back to a basename
- * comparison: a reconciled basename-only row has lost its directory, so a
- * bare "Nova.md" can't be distinguished between `Projects/Nova.md` and
- * `Archive/Nova.md` — matching it risks FALSE-CLOSING an approval on a
- * same-named note in a different folder, and a false-close (marking an
- * approval 'approved' whose op never actually applied) is strictly worse
- * than a miss. The common case (the applied op is a normal broker
- * transaction row) carries the full path and matches fine. The rare
- * double-fault case (the applied op's OWN txn row was itself lost to a crash
- * AND then reconciled down to a basename) simply won't auto-close — the
- * approval stays 'pending', which is safe and conservative (a human can
- * still act on it).
+ * Why exact-id and not a path/time heuristic: a "same path, committed after
+ * the approval" heuristic FALSE-CLOSES an unrelated op. Concretely — a
+ * propose_edit on `Agent/Notes/x.md` is queued at t1; an unrelated DIRECT
+ * revise lands on that same path at t2; the heuristic would mark the approval
+ * 'approved' even though the approval's OWN patch never applied, corrupting
+ * the audit trail's "every mutation is attributable" invariant. (Matching on
+ * hash_before doesn't save it either — two different ops can start from the
+ * same file state.) The id-link makes a false-close impossible: a different
+ * op carries a different — or null — approval_id and simply won't match.
  *
- * Only `create`/`revise`/`propose_edit` held ops carry a `path` field
- * (`promote`/`forget` operate on a memory `id` instead, with no file write to
- * cross-check against) — an approval whose held op has no `path` is left
- * untouched; there is nothing conservative to match it against.
+ * Only ops applied THROUGH the broker's approve path carry an approval_id, so
+ * the `promote`->canonical approval (whose approve() calls `store.setStatus`,
+ * recording no approval_id-tagged transaction) will NOT auto-close on crash —
+ * it just stays pending, which is safe (no false-close; a human re-acts).
  */
 function closeStaleApprovals(journal: Journal, now: () => string): number {
   const pending = journal.listApprovals("pending");
-  if (pending.length === 0) return 0;
-
-  const transactions = journal.listTransactions({});
   let closed = 0;
 
   for (const approval of pending) {
-    let heldOp: { path?: unknown };
-    try {
-      heldOp = JSON.parse(approval.held_operation) as { path?: unknown };
-    } catch {
-      continue; // Corrupt held_operation JSON: nothing to conservatively match.
-    }
-    const path = typeof heldOp.path === "string" ? heldOp.path : undefined;
-    if (!path) continue;
-
-    const match = transactions.find(
-      (t) =>
-        t.status === "applied" &&
-        t.path === path &&
-        t.created_at > approval.created_at,
-    );
-    if (match) {
+    // Query by approval_id (indexed lookup, not a full-table scan per pending
+    // approval). Any APPLIED transaction tagged with this approval's id is the
+    // exact deferred execution of its held op — close the approval.
+    const appliedForThisApproval = journal.getAppliedTransactionsByApprovalId(approval.id);
+    if (appliedForThisApproval.length > 0) {
       journal.setApprovalState(approval.id, "approved", now());
       closed += 1;
     }

@@ -30,7 +30,7 @@ packages/core/src/
 │   └── journal.ts    # MODIFY: conflict row insert (ON CONFLICT DO NOTHING) + query helpers; markConflictsMoot
 ├── memory/store.ts   # MODIFY: remember/revise call checkContradictions post-commit
 ├── broker/undo.ts    # MODIFY: undo compensation marks referencing conflicts moot
-├── broker/reconcile.ts # MODIFY: approval-vs-transaction cross-check; ON CONFLICT DO NOTHING inserts
+├── broker/reconcile.ts # MODIFY: approval cross-check via sound approval_id link; ON CONFLICT DO NOTHING inserts
 └── index.ts          # export contradiction + conflicts surface
 
 packages/server/src/app.ts   # MODIFY: GET /conflicts (populated), POST /conflicts/:id/{resolve,dismiss}; bodyLimit
@@ -210,14 +210,15 @@ export function checkContradictions(deps: {
 - [ ] **Step 1: Failing test:** two concurrent reindex/reconcile over the same vault (or insert the same commit_sha twice) → exactly one transaction row, no throw (converges). Migration idempotent.
 - [ ] **Steps 2–4:** FAIL → implement → PASS. **Step 5: Commit** `fix(core): UNIQUE(commit_sha) so concurrent reindex converges`
 
-### Task 6.2: reconcile approval-vs-transaction cross-check
+### Task 6.2: reconcile approval-vs-transaction cross-check (SOUND approval_id link)
 
-**Files:** Modify `packages/core/src/broker/reconcile.ts`; Tests alongside.
+**Files:** Modify `packages/core/src/journal/db.ts` (+ migration), `packages/core/src/journal/journal.ts`, `packages/core/src/broker/broker.ts`, `packages/core/src/approvals/queue.ts`, `packages/core/src/broker/reconcile.ts`; Tests alongside.
 
-- After the commit→transaction repair, add: for each `approvals` row still `pending`, if the journal has an APPLIED transaction matching its held op (same path + a commit after the approval's created_at) → set the approval `approved` (resolved_at now) with a reason note. Keep the match conservative (path + applied) to avoid false-closing.
-- **Path-representation note (read `reconcile.ts` ~line 53 first):** normal broker transaction rows carry the FULL vault-relative `path`, but `reconcile`-repaired rows store only the commit-message **basename**. Match on the representation that the held op's path can compare against reliably — prefer matching the held op's path against a transaction's full `path`, and if you also want to match reconciled (basename-only) rows, compare basenames explicitly. Document which you chose in a comment so it's not a silent miss/false-close.
-- [ ] **Step 1: Failing test:** simulate the approve→apply crash gap (an approval left 'pending' whose held propose_edit path has an applied transaction after it) → reconcile closes it to 'approved'; an unrelated pending approval is left untouched.
-- [ ] **Steps 2–4:** FAIL → implement → PASS. **Step 5: Commit** `fix(core): reconcile closes stale pending approvals`
+- **Do NOT use a path+time heuristic.** "Same path + a commit after the approval's created_at" is UNSOUND: a same-path DIFFERENT op applied after the approval (e.g. an unrelated direct revise on a note that also has a queued propose_edit) would false-close the approval — marking it `approved` though its OWN patch never applied, corrupting the "every mutation is attributable" audit invariant. hash_before doesn't fix it either (two ops can start from the same state). A false-close is strictly worse than a miss.
+- **Sound mechanism — explicit `approval_id` link:** add an `approval_id TEXT` column to `transactions` (both `SCHEMA_SQL` for fresh journals AND a pragma-table_info + ALTER migration for existing ones, mirroring the conflicts-column migration; idempotent). Add `approval_id: string | null` to `TransactionRow` and both inserts (`recordTransaction`, `recordTransactionIfNew`). `Broker.apply(op, opts?)` gains `opts.approvalId?: string`, stamped onto the transaction row it records (create/revise apply paths); unset → null for all direct writes. `Approvals.approve`'s `dispatchApply` passes `{ approved: true, approvalId: approval.id }`, so the transaction produced by applying a held op carries that approval's id.
+- **reconcile.closeStaleApprovals:** for each `pending` approval, close it to `approved` (resolved_at now) IFF the journal has an APPLIED transaction whose `approval_id === approval.id` (query via `journal.getAppliedTransactionsByApprovalId(id)` — indexed lookup, not a per-approval full-table scan). No path/created_at heuristic, no held_operation JSON parsing. A false-close is now impossible (a different op has a different/null approval_id). The `promote`→canonical approval applies via `store.setStatus` (no approval_id-tagged transaction), so a crash there just leaves it `pending` — safe, no false-close.
+- [x] **Step 1: Failing test:** the no-false-close case (a pending approval on path P + an unrelated applied transaction on the SAME path P with a different/null approval_id → stays `pending`, approvalsClosed 0) FAILS against the path-heuristic and PASSES with the id-link. Plus: an applied txn tagged with the approval's id closes it; an untagged/reverted txn does not.
+- [x] **Steps 2–4:** FAIL → implement → PASS. **Step 5: Commit** `fix(core): reconcile closes stale approvals via sound approval_id link (no false-close)`
 
 ### Task 6.3: bridge bodyLimit
 

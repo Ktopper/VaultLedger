@@ -132,7 +132,14 @@ export class Approvals {
 
   private async dispatchApply(id: string, op: ProposedOperation): Promise<ApproveResult> {
     try {
-      await this.broker.apply(op, { approved: true });
+      // Pass approvalId so the transaction the broker records carries this
+      // approval's id — the SOUND link reconcile.closeStaleApprovals uses to
+      // close a stale pending approval by exact id-match after a crash in the
+      // gap below (see that function). The promote-canonical branch of
+      // approve() does NOT route through here (it calls store.setStatus, which
+      // records no approval_id-tagged transaction) — a crash there just leaves
+      // the approval pending, which is safe: no false-close, a human re-acts.
+      await this.broker.apply(op, { approved: true, approvalId: id });
     } catch (e) {
       if (e instanceof BrokerError && e.code === "STALE_HASH") {
         this.journal.setApprovalState(id, "stale", this.now());
@@ -144,12 +151,14 @@ export class Approvals {
       // reject() it. Only STALE_HASH auto-resolves the row (to "stale").
       throw e;
     }
-    // v0.1 KNOWN LIMITATION: there is a crash gap between the broker's write
-    // (file + commit + transaction row all landing) and this setApprovalState.
-    // If the process dies here, the edit is applied but the approval row stays
-    // "pending" forever — reconcile() repairs missing transaction rows but has
-    // no approval-vs-applied reconciliation yet. Acceptable for v0.1; a future
-    // version should cross-check pending approvals against applied transactions.
+    // Crash gap: the process can die between the broker's write (file + commit
+    // + transaction row all landing) and this setApprovalState, leaving the
+    // edit applied but the approval row still "pending". reconcile's
+    // closeStaleApprovals repairs exactly this: it closes any pending approval
+    // that has an APPLIED transaction tagged with its approval_id (the sound
+    // id-link stamped above via broker.apply's approvalId), so the recovery is
+    // exact — never a path/time heuristic that could false-close an unrelated
+    // same-path op.
     this.journal.setApprovalState(id, "approved", this.now());
     return { applied: true };
   }

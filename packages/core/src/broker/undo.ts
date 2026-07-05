@@ -125,6 +125,7 @@ async function runUndoTransaction(
     reason: `revert of ${txnId}`,
     memory_id: txn.memory_id,
     commit_sha: revertSha,
+    approval_id: null,
     created_at: now(),
     status: "applied",
   };

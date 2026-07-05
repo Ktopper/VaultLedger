@@ -192,6 +192,7 @@ export async function reindex(opts: ReindexOptions): Promise<ReindexResult> {
       reason: "reindexed",
       memory_id: memoryId ?? null,
       commit_sha: sha,
+      approval_id: null,
       created_at: now(),
       status: "applied",
     };

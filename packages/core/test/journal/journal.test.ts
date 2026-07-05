@@ -41,6 +41,7 @@ describe("openJournal", () => {
       reason: "x",
       memory_id: null,
       commit_sha: null,
+      approval_id: null,
       created_at: "2026-07-01T00:00:00.000Z",
       status: null,
     } as unknown as TransactionRow;
@@ -92,6 +93,7 @@ describe("Journal transactions", () => {
       reason: "initial capture",
       memory_id: "mem_1",
       commit_sha: "deadbeef",
+      approval_id: null,
       created_at: "2026-07-01T00:00:00.000Z",
       status: "applied",
       ...overrides,

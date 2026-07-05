@@ -13,6 +13,12 @@ export interface TransactionRow {
   reason: string | null;
   memory_id: string | null;
   commit_sha: string | null;
+  /** The approval whose held operation produced this transaction, when it was
+   * applied via `Approvals.approve`. Null for direct broker writes (which
+   * never pass through an approval). Lets reconcile SOUNDLY close a stale
+   * pending approval by exact id-match (see broker/reconcile.ts) instead of a
+   * path/time heuristic that could false-close an unrelated same-path op. */
+  approval_id: string | null;
   created_at: string;
   status: TransactionStatus;
 }
@@ -104,8 +110,8 @@ export class Journal {
     this.db
       .prepare(
         `INSERT INTO transactions
-           (id, op, path, hash_before, hash_after, session, reason, memory_id, commit_sha, created_at, status)
-         VALUES (@id, @op, @path, @hash_before, @hash_after, @session, @reason, @memory_id, @commit_sha, @created_at, @status)`,
+           (id, op, path, hash_before, hash_after, session, reason, memory_id, commit_sha, approval_id, created_at, status)
+         VALUES (@id, @op, @path, @hash_before, @hash_after, @session, @reason, @memory_id, @commit_sha, @approval_id, @created_at, @status)`,
       )
       .run(row);
   }
@@ -129,12 +135,27 @@ export class Journal {
     const result = this.db
       .prepare(
         `INSERT INTO transactions
-           (id, op, path, hash_before, hash_after, session, reason, memory_id, commit_sha, created_at, status)
-         VALUES (@id, @op, @path, @hash_before, @hash_after, @session, @reason, @memory_id, @commit_sha, @created_at, @status)
+           (id, op, path, hash_before, hash_after, session, reason, memory_id, commit_sha, approval_id, created_at, status)
+         VALUES (@id, @op, @path, @hash_before, @hash_after, @session, @reason, @memory_id, @commit_sha, @approval_id, @created_at, @status)
          ON CONFLICT(commit_sha) WHERE commit_sha IS NOT NULL DO NOTHING`,
       )
       .run(row);
     return result.changes > 0;
+  }
+
+  /**
+   * Applied transactions produced by approving the given approval — the sound
+   * link reconcile uses to close a stale pending approval (design §5,
+   * approve->apply crash gap). Filtered in SQL by `approval_id` (not an
+   * unbounded full-table scan per pending approval) and by `status='applied'`
+   * so a later-reverted apply doesn't count as still-applied.
+   */
+  getAppliedTransactionsByApprovalId(approvalId: string): TransactionRow[] {
+    return this.db
+      .prepare<{ approvalId: string }, TransactionRow>(
+        `SELECT * FROM transactions WHERE approval_id = @approvalId AND status = 'applied'`,
+      )
+      .all({ approvalId });
   }
 
   getTransaction(id: string): TransactionRow | null {

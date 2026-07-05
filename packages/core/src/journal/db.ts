@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS transactions (
   reason TEXT,
   memory_id TEXT,
   commit_sha TEXT,
+  approval_id TEXT,
   created_at TEXT NOT NULL,
   status TEXT NOT NULL
 );
@@ -104,7 +105,31 @@ export function openJournal(dbPath: string): Database.Database {
   db.pragma("busy_timeout = 5000");
   db.exec(SCHEMA_SQL);
   migrateConflictsTable(db);
+  migrateTransactionsTable(db);
   return db;
+}
+
+// Columns added to `transactions` after its original shape. A brand-new
+// journal already gets these from SCHEMA_SQL's CREATE TABLE; this migration
+// exists purely to UPGRADE a pre-existing journal. Driven off `pragma
+// table_info` so it's idempotent (re-running against an already-migrated or
+// fresh db is a no-op). `approval_id` links an applied transaction to the
+// approval whose held operation produced it, so reconcile can SOUNDLY close
+// a stale pending approval by exact id-match (see broker/reconcile.ts) rather
+// than a path/time heuristic that could false-close an unrelated same-path op.
+const TRANSACTIONS_MIGRATED_COLUMNS: Array<{ name: string; type: string }> = [
+  { name: "approval_id", type: "TEXT" },
+];
+
+function migrateTransactionsTable(db: Database.Database): void {
+  const existing = new Set(
+    (db.prepare("pragma table_info(transactions)").all() as Array<{ name: string }>).map((c) => c.name),
+  );
+  for (const { name, type } of TRANSACTIONS_MIGRATED_COLUMNS) {
+    if (!existing.has(name)) {
+      db.exec(`ALTER TABLE transactions ADD COLUMN ${name} ${type}`);
+    }
+  }
 }
 
 // Columns added to `conflicts` after its original v0.2 shape (memory_a,

@@ -263,6 +263,7 @@ describe("undo", () => {
       reason: "no commit recorded",
       memory_id: null,
       commit_sha: null,
+      approval_id: null,
       created_at: now(),
       status: "applied",
     });
