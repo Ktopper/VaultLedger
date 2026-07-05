@@ -16,15 +16,6 @@ CREATE TABLE IF NOT EXISTS transactions (
   status TEXT NOT NULL
 );
 
--- Partial unique index: enforces "at most one transaction row per real git
--- commit" while leaving rows with commit_sha IS NULL (there are none today,
--- but nothing depends on that) unconstrained. This is what lets
--- recordTransactionIfNew's ON CONFLICT(commit_sha) DO NOTHING converge two
--- racing reconcile/reindex passes (e.g. \`ledger serve\` + an MCP server both
--- reindexing the same vault) on ONE row for a given commit instead of one of
--- them throwing a UNIQUE-constraint error.
-CREATE UNIQUE INDEX IF NOT EXISTS ux_transactions_commit ON transactions(commit_sha) WHERE commit_sha IS NOT NULL;
-
 CREATE TABLE IF NOT EXISTS memories (
   id TEXT PRIMARY KEY,
   path TEXT NOT NULL,
@@ -104,9 +95,45 @@ export function openJournal(dbPath: string): Database.Database {
   // aligned.
   db.pragma("busy_timeout = 5000");
   db.exec(SCHEMA_SQL);
+  dedupeDuplicateCommitShaRows(db);
+  createTransactionsCommitShaIndex(db);
   migrateConflictsTable(db);
   migrateTransactionsTable(db);
   return db;
+}
+
+// A pre-v0.3a journal (created before ux_transactions_commit existed) can
+// carry two transaction rows that share a non-null commit_sha — e.g. from the
+// v0.2 reindex race this index was introduced to close (see
+// recordTransactionIfNew's doc comment). Creating a UNIQUE index directly
+// against such a journal throws "UNIQUE constraint failed" and the journal
+// can never be opened again. The journal is disposable (rebuilt from the
+// vault + git by reindex/ensureJournal), so deleting the redundant duplicate
+// rows here is safe: keep the oldest (lowest rowid) row per commit_sha and
+// drop the rest. MUST run before createTransactionsCommitShaIndex below. A
+// no-op (0 rows deleted) on a clean/already-deduped journal, so this is safe
+// to run on every open.
+function dedupeDuplicateCommitShaRows(db: Database.Database): void {
+  db.exec(`
+    DELETE FROM transactions WHERE commit_sha IS NOT NULL AND rowid NOT IN (
+      SELECT MIN(rowid) FROM transactions WHERE commit_sha IS NOT NULL GROUP BY commit_sha
+    );
+  `);
+}
+
+// Partial unique index: enforces "at most one transaction row per real git
+// commit" while leaving rows with commit_sha IS NULL (there are none today,
+// but nothing depends on that) unconstrained. This is what lets
+// recordTransactionIfNew's ON CONFLICT(commit_sha) DO NOTHING converge two
+// racing reconcile/reindex passes (e.g. `ledger serve` + an MCP server both
+// reindexing the same vault) on ONE row for a given commit instead of one of
+// them throwing a UNIQUE-constraint error. Must run AFTER
+// dedupeDuplicateCommitShaRows so an upgraded pre-existing journal with
+// duplicate commit_sha rows doesn't crash the CREATE UNIQUE INDEX itself.
+function createTransactionsCommitShaIndex(db: Database.Database): void {
+  db.exec(
+    `CREATE UNIQUE INDEX IF NOT EXISTS ux_transactions_commit ON transactions(commit_sha) WHERE commit_sha IS NOT NULL;`,
+  );
 }
 
 // Columns added to `transactions` after its original shape. A brand-new

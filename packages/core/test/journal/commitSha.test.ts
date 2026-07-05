@@ -2,6 +2,7 @@ import { describe, expect, test, afterEach, vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { openJournal } from "../../src/journal/db.js";
 import { Journal, type TransactionRow } from "../../src/journal/journal.js";
 import { LedgerGit, formatMessage } from "../../src/broker/git.js";
@@ -137,5 +138,72 @@ describe("UNIQUE(commit_sha) partial index", () => {
 
     const rows = journalA.listTransactions({}).filter((t) => t.commit_sha === sha);
     expect(rows).toHaveLength(1);
+  });
+
+  test("upgrading a pre-existing journal with duplicate commit_sha rows does not throw; dedups to ONE row and still creates the unique index", () => {
+    dir = mkdtempSync(join(tmpdir(), "vl-commitsha-dupe-"));
+    const dbPath = join(dir, "journal.db");
+
+    // Simulate a v0.2 journal that hit the reindex race BEFORE the unique
+    // index existed: build the transactions table directly (raw inserts, no
+    // openJournal involved yet) with TWO rows sharing one commit_sha.
+    const raw = new Database(dbPath);
+    raw.exec(`
+      CREATE TABLE transactions (
+        id TEXT PRIMARY KEY,
+        op TEXT NOT NULL,
+        path TEXT NOT NULL,
+        hash_before TEXT,
+        hash_after TEXT,
+        session TEXT NOT NULL,
+        reason TEXT,
+        memory_id TEXT,
+        commit_sha TEXT,
+        approval_id TEXT,
+        created_at TEXT NOT NULL,
+        status TEXT NOT NULL
+      );
+    `);
+    raw
+      .prepare(
+        `INSERT INTO transactions
+           (id, op, path, hash_before, hash_after, session, reason, memory_id, commit_sha, approval_id, created_at, status)
+         VALUES (@id, @op, @path, @hash_before, @hash_after, @session, @reason, @memory_id, @commit_sha, @approval_id, @created_at, @status)`,
+      )
+      .run(row({ id: "tx_dup_1", commit_sha: "dupe-sha", created_at: "2026-07-01T00:00:00.000Z" }));
+    raw
+      .prepare(
+        `INSERT INTO transactions
+           (id, op, path, hash_before, hash_after, session, reason, memory_id, commit_sha, approval_id, created_at, status)
+         VALUES (@id, @op, @path, @hash_before, @hash_after, @session, @reason, @memory_id, @commit_sha, @approval_id, @created_at, @status)`,
+      )
+      .run(row({ id: "tx_dup_2", commit_sha: "dupe-sha", created_at: "2026-07-02T00:00:00.000Z" }));
+    raw.close();
+
+    // openJournal must NOT throw (pre-fix: CREATE UNIQUE INDEX on the
+    // duplicate commit_sha rows throws "UNIQUE constraint failed").
+    let db: ReturnType<typeof openJournal> | undefined;
+    expect(() => {
+      db = openJournal(dbPath);
+    }).not.toThrow();
+
+    const indexList = db!
+      .prepare("pragma index_list(transactions)")
+      .all() as Array<{ name: string; unique: number }>;
+    expect(indexList.find((i) => i.name === "ux_transactions_commit")).toBeDefined();
+
+    const remaining = db!
+      .prepare("SELECT id FROM transactions WHERE commit_sha = 'dupe-sha'")
+      .all() as Array<{ id: string }>;
+    expect(remaining).toHaveLength(1);
+    db!.close();
+
+    // Idempotent: opening the (now-deduped) file a second time still works.
+    const db2 = openJournal(dbPath);
+    expect(
+      (db2.prepare("SELECT id FROM transactions WHERE commit_sha = 'dupe-sha'").all() as unknown[])
+        .length,
+    ).toBe(1);
+    db2.close();
   });
 });
