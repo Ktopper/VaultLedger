@@ -195,8 +195,12 @@ export async function reindex(opts: ReindexOptions): Promise<ReindexResult> {
       created_at: now(),
       status: "applied",
     };
-    journal.recordTransaction(row);
-    transactions += 1;
+    // recordTransactionIfNew (not recordTransaction): two processes can race
+    // to reindex the same missing commit; ON CONFLICT(commit_sha) DO NOTHING
+    // converges them on one row instead of the loser crashing.
+    if (journal.recordTransactionIfNew(row)) {
+      transactions += 1;
+    }
   }
 
   return { memories, transactions, skipped, conflicts };

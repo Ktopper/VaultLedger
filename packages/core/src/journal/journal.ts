@@ -110,6 +110,33 @@ export class Journal {
       .run(row);
   }
 
+  /**
+   * Same shape as `recordTransaction`, but tolerates a duplicate `commit_sha`
+   * instead of throwing (`ON CONFLICT(commit_sha) ... DO NOTHING` against the
+   * partial `ux_transactions_commit` unique index — the `WHERE commit_sha IS
+   * NOT NULL` on the ON CONFLICT clause must mirror the index's own partial
+   * predicate; SQLite requires the two to match for the upsert target to
+   * resolve). Used by `reconcile`/`reindex`'s crash-recovery repair path,
+   * where two processes can race to repair the SAME missing commit (e.g.
+   * `ledger serve` and an MCP server both reindexing on startup) — both
+   * decide the row is missing, but only one insert should land. The normal
+   * broker write path keeps using `recordTransaction`: its `commit_sha` is
+   * always freshly minted by that same call, never a potential duplicate, so
+   * a real integrity violation there should still throw rather than be
+   * silently swallowed. Returns whether a new row was actually inserted.
+   */
+  recordTransactionIfNew(row: TransactionRow): boolean {
+    const result = this.db
+      .prepare(
+        `INSERT INTO transactions
+           (id, op, path, hash_before, hash_after, session, reason, memory_id, commit_sha, created_at, status)
+         VALUES (@id, @op, @path, @hash_before, @hash_after, @session, @reason, @memory_id, @commit_sha, @created_at, @status)
+         ON CONFLICT(commit_sha) WHERE commit_sha IS NOT NULL DO NOTHING`,
+      )
+      .run(row);
+    return result.changes > 0;
+  }
+
   getTransaction(id: string): TransactionRow | null {
     const row = this.db
       .prepare<{ id: string }, TransactionRow>(`SELECT * FROM transactions WHERE id = @id`)

@@ -60,8 +60,12 @@ export async function reconcile(deps: ReconcileDeps): Promise<{ repaired: number
       created_at: now(),
       status: "applied",
     };
-    journal.recordTransaction(row);
-    repaired += 1;
+    // recordTransactionIfNew (not recordTransaction): two processes can race
+    // to repair the same missing commit; ON CONFLICT(commit_sha) DO NOTHING
+    // converges them on one row instead of the loser crashing.
+    if (journal.recordTransactionIfNew(row)) {
+      repaired += 1;
+    }
   }
 
   return { repaired };

@@ -15,6 +15,15 @@ CREATE TABLE IF NOT EXISTS transactions (
   status TEXT NOT NULL
 );
 
+-- Partial unique index: enforces "at most one transaction row per real git
+-- commit" while leaving rows with commit_sha IS NULL (there are none today,
+-- but nothing depends on that) unconstrained. This is what lets
+-- recordTransactionIfNew's ON CONFLICT(commit_sha) DO NOTHING converge two
+-- racing reconcile/reindex passes (e.g. \`ledger serve\` + an MCP server both
+-- reindexing the same vault) on ONE row for a given commit instead of one of
+-- them throwing a UNIQUE-constraint error.
+CREATE UNIQUE INDEX IF NOT EXISTS ux_transactions_commit ON transactions(commit_sha) WHERE commit_sha IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS memories (
   id TEXT PRIMARY KEY,
   path TEXT NOT NULL,

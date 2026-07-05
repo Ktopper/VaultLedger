@@ -188,27 +188,15 @@ describe("undo", () => {
 
     // Broker.apply() itself never links a memory_id onto the transaction it
     // records (that's the memory store's job, out of scope for Phase 2c), so
-    // to exercise undoTransaction's memory-compensation branch we mark the
-    // broker-recorded row as already reverted (so it's inert) and record a
-    // second, memory-linked row against the SAME real commit. Reverting that
-    // linked row performs a real git revert of the (not-yet-reverted) commit.
-    journal.setTransactionStatus(reviseResult.txnId!, "reverted");
-    const linkedTxnId = genId("txn");
-    journal.recordTransaction({
-      id: linkedTxnId,
-      op: "revise",
-      path: "Agent/Memory/m.md",
-      hash_before: hashBytes(Buffer.from(original, "utf8")),
-      hash_after: hashBytes(Buffer.from(updated, "utf8")),
-      session: "s1",
-      reason: "linked to memory",
-      memory_id: "mem_2",
-      commit_sha: reviseResult.commitSha!,
-      created_at: now(),
-      status: "applied",
-    });
+    // to exercise undoTransaction's memory-compensation branch we link
+    // memory_id onto the broker-recorded row directly via
+    // setTransactionMemoryId — the same real API the memory store itself
+    // uses (see Journal.setTransactionMemoryId), rather than recording a
+    // second row against the SAME real commit (which would now collide with
+    // the ux_transactions_commit unique index).
+    journal.setTransactionMemoryId(reviseResult.txnId!, "mem_2");
 
-    await undoTransaction({ git, journal, now, genId }, linkedTxnId);
+    await undoTransaction({ git, journal, now, genId }, reviseResult.txnId!);
 
     // The file at HEAD is back to "a\nb\nc\n" — real content, but no `ledger:`
     // frontmatter block to parse a status out of. Status must stay exactly
