@@ -109,8 +109,17 @@ function errorBody(code: string, message: string): ErrorBody {
  * handler) without ever passing the gate — a real bypass of the "single
  * global gate before any route runs" invariant.
  */
+// APP-level bodyLimit (not per-route): covers every route on this instance,
+// including any future mutation route (e.g. /conflicts/:id/resolve), without
+// needing to remember to set it again per-route. 16 KiB comfortably covers
+// every real payload this bridge accepts today (a patch diff for a single
+// note edit, an undo target id) while bounding how much a request body can
+// make Fastify buffer before the loopback+auth guard (which runs in
+// onRequest, BEFORE body parsing) even gets a chance to reject it.
+const BODY_LIMIT_BYTES = 16 * 1024;
+
 export function buildBridge(ctx: VaultContext, token: string): FastifyInstance {
-  const app = Fastify({ logger: false });
+  const app = Fastify({ logger: false, bodyLimit: BODY_LIMIT_BYTES });
 
   // Some mutation routes (approve/reject) take no body at all; a real client
   // may still send `Content-Type: application/json` on a bodyless POST.
