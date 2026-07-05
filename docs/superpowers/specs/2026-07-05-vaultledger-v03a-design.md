@@ -133,8 +133,12 @@ when both sides canonicalize to the **same comparable type**.
    subject and `X` match after normalization. Kept intentionally narrow (exact
    normalized subject+predicate) to hold the precision line.
 
-Each detected conflict carries a human-readable `detail`
-(e.g. `deadline: "2026-08-15" vs "2026-09-01"`).
+Each detected conflict carries a **`fact_key`** identifying the specific
+contradicted fact — for a `value-conflict` the normalized attribute key
+(`deadline`), for a `negation-conflict` the normalized subject+predicate. This is
+what keeps two distinct contradictions on the same memory pair as **two separate,
+independently resolvable items** rather than collapsing to one (§4.2). Each also
+carries a human-readable `detail` (e.g. `deadline: "2026-08-15" vs "2026-09-01"`).
 
 Fully deterministic; unit-tested with fixture pairs: true contradictions flagged;
 lineage-linked updates, unrelated memories, and compatible/near-miss pairs
@@ -156,18 +160,23 @@ the source of truth). **Canonical memories are never modified** — the whole po
 ### 4.2 Schema migration + dedup enforced in the DB
 
 The v0.1 `conflicts` table (`id, memory_a, memory_b, kind, created_at, state`)
-gains `entity`, `detail`, `resolved_at`, and an **order-normalized pair key**
-(`pair_lo`, `pair_hi` = the two memory ids sorted) via a lightweight `openJournal`
-migration (read `pragma table_info`; `ALTER TABLE ADD COLUMN` for any missing —
-safe because the table is empty in every existing journal). `state ∈ {open,
-resolved, dismissed, moot}`.
+gains `entity`, `detail`, `resolved_at`, **`fact_key`**, and an **order-normalized
+pair key** (`pair_lo`, `pair_hi` = the two memory ids sorted) via a lightweight
+`openJournal` migration (read `pragma table_info`; `ALTER TABLE ADD COLUMN` for
+any missing — safe because the table is empty in every existing journal).
+`state ∈ {open, resolved, dismissed, moot}`.
 
 **Dedup is a DB constraint, across ALL states, not an app-level check-then-insert**
 (the same medicine as the `UNIQUE(commit_sha)` hardening in §8, and for the same
-race class): a **`UNIQUE(pair_lo, pair_hi, kind)`** index, with inserts using
-`ON CONFLICT DO NOTHING`. The key spans every state — so a **dismissed** conflict
-is *not* resurrected by a later re-detection or `--rescan`; dismissal is
-permanent. (Re-opening is a deliberate future action, not an accident.)
+race class): a **`UNIQUE(pair_lo, pair_hi, kind, fact_key)`** index, with inserts
+using `ON CONFLICT DO NOTHING`. Including **`fact_key`** in the key is deliberate:
+two memories can contradict on more than one fact (e.g. both `deadline` *and*
+`status`), and each must be its **own** resolvable item — a bare
+`(pair_lo,pair_hi,kind)` key would keep the first and silently drop the rest,
+hiding real contradictions. The key spans every state — so a **dismissed**
+conflict (that exact pair+kind+fact) is *not* resurrected by a later re-detection
+or `--rescan`; dismissal is permanent per fact. (Re-opening is a deliberate future
+action, not an accident.)
 
 ### 4.3 Moot conflicts never accumulate as zombies
 
@@ -243,9 +252,14 @@ detection across the agent zone on demand (respecting the all-states dedup).
     unparseable prose, and type-mismatches **not** flagged (precision guards).
   - `check`: post-commit hook queues a conflict for a true contradiction; a
     revise-that-supersedes queues **nothing**; detection error doesn't fail the
-    write; canonical row unchanged.
+    write; canonical row unchanged. **Explicit `scratch`-vs-`canonical` fixture:**
+    a `remember` (lands at scratch) that contradicts an existing canonical memory
+    IS flagged — that's the core "new claim vs existing belief" case.
+  - **multi-fact fixture:** one memory pair contradicting on **two** keys
+    (`deadline` + `status`) produces **two** separate conflict rows (distinct
+    `fact_key`), both surfaced and independently resolvable.
   - dedup: re-running detection / `--rescan` doesn't duplicate; a **dismissed**
-    conflict is not resurrected (all-states key).
+    conflict is not resurrected (all-states key, per fact).
   - moot: `list` excludes conflicts whose side was forgotten/undone; undo/forget
     marks referencing conflicts `moot`.
   - hardening: `UNIQUE(commit_sha)` convergence (concurrent reindex → no dup txn
