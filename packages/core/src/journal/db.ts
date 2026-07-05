@@ -88,5 +88,36 @@ export function openJournal(dbPath: string): Database.Database {
   // aligned.
   db.pragma("busy_timeout = 5000");
   db.exec(SCHEMA_SQL);
+  migrateConflictsTable(db);
   return db;
+}
+
+// Columns added to `conflicts` after its original v0.2 shape (memory_a,
+// memory_b, kind, created_at, state only). The original table is empty in
+// every existing journal (conflicts didn't exist as a feature yet), so a
+// plain ALTER TABLE ADD COLUMN is safe — no backfill needed. Migration is
+// driven off `pragma table_info`, so it's idempotent: re-running against an
+// already-migrated db (or a fresh one, where CREATE TABLE already included
+// these columns) is a no-op.
+const CONFLICTS_MIGRATED_COLUMNS: Array<{ name: string; type: string }> = [
+  { name: "entity", type: "TEXT" },
+  { name: "detail", type: "TEXT" },
+  { name: "fact_key", type: "TEXT" },
+  { name: "pair_lo", type: "TEXT" },
+  { name: "pair_hi", type: "TEXT" },
+  { name: "resolved_at", type: "TEXT" },
+];
+
+function migrateConflictsTable(db: Database.Database): void {
+  const existing = new Set(
+    (db.prepare("pragma table_info(conflicts)").all() as Array<{ name: string }>).map((c) => c.name),
+  );
+  for (const { name, type } of CONFLICTS_MIGRATED_COLUMNS) {
+    if (!existing.has(name)) {
+      db.exec(`ALTER TABLE conflicts ADD COLUMN ${name} ${type}`);
+    }
+  }
+  db.exec(
+    `CREATE UNIQUE INDEX IF NOT EXISTS ux_conflicts_pair_kind_fact ON conflicts(pair_lo, pair_hi, kind, fact_key)`,
+  );
 }

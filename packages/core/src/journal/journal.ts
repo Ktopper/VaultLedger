@@ -41,6 +41,21 @@ export interface ApprovalRow {
   resolved_at: string | null;
 }
 
+export interface ConflictRow {
+  id: string;
+  memory_a: string | null;
+  memory_b: string | null;
+  pair_lo: string | null;
+  pair_hi: string | null;
+  kind: string | null;
+  fact_key: string | null;
+  entity: string | null;
+  detail: string | null;
+  created_at: string | null;
+  state: string | null;
+  resolved_at: string | null;
+}
+
 export interface ListTransactionsFilters {
   limit?: number;
   entity?: string;
@@ -329,5 +344,70 @@ export class Journal {
     this.db
       .prepare(`UPDATE approvals SET state = @state, resolved_at = @resolvedAt WHERE id = @id`)
       .run({ id, state, resolvedAt: resolvedAtIso ?? null });
+  }
+
+  // ---------------------------------------------------------------------
+  // Conflicts
+  // ---------------------------------------------------------------------
+
+  /**
+   * Insert a detected conflict, de-duplicated on (pair_lo, pair_hi, kind,
+   * fact_key) — the same contradictory pair/fact re-detected on a later
+   * `checkContradictions` run (e.g. after an unrelated edit to either note)
+   * must not spawn a duplicate row, and — per the dismissed-not-resurrected
+   * guarantee — must NOT reopen/touch a row a human already dismissed or
+   * resolved. Returns whether a new row was actually inserted.
+   */
+  insertConflict(row: ConflictRow): boolean {
+    const result = this.db
+      .prepare(
+        `INSERT INTO conflicts
+           (id, memory_a, memory_b, pair_lo, pair_hi, kind, fact_key, entity, detail, created_at, state, resolved_at)
+         VALUES (@id, @memory_a, @memory_b, @pair_lo, @pair_hi, @kind, @fact_key, @entity, @detail, @created_at, @state, @resolved_at)
+         ON CONFLICT(pair_lo, pair_hi, kind, fact_key) DO NOTHING`,
+      )
+      .run(row);
+    return result.changes > 0;
+  }
+
+  listConflicts(state?: string): ConflictRow[] {
+    if (state === undefined) {
+      return this.db
+        .prepare<[], ConflictRow>(`SELECT * FROM conflicts ORDER BY created_at DESC`)
+        .all();
+    }
+    return this.db
+      .prepare<{ state: string }, ConflictRow>(
+        `SELECT * FROM conflicts WHERE state = @state ORDER BY created_at DESC`,
+      )
+      .all({ state });
+  }
+
+  getConflict(id: string): ConflictRow | null {
+    const row = this.db
+      .prepare<{ id: string }, ConflictRow>(`SELECT * FROM conflicts WHERE id = @id`)
+      .get({ id });
+    return row ?? null;
+  }
+
+  setConflictState(id: string, state: string, resolvedAtIso?: string): void {
+    this.db
+      .prepare(`UPDATE conflicts SET state = @state, resolved_at = @resolvedAt WHERE id = @id`)
+      .run({ id, state, resolvedAt: resolvedAtIso ?? null });
+  }
+
+  /**
+   * Called when a memory is reverted/forgotten: any still-`open` conflict
+   * referencing it (on either side) is no longer actionable — flip it to
+   * `moot` so it drops out of `Conflicts.list('open')`. Rows already
+   * resolved/dismissed (a human already looked at them) are left untouched.
+   */
+  markConflictsMoot(memId: string, nowIso: string): void {
+    this.db
+      .prepare(
+        `UPDATE conflicts SET state = 'moot', resolved_at = @now
+         WHERE state = 'open' AND (memory_a = @memId OR memory_b = @memId)`,
+      )
+      .run({ memId, now: nowIso });
   }
 }
