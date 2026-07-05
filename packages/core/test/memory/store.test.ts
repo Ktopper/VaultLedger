@@ -403,6 +403,53 @@ describe("MemoryStore", () => {
     expect(journal.listConflicts("open")).toHaveLength(0);
   });
 
+  test("remember accepts a supersedes id, writes it into both the journal row and the file's ledger frontmatter, and the matcher excludes the superseded memory (no conflict queued)", async () => {
+    const { store, journal, vaultRoot } = await makeStore();
+
+    const a = await store.remember({
+      content: "deadline: 2026-08-15",
+      entity: "nova",
+      reason: "seed",
+      session: "s1",
+    });
+    await store.promote({ id: a.id, target_status: "working", reason: "confirmed", session: "s1" });
+
+    // B supersedes A directly via remember()'s new `supersedes` input, and
+    // carries a CONTRADICTING deadline. Without the lineage exclusion this
+    // would queue a value-conflict; because B declares it supersedes A, the
+    // matcher must exclude A and nothing is queued.
+    const b = await store.remember({
+      content: "deadline: 2026-09-01",
+      entity: "nova",
+      reason: "updated belief",
+      session: "s1",
+      supersedes: a.id,
+    });
+
+    expect(journal.listConflicts("open")).toHaveLength(0);
+
+    const bRow = journal.getMemory(b.id);
+    expect(bRow!.supersedes).toBe(a.id);
+
+    const bRaw = readFileSync(join(vaultRoot, b.path), "utf8");
+    const bParsed = matter(bRaw);
+    expect((bParsed.data.ledger as Record<string, unknown>).supersedes).toBe(a.id);
+
+    // CONTROL: same contradicting deadline, same entity, but NO supersedes —
+    // proves the exclusion above is what suppressed the conflict, not
+    // something else (e.g. a general dedup on fact_key).
+    const c = await store.remember({
+      content: "deadline: 2026-10-01",
+      entity: "nova",
+      reason: "unrelated new claim",
+      session: "s1",
+    });
+    const open = journal.listConflicts("open");
+    expect(open).toHaveLength(1);
+    expect(open[0]!.fact_key).toBe("deadline");
+    expect([open[0]!.memory_a, open[0]!.memory_b].sort()).toEqual([a.id, c.id].sort());
+  });
+
   test("forget moots any open conflict referencing the forgotten memory", async () => {
     const { store, journal } = await makeStore();
     const a = await store.remember({

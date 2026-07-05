@@ -34,6 +34,17 @@ export interface RememberInput {
   session: string;
   tags?: string[];
   confidence?: ConfidenceValue;
+  /**
+   * Id of the memory this new one supersedes (an updated belief on the same
+   * entity). Wired into BOTH the file's `ledger.supersedes` frontmatter and
+   * the journal `memories.supersedes` column, which is what the
+   * contradiction matcher's lineage exclusion (contradiction/matcher.ts)
+   * reads to exclude this pair from comparison — the single biggest
+   * false-positive guard only fires if a caller actually sets this. No hard
+   * validation: if it points at a nonexistent id, the matcher simply won't
+   * find it in the same-entity set (harmless).
+   */
+  supersedes?: string;
 }
 
 export interface RememberResult {
@@ -97,6 +108,7 @@ export class MemoryStore {
     const id = this.genId("mem");
     const path = `${this.agentDir}/${id}.md`;
     const created = this.now();
+    const supersedes = input.supersedes ?? null;
 
     // v0.1 limitation: if `content` itself begins with its own `---`
     // frontmatter block, matter.stringify does not merge/relocate it — the
@@ -110,7 +122,7 @@ export class MemoryStore {
         source: input.session,
         reason: input.reason,
         confidence: input.confidence ?? "medium",
-        supersedes: null,
+        supersedes,
         expires: null,
       },
     });
@@ -138,7 +150,7 @@ export class MemoryStore {
       confidence: input.confidence ?? "medium",
       created,
       source: input.session,
-      supersedes: null,
+      supersedes,
       expires: null,
       last_referenced: null,
     };

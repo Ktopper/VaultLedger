@@ -69,6 +69,10 @@ const RememberInput = z
     reason: z.string().min(1),
     tags: z.array(z.string()).optional(),
     confidence: Confidence.optional(),
+    /** Id of the memory this new one supersedes (an updated belief). Forwarded
+     * to MemoryStore.remember so the contradiction matcher's lineage
+     * exclusion actually fires for agent-authored updates. */
+    supersedes: z.string().optional(),
   })
   .strict();
 
@@ -145,13 +149,14 @@ export function buildTools(ctx: ServerContext): ToolDef[] {
         guarded(async () => {
           const parsed = RememberInput.safeParse(rawArgs);
           if (!parsed.success) return invalidArgs(parsed.error.message);
-          const { content, entity, reason, tags, confidence } = parsed.data;
+          const { content, entity, reason, tags, confidence, supersedes } = parsed.data;
           const result = await ctx.store.remember({
             content,
             entity,
             reason,
             tags,
             confidence,
+            supersedes,
             session: ctx.session,
           });
           const memRow = ctx.journal.getMemory(result.id);
