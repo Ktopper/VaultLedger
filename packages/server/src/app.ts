@@ -5,6 +5,7 @@ import matter from "gray-matter";
 import {
   assertContainedAndReadable,
   BrokerError,
+  Conflicts,
   findStale,
   recall,
   undoSession,
@@ -212,8 +213,31 @@ export function buildBridge(ctx: VaultContext, token: string): FastifyInstance {
     return workingMemories.filter((m) => staleIds.has(m.id));
   });
 
+  // Journal-only, lock-free: conflicts live entirely in the disposable
+  // sqlite journal (never the vault/git), so resolving/dismissing one never
+  // needs the broker's cross-process vault lock.
   app.get("/conflicts", async () => {
-    return [];
+    return new Conflicts(ctx.journal).list("open");
+  });
+
+  app.post("/conflicts/:id/resolve", async (req: FastifyRequest) => {
+    const { id } = req.params as { id: string };
+    const conflicts = new Conflicts(ctx.journal);
+    if (!conflicts.get(id)) {
+      throw new BrokerError("NOT_FOUND", `no conflict with id ${id}`);
+    }
+    conflicts.resolve(id, ctx.now());
+    return { resolved: true };
+  });
+
+  app.post("/conflicts/:id/dismiss", async (req: FastifyRequest) => {
+    const { id } = req.params as { id: string };
+    const conflicts = new Conflicts(ctx.journal);
+    if (!conflicts.get(id)) {
+      throw new BrokerError("NOT_FOUND", `no conflict with id ${id}`);
+    }
+    conflicts.dismiss(id, ctx.now());
+    return { dismissed: true };
   });
 
   // SECURITY (Task 2.3): reuses the EXACT SAME containment + zone-exclusion
