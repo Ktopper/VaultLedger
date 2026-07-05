@@ -17,15 +17,6 @@ export interface ReconcileDeps {
 // instead of drifting a second copy of this regex.
 export const MESSAGE_RE = /^ledger:\s+(\S+)\s+(.+?)(?:\s+\[([^\]]+)\])?\s+(\S+)\s*$/;
 
-/** Last path segment, splitting on "/" only (vault-relative paths are always
- * stored with "/" separators — see reindex.ts's relPath construction). Used
- * to compare a held operation's full path against a reconcile-repaired
- * transaction row, which only ever carries the basename (see module doc). */
-function basenameOf(path: string): string {
-  const idx = path.lastIndexOf("/");
-  return idx === -1 ? path : path.slice(idx + 1);
-}
-
 /**
  * Startup reconciliation (design §5, crash-recovery): a process can crash
  * between `LedgerGit.commitFile` landing a commit and `Journal.recordTransaction`
@@ -106,10 +97,19 @@ export async function reconcile(
  * vault-relative path when recorded by the normal broker write path, but
  * only the BASENAME when recorded by this same reconcile function's
  * commit-repair pass above (see its doc comment). A held operation's path is
- * always the full vault-relative path (it's what the broker was originally
- * asked to write). So a transaction matches if its `path` equals the held
- * op's full path OR equals the held op's basename — covering both possible
- * shapes of the recorded row without needing to know which one produced it.
+ * always the full vault-relative path. We match on FULL PATH ONLY
+ * (`t.path === path`) and deliberately do NOT fall back to a basename
+ * comparison: a reconciled basename-only row has lost its directory, so a
+ * bare "Nova.md" can't be distinguished between `Projects/Nova.md` and
+ * `Archive/Nova.md` — matching it risks FALSE-CLOSING an approval on a
+ * same-named note in a different folder, and a false-close (marking an
+ * approval 'approved' whose op never actually applied) is strictly worse
+ * than a miss. The common case (the applied op is a normal broker
+ * transaction row) carries the full path and matches fine. The rare
+ * double-fault case (the applied op's OWN txn row was itself lost to a crash
+ * AND then reconciled down to a basename) simply won't auto-close — the
+ * approval stays 'pending', which is safe and conservative (a human can
+ * still act on it).
  *
  * Only `create`/`revise`/`propose_edit` held ops carry a `path` field
  * (`promote`/`forget` operate on a memory `id` instead, with no file write to
@@ -132,12 +132,11 @@ function closeStaleApprovals(journal: Journal, now: () => string): number {
     }
     const path = typeof heldOp.path === "string" ? heldOp.path : undefined;
     if (!path) continue;
-    const basename = basenameOf(path);
 
     const match = transactions.find(
       (t) =>
         t.status === "applied" &&
-        (t.path === path || t.path === basename) &&
+        t.path === path &&
         t.created_at > approval.created_at,
     );
     if (match) {

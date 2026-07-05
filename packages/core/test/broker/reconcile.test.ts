@@ -316,17 +316,21 @@ describe("reconcile: closes stale pending approvals (approve->apply crash gap)",
     expect(approval.resolved_at).toBeNull();
   });
 
-  test("matches a reconcile-repaired row (path stored as BASENAME) against the held op's full path", async () => {
+  test("a reconcile-repaired row (path stored as BASENAME only) does NOT close a full-path approval (conservative)", async () => {
     const { journal, git, vaultRoot, now, genId } = await makeHarness();
 
     const approvalCreatedAt = now();
     journal.insertApproval(pendingApproval({ id: "apr_1", created_at: approvalCreatedAt }));
 
-    // Simulate a commit landing in git AFTER the approval was created, with
-    // no journal row yet (the crash gap) — reconcile's FIRST pass (commit ->
-    // transaction repair) will insert a row whose `path` is the BASENAME
-    // ("Nova.md"), not the held op's full vault-relative path
-    // ("Projects/Nova.md"). The approval cross-check pass must still match.
+    // Simulate a commit landing in git AFTER the approval was created, with no
+    // journal row yet (the crash gap) — reconcile's FIRST pass (commit ->
+    // transaction repair) inserts a row whose `path` is the BASENAME
+    // ("Nova.md" — the directory is LOST), not the held op's full
+    // vault-relative path ("Projects/Nova.md"). Because the directory is gone,
+    // a basename-only row can't be distinguished from an unrelated
+    // "Archive/Nova.md" commit, so it must NOT auto-close the approval. This
+    // is the accepted rare double-fault miss: the approval stays 'pending'
+    // (a human can still act on it), never a false-close.
     writeFileSync(join(vaultRoot, "Nova.md"), "content\n", "utf8");
     await git.commitFile(
       "Nova.md",
@@ -337,6 +341,33 @@ describe("reconcile: closes stale pending approvals (approve->apply crash gap)",
     expect(result.repaired).toBe(1);
 
     const approval = journal.getApproval("apr_1")!;
-    expect(approval.state).toBe("approved");
+    expect(approval.state).toBe("pending");
+    expect(approval.resolved_at).toBeNull();
+  });
+
+  test("FALSE-CLOSE GUARD: an unrelated later basename-only applied txn does NOT close a full-path approval", async () => {
+    const { journal, git, now, genId } = await makeHarness();
+
+    // A pending approval whose held op targets "Projects/Nova.md".
+    const approvalCreatedAt = now();
+    journal.insertApproval(pendingApproval({ id: "apr_1", created_at: approvalCreatedAt }));
+
+    // An unrelated LATER applied transaction stored with only the BASENAME
+    // "Nova.md" (as reconcile's commit-repair pass would record it) — but it
+    // actually belongs to a DIFFERENT-folder note (e.g. "Archive/Nova.md").
+    // The directory is lost in the basename-only row, so matching on basename
+    // would FALSE-CLOSE the "Projects/Nova.md" approval. Full-path-only
+    // matching must leave it pending.
+    const txnCreatedAt = now();
+    journal.recordTransaction(
+      appliedTxn({ id: "txn_1", path: "Nova.md", commit_sha: "sha-archive-nova", created_at: txnCreatedAt }),
+    );
+
+    const result = await reconcile({ git, journal, now, genId });
+    expect(result.approvalsClosed).toBe(0);
+
+    const approval = journal.getApproval("apr_1")!;
+    expect(approval.state).toBe("pending");
+    expect(approval.resolved_at).toBeNull();
   });
 });
