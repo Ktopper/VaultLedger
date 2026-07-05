@@ -192,9 +192,10 @@ export class MemoryStore {
     }
 
     // Post-commit, non-blocking contradiction check (design v0.3a §5) — see
-    // the matching call in `remember` for rationale. Runs even if the write
-    // was queued for approval (harmless: the file on disk hasn't changed
-    // yet in that case, so the check just re-examines the pre-patch note).
+    // the matching call in `remember` for rationale. A direct agent-zone
+    // revise always lands immediately (broker.apply never queues a revise —
+    // only propose_edit re-queues), so by here the patch is committed on disk
+    // and the check reads the just-written note.
     checkContradictions(
       { journal: this.journal, vaultRoot: this.vaultRoot, now: this.now, genId: this.genId },
       input.id,

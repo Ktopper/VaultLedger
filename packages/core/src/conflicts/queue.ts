@@ -1,5 +1,10 @@
 import type { ConflictRow, Journal, MemoryRow } from "../journal/journal.js";
 
+// A memory in any of these statuses is not "live" and its conflicts are
+// suppressed from the browse view. `retired` is not in the current
+// MemoryStatus enum — it's a planned v0.3b status included here as deliberate
+// forward-compat (the journal stores status as free text, so guarding against
+// it now is harmless and avoids a future omission).
 const DEAD_STATUSES = new Set(["forgotten", "reverted", "retired"]);
 
 export interface EnrichedConflict {

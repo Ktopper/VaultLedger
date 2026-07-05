@@ -367,6 +367,42 @@ describe("MemoryStore", () => {
     expect(open[0]!.fact_key).toBe("owner");
   });
 
+  test("revise on a memory that supersedes a live peer queues no conflict (lineage guard holds through the store path)", async () => {
+    const { store, journal, vaultRoot } = await makeStore();
+
+    // A: live (working) peer with a deadline fact.
+    const a = await store.remember({
+      content: "deadline: 2026-08-15",
+      entity: "nova",
+      reason: "seed",
+      session: "s1",
+    });
+    await store.promote({ id: a.id, target_status: "working", reason: "confirmed", session: "s1" });
+
+    // B: same entity, SAME deadline initially (so remember() queues nothing),
+    // then marked as superseding A directly in the journal.
+    const b = await store.remember({
+      content: "deadline: 2026-08-15",
+      entity: "nova",
+      reason: "seed",
+      session: "s1",
+    });
+    expect(journal.listConflicts("open")).toHaveLength(0);
+    journal.updateMemory(b.id, { supersedes: a.id });
+
+    // Revise B so its deadline now DIFFERS from A's. Without the lineage
+    // exclusion this would queue a value-conflict; because B supersedes A,
+    // the matcher excludes A and nothing is queued.
+    const before = readFileSync(join(vaultRoot, b.path), "utf8");
+    const after = before.replace("deadline: 2026-08-15", "deadline: 2026-09-01");
+    const patchText = createPatch(b.path, before, after);
+    await store.revise({ id: b.id, patch: patchText, reason: "update deadline", session: "s1" });
+
+    // Sanity: the revise actually changed the on-disk deadline.
+    expect(readFileSync(join(vaultRoot, b.path), "utf8")).toContain("deadline: 2026-09-01");
+    expect(journal.listConflicts("open")).toHaveLength(0);
+  });
+
   test("forget moots any open conflict referencing the forgotten memory", async () => {
     const { store, journal } = await makeStore();
     const a = await store.remember({

@@ -60,6 +60,71 @@ describe("conflicts schema migration", () => {
     expect(indexes).toContain("ux_conflicts_pair_kind_fact");
     db3.close();
   });
+
+  test("a fresh journal already carries the full v0.3a column set (from CREATE TABLE, not just the ALTER upgrade path)", () => {
+    // Brand-new file: the columns must come from SCHEMA_SQL's CREATE TABLE
+    // directly. (`conflicts` is empty in every real journal, so ALTER would
+    // also add them — this asserts the fresh-install shape independently.)
+    const freshDb = openJournal(":memory:");
+    const columns = (freshDb.prepare(`pragma table_info(conflicts)`).all() as Array<{ name: string }>).map(
+      (c) => c.name,
+    );
+    for (const expected of [
+      "id",
+      "memory_a",
+      "memory_b",
+      "kind",
+      "created_at",
+      "state",
+      "entity",
+      "detail",
+      "fact_key",
+      "pair_lo",
+      "pair_hi",
+      "resolved_at",
+    ]) {
+      expect(columns).toContain(expected);
+    }
+    freshDb.close();
+  });
+
+  test("an OLD-shape journal (pre-v0.3a) is upgraded to the same full column set + unique index on open", () => {
+    dir = mkdtempSync(join(tmpdir(), "vl-conflicts-old-"));
+    const dbPath = join(dir, "journal.db");
+
+    // Simulate a pre-v0.3a journal: create just the original 6-column shape.
+    const old = new Database(dbPath);
+    old.exec(
+      `CREATE TABLE conflicts (
+         id TEXT PRIMARY KEY,
+         memory_a TEXT,
+         memory_b TEXT,
+         kind TEXT,
+         created_at TEXT,
+         state TEXT
+       )`,
+    );
+    const oldColumns = (old.prepare(`pragma table_info(conflicts)`).all() as Array<{ name: string }>).map(
+      (c) => c.name,
+    );
+    // Sanity: the migrated columns are ABSENT before the upgrade.
+    expect(oldColumns).not.toContain("pair_lo");
+    old.close();
+
+    // Opening through openJournal must run the ALTER migration + index.
+    const upgraded = openJournal(dbPath);
+    const columns = (upgraded.prepare(`pragma table_info(conflicts)`).all() as Array<{ name: string }>).map(
+      (c) => c.name,
+    );
+    for (const expected of ["entity", "detail", "fact_key", "pair_lo", "pair_hi", "resolved_at"]) {
+      expect(columns).toContain(expected);
+    }
+    const indexes = (upgraded.prepare(`pragma index_list(conflicts)`).all() as Array<{ name: string }>).map(
+      (i) => i.name,
+    );
+    expect(indexes).toContain("ux_conflicts_pair_kind_fact");
+    upgraded.close();
+  });
 });
 
 function makeJournal(): { journal: Journal; db: Database.Database } {

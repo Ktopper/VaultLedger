@@ -80,6 +80,25 @@ describe("checkContradictions", () => {
     expect([conflict!.memory_a, conflict!.memory_b].sort()).toEqual(["mem_a", "mem_b"]);
   });
 
+  test("both-sides convergence: checking B then A for a contradicting pair yields exactly ONE row (order-normalized dedup)", () => {
+    const { journal, vaultRoot, now, genId } = setup();
+
+    writeNote(vaultRoot, "mem_a.md", "canonical", { deadline: "2026-08-15" });
+    journal.insertMemory(memRow({ id: "mem_a", path: "mem_a.md", entity: "nova", status: "canonical" }));
+
+    writeNote(vaultRoot, "mem_b.md", "canonical", { deadline: "2026-09-01" });
+    journal.insertMemory(memRow({ id: "mem_b", path: "mem_b.md", entity: "nova", status: "canonical" }));
+
+    // Run the check from BOTH directions — the (pair_lo, pair_hi, kind,
+    // fact_key) unique key must collapse them to a single conflict row.
+    checkContradictions({ journal, vaultRoot, now, genId }, "mem_b");
+    checkContradictions({ journal, vaultRoot, now, genId }, "mem_a");
+
+    const open = journal.listConflicts("open");
+    expect(open).toHaveLength(1);
+    expect([open[0]!.memory_a, open[0]!.memory_b].sort()).toEqual(["mem_a", "mem_b"]);
+  });
+
   test("lineage: B supersedes A (same entity, differing deadline) -> no conflict queued", () => {
     const { journal, vaultRoot, now, genId } = setup();
 

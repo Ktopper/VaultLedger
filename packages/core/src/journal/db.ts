@@ -52,7 +52,13 @@ CREATE TABLE IF NOT EXISTS conflicts (
   memory_b TEXT,
   kind TEXT,
   created_at TEXT,
-  state TEXT
+  state TEXT,
+  entity TEXT,
+  detail TEXT,
+  fact_key TEXT,
+  pair_lo TEXT,
+  pair_hi TEXT,
+  resolved_at TEXT
 );
 `;
 
@@ -93,12 +99,16 @@ export function openJournal(dbPath: string): Database.Database {
 }
 
 // Columns added to `conflicts` after its original v0.2 shape (memory_a,
-// memory_b, kind, created_at, state only). The original table is empty in
-// every existing journal (conflicts didn't exist as a feature yet), so a
-// plain ALTER TABLE ADD COLUMN is safe — no backfill needed. Migration is
-// driven off `pragma table_info`, so it's idempotent: re-running against an
-// already-migrated db (or a fresh one, where CREATE TABLE already included
-// these columns) is a no-op.
+// memory_b, kind, created_at, state only). A brand-new journal already gets
+// these directly from SCHEMA_SQL's CREATE TABLE, so this migration exists
+// purely to UPGRADE a pre-existing journal created against the old shape.
+// The old table is empty in every such journal (conflicts didn't exist as a
+// feature yet), so a plain ALTER TABLE ADD COLUMN is safe — no backfill
+// needed. Migration is driven off `pragma table_info`, so it's idempotent:
+// re-running against an already-migrated db (or a fresh one, where CREATE
+// TABLE already included these columns) is a no-op. Both paths — fresh open
+// and upgraded-from-old-shape — converge on the same full column set plus
+// the ux_conflicts_pair_kind_fact unique index.
 const CONFLICTS_MIGRATED_COLUMNS: Array<{ name: string; type: string }> = [
   { name: "entity", type: "TEXT" },
   { name: "detail", type: "TEXT" },
