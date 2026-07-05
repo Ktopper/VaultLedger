@@ -13,6 +13,7 @@ import { BrokerError } from "../../src/errors.js";
 import { MemoryStore } from "../../src/memory/store.js";
 import { recall } from "../../src/recall/recall.js";
 import { undoTransaction } from "../../src/broker/undo.js";
+import { Conflicts } from "../../src/conflicts/queue.js";
 import type { PermissionsManifest } from "../../src/schemas/manifest.js";
 
 const MANIFEST: PermissionsManifest = {
@@ -450,7 +451,7 @@ describe("MemoryStore", () => {
     expect([open[0]!.memory_a, open[0]!.memory_b].sort()).toEqual([a.id, c.id].sort());
   });
 
-  test("forget moots any open conflict referencing the forgotten memory", async () => {
+  test("forget hides its open conflict via the both-sides-live filter (no proactive moot)", async () => {
     const { store, journal } = await makeStore();
     const a = await store.remember({
       content: "Deadline: 2026-08-15",
@@ -472,7 +473,11 @@ describe("MemoryStore", () => {
 
     await store.forget({ id: b.id, reason: "no longer relevant", session: "s1" });
 
-    expect(journal.getConflict(conflictId)!.state).toBe("moot");
-    expect(journal.listConflicts("open")).toHaveLength(0);
+    // The raw journal row's state is untouched (forget no longer proactively
+    // moots it); the both-sides-live Conflicts.list('open') filter is what
+    // hides it, solely because b is now 'forgotten'.
+    expect(journal.getConflict(conflictId)!.state).toBe("open");
+    const conflicts = new Conflicts(journal);
+    expect(conflicts.list("open")).toHaveLength(0);
   });
 });

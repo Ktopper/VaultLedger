@@ -182,23 +182,4 @@ describe("Journal conflict helpers", () => {
     expect(stored!.state).toBe("resolved");
     expect(stored!.resolved_at).toBe("2026-07-05T00:00:00.000Z");
   });
-
-  test("markConflictsMoot flips only 'open' rows referencing the memId; a 'resolved' one referencing it is untouched", () => {
-    const { journal } = makeJournal();
-    journal.insertConflict(
-      conflictRow({ id: "cf_open", memory_a: "mem_a", memory_b: "mem_b", pair_lo: "mem_a", pair_hi: "mem_b", fact_key: "deadline" }),
-    );
-    journal.insertConflict(
-      conflictRow({ id: "cf_resolved", memory_a: "mem_a", memory_b: "mem_c", pair_lo: "mem_a", pair_hi: "mem_c", fact_key: "status" }),
-    );
-    journal.setConflictState("cf_resolved", "resolved", "2026-07-04T00:00:00.000Z");
-
-    journal.markConflictsMoot("mem_a", "2026-07-06T00:00:00.000Z");
-
-    expect(journal.getConflict("cf_open")!.state).toBe("moot");
-    expect(journal.getConflict("cf_open")!.resolved_at).toBe("2026-07-06T00:00:00.000Z");
-    // The resolved one referencing mem_a is untouched (still 'resolved', original resolved_at).
-    expect(journal.getConflict("cf_resolved")!.state).toBe("resolved");
-    expect(journal.getConflict("cf_resolved")!.resolved_at).toBe("2026-07-04T00:00:00.000Z");
-  });
 });

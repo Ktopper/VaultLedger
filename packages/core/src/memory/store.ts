@@ -309,9 +309,12 @@ export class MemoryStore {
     if (result.txnId !== undefined) {
       this.journal.setTransactionMemoryId(result.txnId, input.id);
     }
-    // The memory is no longer live, so any open conflict naming it is no
-    // longer actionable — moot it (see Journal.markConflictsMoot).
-    this.journal.markConflictsMoot(input.id, this.now());
+    // Conflicts naming this memory are NOT proactively touched here (design
+    // §4.3): the both-sides-live filter in Conflicts.list() is the SOLE
+    // mechanism for hiding them, now that the memory's status is
+    // 'forgotten' — and it un-hides them again if the forget is later
+    // undone (the memory goes live again), rather than permanently baking
+    // in a 'moot' state that a re-detect could never reopen.
   }
 
   /**

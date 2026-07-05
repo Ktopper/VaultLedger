@@ -14,6 +14,7 @@ import { BrokerError } from "../../src/errors.js";
 import { undoSession, undoTransaction } from "../../src/broker/undo.js";
 import { MemoryStore } from "../../src/memory/store.js";
 import { recall } from "../../src/recall/recall.js";
+import { Conflicts } from "../../src/conflicts/queue.js";
 import type { PermissionsManifest } from "../../src/schemas/manifest.js";
 
 const MANIFEST: PermissionsManifest = {
@@ -431,7 +432,7 @@ describe("undo", () => {
     expect(recall(journal, {}, now).map((r) => r.id)).not.toContain(id);
   });
 
-  test("undoing a CREATE transaction moots any open conflict referencing that memory", async () => {
+  test("undoing a CREATE transaction hides its open conflict via the both-sides-live filter (no proactive moot)", async () => {
     const { store, journal, git, now, genId } = await makeMemoryHarness();
 
     const a = await store.remember({
@@ -457,8 +458,60 @@ describe("undo", () => {
     await undoTransaction({ git, journal, now, genId }, b.txnId);
 
     expect(journal.getMemory(b.id)!.status).toBe("reverted");
-    expect(journal.getConflict(conflictId)!.state).toBe("moot");
-    expect(journal.listConflicts("open")).toHaveLength(0);
+    // The raw journal row's OWN state is untouched (still 'open' — undo no
+    // longer proactively moots it); it disappears from the enriched,
+    // both-sides-live Conflicts.list('open') solely because B is now dead.
+    expect(journal.getConflict(conflictId)!.state).toBe("open");
+    const conflicts = new Conflicts(journal);
+    expect(conflicts.list("open")).toHaveLength(0);
+  });
+
+  test("undo of an UNRELATED revise on a live memory does NOT hide a still-open conflict (regression: undo used to moot ANY open conflict naming the memory, even one untouched by the undone txn)", async () => {
+    const { store, journal, vaultRoot, git, now, genId } = await makeMemoryHarness();
+
+    // A and B: two LIVE (working) peers with a genuine, still-valid
+    // deadline conflict between them.
+    const a = await store.remember({
+      content: "Deadline: 2026-08-15\nOwner: Alice",
+      entity: "nova",
+      reason: "seed",
+      session: "s1",
+    });
+    await store.promote({ id: a.id, target_status: "working", reason: "confirmed", session: "s1" });
+
+    const b = await store.remember({
+      content: "Deadline: 2026-09-01",
+      entity: "nova",
+      reason: "seed",
+      session: "s1",
+    });
+    await store.promote({ id: b.id, target_status: "working", reason: "confirmed", session: "s1" });
+
+    const conflicts = new Conflicts(journal);
+    const openBefore = conflicts.list("open");
+    expect(openBefore).toHaveLength(1);
+    const conflictId = openBefore[0]!.row.id;
+
+    // Revise A's UNRELATED "Owner" line — nothing to do with the deadline
+    // conflict — then undo that revise. A stays live throughout.
+    const before = readFileSync(join(vaultRoot, a.path), "utf8");
+    const after = before.replace("Owner: Alice", "Owner: Bob");
+    const patchText = createPatch(a.path, before, after);
+    await store.revise({ id: a.id, patch: patchText, reason: "unrelated correction", session: "s1" });
+
+    const reviseTxn = journal
+      .listTransactions({ entity: "nova" })
+      .find((t) => t.memory_id === a.id && t.op === "revise");
+    expect(reviseTxn).toBeDefined();
+
+    await undoTransaction({ git, journal, now, genId }, reviseTxn!.id);
+
+    // A is still live (the revise-undo restores content, not status).
+    expect(journal.getMemory(a.id)!.status).toBe("working");
+    // The deadline conflict must STILL be open and visible — it was never
+    // touched by the unrelated revise/undo.
+    expect(journal.getConflict(conflictId)!.state).toBe("open");
+    expect(conflicts.list("open").map((c) => c.row.id)).toContain(conflictId);
   });
 
   test("undoing a promote (scratch->working) txn re-derives the memory status back to 'scratch' from the file", async () => {

@@ -443,19 +443,4 @@ export class Journal {
       .prepare(`UPDATE conflicts SET state = @state, resolved_at = @resolvedAt WHERE id = @id`)
       .run({ id, state, resolvedAt: resolvedAtIso ?? null });
   }
-
-  /**
-   * Called when a memory is reverted/forgotten: any still-`open` conflict
-   * referencing it (on either side) is no longer actionable — flip it to
-   * `moot` so it drops out of `Conflicts.list('open')`. Rows already
-   * resolved/dismissed (a human already looked at them) are left untouched.
-   */
-  markConflictsMoot(memId: string, nowIso: string): void {
-    this.db
-      .prepare(
-        `UPDATE conflicts SET state = 'moot', resolved_at = @now
-         WHERE state = 'open' AND (memory_a = @memId OR memory_b = @memId)`,
-      )
-      .run({ memId, now: nowIso });
-  }
 }

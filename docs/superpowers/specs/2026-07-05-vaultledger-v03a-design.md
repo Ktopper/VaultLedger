@@ -177,7 +177,8 @@ gains `entity`, `detail`, `resolved_at`, **`fact_key`**, and an **order-normaliz
 pair key** (`pair_lo`, `pair_hi` = the two memory ids sorted) via a lightweight
 `openJournal` migration (read `pragma table_info`; `ALTER TABLE ADD COLUMN` for
 any missing — safe because the table is empty in every existing journal).
-`state ∈ {open, resolved, dismissed, moot}`.
+`state ∈ {open, resolved, dismissed}`. (An earlier draft also had `moot`,
+proactively set by undo/forget — removed, see §4.3.)
 
 **Dedup is a DB constraint, across ALL states, not an app-level check-then-insert**
 (the same medicine as the `UNIQUE(commit_sha)` hardening in §8, and for the same
@@ -191,17 +192,29 @@ conflict (that exact pair+kind+fact) is *not* resurrected by a later re-detectio
 or `--rescan`; dismissal is permanent per fact. (Re-opening is a deliberate future
 action, not an accident.)
 
-### 4.3 Moot conflicts never accumulate as zombies
+### 4.3 Zombie conflicts never accumulate — the both-sides-live filter is the SOLE mechanism
 
 A conflict referencing a memory that later dies (undone / forgotten / reverted /
-retired) is no longer actionable. Two defenses, belt-and-suspenders:
-- **Guarantee — `list()` filters to both-sides-live:** `Conflicts.list("open")`
-  (and `GET /conflicts`) returns only conflicts where **both** referenced memories
-  are still live (status not `forgotten`/`reverted`/`retired`). This can't miss a
-  code path, so no zombie is ever *shown*.
-- **Tidiness — close on death:** the existing undo-compensation and `forget` paths
-  (which already touch the journal) additionally mark referencing `open` conflicts
-  `moot`, so the stored rows stay honest for audit.
+retired) is no longer actionable, and `Conflicts.list("open")` (and `GET
+/conflicts`) is solely responsible for keeping it hidden: it returns only
+conflicts where **both** referenced memories are still live (status not
+`forgotten`/`reverted`/`retired`). This can't miss a code path, so no zombie is
+ever *shown* — and a memory dying (forget, or undoing its originating create)
+hides its conflicts automatically, with no separate bookkeeping required.
+
+An earlier draft had undo's compensation and `forget` **additionally** mark any
+`open` conflict referencing the touched memory `moot` ("close on death,
+belt-and-suspenders"). This was removed: `undoTransaction`'s memory_id-keyed
+moot call fired for **any** undone transaction on that memory, not just one that
+actually killed it — undoing an unrelated revise (memory stays fully live)
+mooted a genuinely still-valid conflict anyway. Because moot was folded into
+the all-states dedup key, that false-moot was **permanent**: a later re-detect
+of the exact same contradiction could never reopen it (the dedup key was
+already occupied by the moot row). The both-sides-live filter alone is correct
+and total: it hides a conflict exactly when a referenced memory is dead, and
+un-hides it again the moment that memory is live again (e.g. undoing the
+forget) — no permanent-hide failure mode, and no redundant state to keep in
+sync with `Conflicts.list`'s own logic.
 
 ### 4.4 `Conflicts` API
 
@@ -273,8 +286,11 @@ detection across the agent zone on demand (respecting the all-states dedup).
     `fact_key`), both surfaced and independently resolvable.
   - dedup: re-running detection / `--rescan` doesn't duplicate; a **dismissed**
     conflict is not resurrected (all-states key, per fact).
-  - moot: `list` excludes conflicts whose side was forgotten/undone; undo/forget
-    marks referencing conflicts `moot`.
+  - both-sides-live filter: `list` excludes conflicts whose side was
+    forgotten/undone; an undo of an UNRELATED transaction on an otherwise-live
+    memory does NOT hide its still-open conflicts; a conflict hidden by
+    forget reappears in `list("open")` once the forget is undone (no
+    permanent hide).
   - hardening: `UNIQUE(commit_sha)` convergence (concurrent reindex → no dup txn
     rows); reconcile closes a stale pending approval; migration is idempotent.
 - **Server:** `/conflicts` populated shape; resolve/dismiss; both-sides-live

@@ -32,6 +32,12 @@ export class Conflicts {
       .filter((c): c is EnrichedConflict => c !== null);
   }
 
+  // Deliberately skips the both-sides-live filter (it's keyed by a specific
+  // conflict id, not a browse view) — do NOT use this to render fields to a
+  // UI. A future `GET /conflicts/:id` detail route must NOT call this
+  // directly for display, or it reintroduces a zombie-display path; it
+  // should apply the same live-check `enrich` does, or call `list()` and
+  // filter by id.
   get(id: string): EnrichedConflict | null {
     const row = this.journal.getConflict(id);
     if (!row) return null;
