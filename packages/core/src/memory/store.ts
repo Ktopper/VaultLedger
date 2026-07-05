@@ -296,6 +296,9 @@ export class MemoryStore {
     if (result.txnId !== undefined) {
       this.journal.setTransactionMemoryId(result.txnId, input.id);
     }
+    // The memory is no longer live, so any open conflict naming it is no
+    // longer actionable — moot it (see Journal.markConflictsMoot).
+    this.journal.markConflictsMoot(input.id, this.now());
   }
 
   /**

@@ -135,6 +135,14 @@ async function runUndoTransaction(
       journal.setMemoryStatus(txn.memory_id, derivedMemoryStatus);
     }
     journal.recordTransaction(revertRow);
+    // Any open conflict naming this memory is no longer actionable once its
+    // underlying transaction is undone (the note may be gone, or its
+    // content reverted out from under the conflict) — moot it out of
+    // Conflicts.list('open'). Rows a human already resolved/dismissed are
+    // left untouched (see Journal.markConflictsMoot).
+    if (txn.memory_id) {
+      journal.markConflictsMoot(txn.memory_id, now());
+    }
   });
 
   return { revertSha, revertTxnId };

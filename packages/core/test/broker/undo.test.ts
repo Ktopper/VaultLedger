@@ -442,6 +442,36 @@ describe("undo", () => {
     expect(recall(journal, {}, now).map((r) => r.id)).not.toContain(id);
   });
 
+  test("undoing a CREATE transaction moots any open conflict referencing that memory", async () => {
+    const { store, journal, git, now, genId } = await makeMemoryHarness();
+
+    const a = await store.remember({
+      content: "Deadline: 2026-08-15",
+      entity: "nova",
+      reason: "seed",
+      session: "s1",
+    });
+    await store.promote({ id: a.id, target_status: "working", reason: "confirmed", session: "s1" });
+
+    // B's remember() runs the post-commit contradiction check and queues an
+    // open conflict against A (differing deadline).
+    const b = await store.remember({
+      content: "Deadline: 2026-09-01",
+      entity: "nova",
+      reason: "seed",
+      session: "s1",
+    });
+    const openBefore = journal.listConflicts("open");
+    expect(openBefore).toHaveLength(1);
+    const conflictId = openBefore[0]!.id;
+
+    await undoTransaction({ git, journal, now, genId }, b.txnId);
+
+    expect(journal.getMemory(b.id)!.status).toBe("reverted");
+    expect(journal.getConflict(conflictId)!.state).toBe("moot");
+    expect(journal.listConflicts("open")).toHaveLength(0);
+  });
+
   test("undoing a promote (scratch->working) txn re-derives the memory status back to 'scratch' from the file", async () => {
     const { store, journal, git, vaultRoot, now, genId } = await makeMemoryHarness();
 

@@ -366,4 +366,30 @@ describe("MemoryStore", () => {
     expect(open).toHaveLength(1);
     expect(open[0]!.fact_key).toBe("owner");
   });
+
+  test("forget moots any open conflict referencing the forgotten memory", async () => {
+    const { store, journal } = await makeStore();
+    const a = await store.remember({
+      content: "Deadline: 2026-08-15",
+      entity: "nova",
+      reason: "seed",
+      session: "s1",
+    });
+    await store.promote({ id: a.id, target_status: "working", reason: "confirmed", session: "s1" });
+
+    const b = await store.remember({
+      content: "Deadline: 2026-09-01",
+      entity: "nova",
+      reason: "seed",
+      session: "s1",
+    });
+    const openBefore = journal.listConflicts("open");
+    expect(openBefore).toHaveLength(1);
+    const conflictId = openBefore[0]!.id;
+
+    await store.forget({ id: b.id, reason: "no longer relevant", session: "s1" });
+
+    expect(journal.getConflict(conflictId)!.state).toBe("moot");
+    expect(journal.listConflicts("open")).toHaveLength(0);
+  });
 });
