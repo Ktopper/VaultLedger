@@ -83,13 +83,22 @@ export class Broker {
     this.lockDir = opts.lockDir;
   }
 
-  async apply(op: ProposedOperation, opts?: { approved?: boolean }): Promise<ApplyResult> {
+  async apply(
+    op: ProposedOperation,
+    opts?: { approved?: boolean; approvalId?: string },
+  ): Promise<ApplyResult> {
+    // approvalId: when this apply is the deferred execution of a held approval
+    // (Approvals.approve re-runs the held op through here), it stamps the
+    // resulting transaction row with the originating approval's id so
+    // reconcile can SOUNDLY close a stale pending approval by exact id-match.
+    // Unset for every direct broker write → the row's approval_id stays null.
+    const approvalId = opts?.approvalId ?? null;
     const run = async (): Promise<ApplyResult> => {
       switch (op.op) {
         case "create":
-          return this.applyCreate(op);
+          return this.applyCreate(op, approvalId);
         case "revise":
-          return this.applyRevise(op, opts?.approved ?? false);
+          return this.applyRevise(op, opts?.approved ?? false, approvalId);
         case "propose_edit":
           return this.applyProposeEdit(op);
         case "promote":
@@ -185,6 +194,7 @@ export class Broker {
       reason,
       memory_id: null,
       commit_sha: commitSha,
+      approval_id: null,
       created_at: this.now(),
       status: "applied",
     };
@@ -208,7 +218,7 @@ export class Broker {
     return assertContainedAndReadable(this.vaultRoot, this.manifest, relPath);
   }
 
-  private async applyCreate(op: CreateOp): Promise<AppliedResult> {
+  private async applyCreate(op: CreateOp, approvalId: string | null): Promise<AppliedResult> {
     // Containment check first (throws FORBIDDEN_ZONE on a traversal escape),
     // then the zone gate — both before any filesystem mutation.
     const abs = this.resolveAbs(op.path);
@@ -244,6 +254,7 @@ export class Broker {
       reason: op.reason,
       memory_id: null,
       commit_sha: commitSha,
+      approval_id: approvalId,
       created_at: this.now(),
       status: "applied",
     };
@@ -252,7 +263,11 @@ export class Broker {
     return { ok: true, txnId, commitSha, path: op.path };
   }
 
-  private async applyRevise(op: ReviseOp, approved: boolean): Promise<AppliedResult> {
+  private async applyRevise(
+    op: ReviseOp,
+    approved: boolean,
+    approvalId: string | null,
+  ): Promise<AppliedResult> {
     // Containment check first: an escaping path is invalid regardless of zone,
     // and this must reject BEFORE the trusted/approval branch so a traversal
     // surfaces as FORBIDDEN_ZONE (not APPROVAL_REQUIRED).
@@ -312,6 +327,7 @@ export class Broker {
       reason: op.reason,
       memory_id: null,
       commit_sha: commitSha,
+      approval_id: approvalId,
       created_at: this.now(),
       status: "applied",
     };

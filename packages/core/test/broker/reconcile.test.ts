@@ -2,10 +2,16 @@ import { describe, expect, test, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createPatch } from "diff";
 import { LedgerGit, formatMessage } from "../../src/broker/git.js";
-import { Journal, type TransactionRow } from "../../src/journal/journal.js";
+import { Journal, type ApprovalRow, type TransactionRow } from "../../src/journal/journal.js";
 import { openJournal } from "../../src/journal/db.js";
 import { reconcile } from "../../src/broker/reconcile.js";
+import { Broker } from "../../src/broker/broker.js";
+import { MemoryStore } from "../../src/memory/store.js";
+import { Approvals } from "../../src/approvals/queue.js";
+import { hashFile } from "../../src/broker/hash.js";
+import { PermissionsManifest } from "../../src/schemas/manifest.js";
 
 function makeClock(): { now: () => string; genId: (prefix: string) => string } {
   let tick = 0;
@@ -68,6 +74,7 @@ describe("reconcile", () => {
       reason: "seed",
       memory_id: null,
       commit_sha: shaA,
+      approval_id: null,
       created_at: now(),
       status: "applied",
     };
@@ -172,5 +179,234 @@ describe("reconcile", () => {
     expect(repaired.path).toBe("Another Note.md");
     expect(repaired.session).toBe("session-a");
     expect(repaired.memory_id).toBeNull();
+  });
+});
+
+describe("reconcile: closes stale pending approvals (approve->apply crash gap)", () => {
+  let dir: string | undefined;
+
+  afterEach(() => {
+    if (dir) {
+      rmSync(dir, { recursive: true, force: true });
+      dir = undefined;
+    }
+  });
+
+  async function makeHarness(): Promise<{
+    journal: Journal;
+    git: LedgerGit;
+    vaultRoot: string;
+    now: () => string;
+    genId: (prefix: string) => string;
+  }> {
+    const vaultRoot = mkdtempSync(join(tmpdir(), "vl-reconcile-approvals-"));
+    dir = vaultRoot;
+    const git = new LedgerGit(vaultRoot);
+    await git.init();
+    const db = openJournal(":memory:");
+    const journal = new Journal(db);
+    const { now, genId } = makeClock();
+    return { journal, git, vaultRoot, now, genId };
+  }
+
+  function pendingApproval(overrides: Partial<ApprovalRow> = {}): ApprovalRow {
+    return {
+      id: "apr_1",
+      held_operation: JSON.stringify({
+        op: "propose_edit",
+        path: "Projects/Nova.md",
+        expected_hash: "sha256:deadbeef",
+        patch: "--- a\n+++ b\n",
+        reason: "edit nova",
+        session: "session-a",
+      }),
+      zone: "restricted",
+      reason: "needs sign-off",
+      session: "session-a",
+      state: "pending",
+      created_at: "2026-07-01T00:00:00.000Z",
+      resolved_at: null,
+      ...overrides,
+    };
+  }
+
+  function appliedTxn(overrides: Partial<TransactionRow> = {}): TransactionRow {
+    return {
+      id: "txn_1",
+      op: "revise",
+      path: "Projects/Nova.md",
+      hash_before: "sha256:before",
+      hash_after: "sha256:after",
+      session: "session-a",
+      reason: "applied",
+      memory_id: null,
+      commit_sha: "sha-nova-1",
+      approval_id: null,
+      created_at: "2026-07-02T00:00:00.000Z",
+      status: "applied",
+      ...overrides,
+    };
+  }
+
+  test("TRUE crash-gap: an APPLIED transaction tagged with the approval's id closes that pending approval to 'approved'", async () => {
+    const { journal, git, now, genId } = await makeHarness();
+
+    // The approve->apply crash gap: the held op was applied (a transaction
+    // row landed, tagged with approval_id="apr_1") but the process died
+    // before flipping the approval out of 'pending'.
+    journal.insertApproval(pendingApproval({ id: "apr_1", created_at: now() }));
+    journal.recordTransaction(
+      appliedTxn({ id: "txn_1", commit_sha: "sha-nova-1", approval_id: "apr_1", created_at: now() }),
+    );
+
+    const result = await reconcile({ git, journal, now, genId });
+    expect(result.approvalsClosed).toBe(1);
+
+    const approval = journal.getApproval("apr_1")!;
+    expect(approval.state).toBe("approved");
+    expect(approval.resolved_at).not.toBeNull();
+  });
+
+  test("NO FALSE-CLOSE: an unrelated applied transaction on the SAME path but with a DIFFERENT/null approval_id leaves the approval pending", async () => {
+    const { journal, git, now, genId } = await makeHarness();
+
+    // The reviewer's Critical case: a propose_edit approval on
+    // "Projects/Nova.md" is queued (pending), then an UNRELATED direct revise
+    // lands on that exact same path afterwards. The old path+time heuristic
+    // would false-close the approval (same path, later commit) even though the
+    // approval's OWN patch never applied — corrupting the audit trail. The
+    // sound id-link must NOT close it: the unrelated txn carries a different
+    // approval_id (here a direct write, so null).
+    journal.insertApproval(pendingApproval({ id: "apr_1", created_at: now() }));
+    journal.recordTransaction(
+      appliedTxn({
+        id: "txn_unrelated",
+        path: "Projects/Nova.md", // SAME path as the pending approval's held op
+        commit_sha: "sha-direct-1",
+        approval_id: null, // a direct broker write, NOT this approval's apply
+        created_at: now(),
+      }),
+    );
+    // Also prove a DIFFERENT approval's id doesn't match either.
+    journal.recordTransaction(
+      appliedTxn({
+        id: "txn_other_apr",
+        path: "Projects/Nova.md",
+        commit_sha: "sha-other-1",
+        approval_id: "apr_SOMEONE_ELSE",
+        created_at: now(),
+      }),
+    );
+
+    const result = await reconcile({ git, journal, now, genId });
+    expect(result.approvalsClosed).toBe(0);
+
+    const approval = journal.getApproval("apr_1")!;
+    expect(approval.state).toBe("pending");
+    expect(approval.resolved_at).toBeNull();
+  });
+
+  test("an unrelated pending approval with no approval_id-tagged transaction is left 'pending'", async () => {
+    const { journal, git, now, genId } = await makeHarness();
+
+    journal.insertApproval(pendingApproval({ id: "apr_unrelated", created_at: now() }));
+    // Applied transactions exist, but none tagged with apr_unrelated.
+    journal.recordTransaction(
+      appliedTxn({ id: "txn_1", commit_sha: "sha-nova-1", approval_id: "apr_other", created_at: now() }),
+    );
+
+    const result = await reconcile({ git, journal, now, genId });
+    expect(result.approvalsClosed).toBe(0);
+
+    const approval = journal.getApproval("apr_unrelated")!;
+    expect(approval.state).toBe("pending");
+    expect(approval.resolved_at).toBeNull();
+  });
+
+  test("a REVERTED transaction tagged with the approval's id does NOT close it (only 'applied' counts)", async () => {
+    const { journal, git, now, genId } = await makeHarness();
+
+    // The apply was later undone: its transaction row is 'reverted', so the
+    // held op is no longer in effect and the approval must stay actionable.
+    journal.insertApproval(pendingApproval({ id: "apr_1", created_at: now() }));
+    journal.recordTransaction(
+      appliedTxn({
+        id: "txn_1",
+        commit_sha: "sha-nova-1",
+        approval_id: "apr_1",
+        status: "reverted",
+        created_at: now(),
+      }),
+    );
+
+    const result = await reconcile({ git, journal, now, genId });
+    expect(result.approvalsClosed).toBe(0);
+
+    const approval = journal.getApproval("apr_1")!;
+    expect(approval.state).toBe("pending");
+  });
+
+  test("END-TO-END: approve a queued propose_edit, reset the approval to pending (simulated crash), reconcile re-closes it", async () => {
+    const { journal, git, vaultRoot, now, genId } = await makeHarness();
+
+    // Build the real broker/store/approvals stack over the temp vault so the
+    // applied transaction genuinely carries the approval_id the broker stamped.
+    const manifest = PermissionsManifest.parse({
+      version: 1,
+      mode: "assisted",
+      zones: {
+        agent: ["Agent/**"],
+        scratch: ["Agent/Scratch/**"],
+        excluded: ["Private/**"],
+        trusted: ["**"],
+      },
+      overrides: [],
+    });
+    const broker = new Broker({ vaultRoot, git, journal, manifest, now, genId });
+    const store = new MemoryStore({ broker, journal, now, genId, vaultRoot });
+    const approvals = new Approvals({ broker, store, journal, now });
+
+    // A padded note so a one-word revise stays under the patch-size threshold.
+    const original =
+      "# Note\n\nFiller 1.\nFiller 2.\nFiller 3.\nFiller 4.\nFiller 5.\nSome content.\n";
+    const created = await broker.apply({
+      op: "create",
+      path: "Agent/Memory/note.md",
+      content: original,
+      reason: "seed",
+      session: "s1",
+    });
+    if (!created.ok || "queued" in created) throw new Error("expected applied");
+
+    const after = original.replace("Some content.", "Some DIFFERENT content.");
+    const patch = createPatch("note.md", original, after);
+    const queued = await broker.apply({
+      op: "propose_edit",
+      path: "Agent/Memory/note.md",
+      expected_hash: hashFile(join(vaultRoot, "Agent/Memory/note.md")),
+      patch,
+      reason: "edit note",
+      session: "s1",
+    });
+    if (!("queued" in queued) || !queued.queued) throw new Error("expected queued");
+    const approvalId = queued.approvalId;
+
+    // Approve → the held edit applies and the approval flips to 'approved'.
+    const res = await approvals.approve(approvalId);
+    expect(res).toMatchObject({ applied: true });
+    expect(journal.getApproval(approvalId)!.state).toBe("approved");
+
+    // Simulate the approve->apply crash: the edit landed (transaction tagged
+    // with approvalId) but the approval row never got flipped — force it back
+    // to 'pending' to reproduce the surviving-pending state.
+    journal.setApprovalState(approvalId, "pending");
+    expect(journal.getApproval(approvalId)!.state).toBe("pending");
+
+    // reconcile finds the applied, approval_id-tagged transaction and re-closes.
+    const result = await reconcile({ git, journal, now, genId });
+    expect(result.approvalsClosed).toBe(1);
+    const approval = journal.getApproval(approvalId)!;
+    expect(approval.state).toBe("approved");
+    expect(approval.resolved_at).not.toBeNull();
   });
 });

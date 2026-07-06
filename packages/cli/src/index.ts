@@ -2,6 +2,7 @@
 import { pathToFileURL } from "node:url";
 import { Command } from "commander";
 import { approveCommand } from "./commands/approve.js";
+import { conflictsCommand } from "./commands/conflicts.js";
 import { initCommand } from "./commands/init.js";
 import { logCommand } from "./commands/log.js";
 import { reindexCommand } from "./commands/reindex.js";
@@ -16,6 +17,7 @@ import { undoCommand } from "./commands/undo.js";
 // real `initCommand`/`undoCommand` rather than reaching into CLI internals)
 // import the exact same functions `buildProgram` wires up above.
 export { approveCommand, type ApproveOptions, type ApproveCommandResult } from "./commands/approve.js";
+export { conflictsCommand, type ConflictsOptions } from "./commands/conflicts.js";
 export { initCommand, type InitOptions, type InitResult } from "./commands/init.js";
 export { logCommand, type LogFilters } from "./commands/log.js";
 export { reindexCommand } from "./commands/reindex.js";
@@ -117,6 +119,28 @@ export function buildProgram(): Command {
         if (!Array.isArray(result) && "ok" in result && result.ok === false) {
           process.exitCode = 1;
         }
+      } catch (e) {
+        reportError(e);
+      }
+    });
+
+  program
+    .command("conflicts <vaultDir> [action] [id]")
+    .description("list open conflicts, or resolve/dismiss one by id")
+    .option("--rescan", "re-run contradiction detection against every memory", false)
+    .action(async (vaultDir: string, action: string | undefined, id: string | undefined, opts: { rescan: boolean }) => {
+      if (action !== undefined && action !== "resolve" && action !== "dismiss") {
+        console.error(`invalid action: ${action} (expected "resolve" or "dismiss")`);
+        process.exitCode = 1;
+        return;
+      }
+      if (action !== undefined && id === undefined) {
+        console.error(`--action ${action} requires an id`);
+        process.exitCode = 1;
+        return;
+      }
+      try {
+        await conflictsCommand(vaultDir, { action, id, rescan: opts.rescan });
       } catch (e) {
         reportError(e);
       }

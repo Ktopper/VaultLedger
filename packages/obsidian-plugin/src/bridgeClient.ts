@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { readConfig, vaultLockDir } from "@vaultledger/core/config";
 import type {
   ApprovalRow,
+  EnrichedConflict,
   ListTransactionsFilters,
   MemoryRow,
   QueryMemoriesFilters,
@@ -262,8 +263,16 @@ export class BridgeClient {
     return this.request<MemoryRow[]>("/staleness");
   }
 
-  conflicts(): Promise<BridgeResult<unknown[]>> {
-    return this.request<unknown[]>("/conflicts");
+  conflicts(): Promise<BridgeResult<EnrichedConflict[]>> {
+    return this.request<EnrichedConflict[]>("/conflicts");
+  }
+
+  resolveConflict(id: string): Promise<BridgeResult<{ resolved: true }>> {
+    return this.request<{ resolved: true }>(`/conflicts/${encodeURIComponent(id)}/resolve`, { method: "POST" });
+  }
+
+  dismissConflict(id: string): Promise<BridgeResult<{ dismissed: true }>> {
+    return this.request<{ dismissed: true }>(`/conflicts/${encodeURIComponent(id)}/dismiss`, { method: "POST" });
   }
 
   provenance(path: string): Promise<BridgeResult<ProvenanceResult>> {

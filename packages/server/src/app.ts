@@ -5,6 +5,7 @@ import matter from "gray-matter";
 import {
   assertContainedAndReadable,
   BrokerError,
+  Conflicts,
   findStale,
   recall,
   undoSession,
@@ -109,8 +110,17 @@ function errorBody(code: string, message: string): ErrorBody {
  * handler) without ever passing the gate — a real bypass of the "single
  * global gate before any route runs" invariant.
  */
+// APP-level bodyLimit (not per-route): covers every route on this instance,
+// including any future mutation route (e.g. /conflicts/:id/resolve), without
+// needing to remember to set it again per-route. 16 KiB comfortably covers
+// every real payload this bridge accepts today (a patch diff for a single
+// note edit, an undo target id) while bounding how much a request body can
+// make Fastify buffer before the loopback+auth guard (which runs in
+// onRequest, BEFORE body parsing) even gets a chance to reject it.
+const BODY_LIMIT_BYTES = 16 * 1024;
+
 export function buildBridge(ctx: VaultContext, token: string): FastifyInstance {
-  const app = Fastify({ logger: false });
+  const app = Fastify({ logger: false, bodyLimit: BODY_LIMIT_BYTES });
 
   // Some mutation routes (approve/reject) take no body at all; a real client
   // may still send `Content-Type: application/json` on a bodyless POST.
@@ -203,8 +213,31 @@ export function buildBridge(ctx: VaultContext, token: string): FastifyInstance {
     return workingMemories.filter((m) => staleIds.has(m.id));
   });
 
+  // Journal-only, lock-free: conflicts live entirely in the disposable
+  // sqlite journal (never the vault/git), so resolving/dismissing one never
+  // needs the broker's cross-process vault lock.
   app.get("/conflicts", async () => {
-    return [];
+    return new Conflicts(ctx.journal).list("open");
+  });
+
+  app.post("/conflicts/:id/resolve", async (req: FastifyRequest) => {
+    const { id } = req.params as { id: string };
+    const conflicts = new Conflicts(ctx.journal);
+    if (!conflicts.get(id)) {
+      throw new BrokerError("NOT_FOUND", `no conflict with id ${id}`);
+    }
+    conflicts.resolve(id, ctx.now());
+    return { resolved: true };
+  });
+
+  app.post("/conflicts/:id/dismiss", async (req: FastifyRequest) => {
+    const { id } = req.params as { id: string };
+    const conflicts = new Conflicts(ctx.journal);
+    if (!conflicts.get(id)) {
+      throw new BrokerError("NOT_FOUND", `no conflict with id ${id}`);
+    }
+    conflicts.dismiss(id, ctx.now());
+    return { dismissed: true };
   });
 
   // SECURITY (Task 2.3): reuses the EXACT SAME containment + zone-exclusion

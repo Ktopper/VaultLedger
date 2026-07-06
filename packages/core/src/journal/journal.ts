@@ -13,6 +13,12 @@ export interface TransactionRow {
   reason: string | null;
   memory_id: string | null;
   commit_sha: string | null;
+  /** The approval whose held operation produced this transaction, when it was
+   * applied via `Approvals.approve`. Null for direct broker writes (which
+   * never pass through an approval). Lets reconcile SOUNDLY close a stale
+   * pending approval by exact id-match (see broker/reconcile.ts) instead of a
+   * path/time heuristic that could false-close an unrelated same-path op. */
+  approval_id: string | null;
   created_at: string;
   status: TransactionStatus;
 }
@@ -38,6 +44,21 @@ export interface ApprovalRow {
   session: string;
   state: ApprovalState;
   created_at: string;
+  resolved_at: string | null;
+}
+
+export interface ConflictRow {
+  id: string;
+  memory_a: string | null;
+  memory_b: string | null;
+  pair_lo: string | null;
+  pair_hi: string | null;
+  kind: string | null;
+  fact_key: string | null;
+  entity: string | null;
+  detail: string | null;
+  created_at: string | null;
+  state: string | null;
   resolved_at: string | null;
 }
 
@@ -89,10 +110,52 @@ export class Journal {
     this.db
       .prepare(
         `INSERT INTO transactions
-           (id, op, path, hash_before, hash_after, session, reason, memory_id, commit_sha, created_at, status)
-         VALUES (@id, @op, @path, @hash_before, @hash_after, @session, @reason, @memory_id, @commit_sha, @created_at, @status)`,
+           (id, op, path, hash_before, hash_after, session, reason, memory_id, commit_sha, approval_id, created_at, status)
+         VALUES (@id, @op, @path, @hash_before, @hash_after, @session, @reason, @memory_id, @commit_sha, @approval_id, @created_at, @status)`,
       )
       .run(row);
+  }
+
+  /**
+   * Same shape as `recordTransaction`, but tolerates a duplicate `commit_sha`
+   * instead of throwing (`ON CONFLICT(commit_sha) ... DO NOTHING` against the
+   * partial `ux_transactions_commit` unique index — the `WHERE commit_sha IS
+   * NOT NULL` on the ON CONFLICT clause must mirror the index's own partial
+   * predicate; SQLite requires the two to match for the upsert target to
+   * resolve). Used by `reconcile`/`reindex`'s crash-recovery repair path,
+   * where two processes can race to repair the SAME missing commit (e.g.
+   * `ledger serve` and an MCP server both reindexing on startup) — both
+   * decide the row is missing, but only one insert should land. The normal
+   * broker write path keeps using `recordTransaction`: its `commit_sha` is
+   * always freshly minted by that same call, never a potential duplicate, so
+   * a real integrity violation there should still throw rather than be
+   * silently swallowed. Returns whether a new row was actually inserted.
+   */
+  recordTransactionIfNew(row: TransactionRow): boolean {
+    const result = this.db
+      .prepare(
+        `INSERT INTO transactions
+           (id, op, path, hash_before, hash_after, session, reason, memory_id, commit_sha, approval_id, created_at, status)
+         VALUES (@id, @op, @path, @hash_before, @hash_after, @session, @reason, @memory_id, @commit_sha, @approval_id, @created_at, @status)
+         ON CONFLICT(commit_sha) WHERE commit_sha IS NOT NULL DO NOTHING`,
+      )
+      .run(row);
+    return result.changes > 0;
+  }
+
+  /**
+   * Applied transactions produced by approving the given approval — the sound
+   * link reconcile uses to close a stale pending approval (design §5,
+   * approve->apply crash gap). Filtered in SQL by `approval_id` (not an
+   * unbounded full-table scan per pending approval) and by `status='applied'`
+   * so a later-reverted apply doesn't count as still-applied.
+   */
+  getAppliedTransactionsByApprovalId(approvalId: string): TransactionRow[] {
+    return this.db
+      .prepare<{ approvalId: string }, TransactionRow>(
+        `SELECT * FROM transactions WHERE approval_id = @approvalId AND status = 'applied'`,
+      )
+      .all({ approvalId });
   }
 
   getTransaction(id: string): TransactionRow | null {
@@ -245,6 +308,23 @@ export class Journal {
     return this.db.prepare<Record<string, unknown>, MemoryRow>(sql).all(params);
   }
 
+  /**
+   * Same-entity lookup with SQL-side case + surrounding-whitespace folding
+   * (`lower(trim(entity)) = @folded`). Callers pass an already-folded key
+   * (see `foldEntity`) and should still JS-refilter to collapse *internal*
+   * whitespace, which SQL trim() does not. Used by the contradiction entity
+   * matcher, which must treat "Nova"/"nova"/" nova " as one entity.
+   */
+  queryMemoriesByEntityFolded(folded: string, limit: number): MemoryRow[] {
+    const sql = `
+      SELECT m.* FROM memories m
+      WHERE lower(trim(m.entity)) = @folded
+      ORDER BY m.created DESC
+      LIMIT @limit
+    `;
+    return this.db.prepare<Record<string, unknown>, MemoryRow>(sql).all({ folded, limit });
+  }
+
   touchMemory(id: string, isoNow: string): void {
     this.db
       .prepare(`UPDATE memories SET last_referenced = @isoNow WHERE id = @id`)
@@ -311,6 +391,56 @@ export class Journal {
   setApprovalState(id: string, state: ApprovalState, resolvedAtIso?: string): void {
     this.db
       .prepare(`UPDATE approvals SET state = @state, resolved_at = @resolvedAt WHERE id = @id`)
+      .run({ id, state, resolvedAt: resolvedAtIso ?? null });
+  }
+
+  // ---------------------------------------------------------------------
+  // Conflicts
+  // ---------------------------------------------------------------------
+
+  /**
+   * Insert a detected conflict, de-duplicated on (pair_lo, pair_hi, kind,
+   * fact_key) — the same contradictory pair/fact re-detected on a later
+   * `checkContradictions` run (e.g. after an unrelated edit to either note)
+   * must not spawn a duplicate row, and — per the dismissed-not-resurrected
+   * guarantee — must NOT reopen/touch a row a human already dismissed or
+   * resolved. Returns whether a new row was actually inserted.
+   */
+  insertConflict(row: ConflictRow): boolean {
+    const result = this.db
+      .prepare(
+        `INSERT INTO conflicts
+           (id, memory_a, memory_b, pair_lo, pair_hi, kind, fact_key, entity, detail, created_at, state, resolved_at)
+         VALUES (@id, @memory_a, @memory_b, @pair_lo, @pair_hi, @kind, @fact_key, @entity, @detail, @created_at, @state, @resolved_at)
+         ON CONFLICT(pair_lo, pair_hi, kind, fact_key) DO NOTHING`,
+      )
+      .run(row);
+    return result.changes > 0;
+  }
+
+  listConflicts(state?: string): ConflictRow[] {
+    if (state === undefined) {
+      return this.db
+        .prepare<[], ConflictRow>(`SELECT * FROM conflicts ORDER BY created_at DESC`)
+        .all();
+    }
+    return this.db
+      .prepare<{ state: string }, ConflictRow>(
+        `SELECT * FROM conflicts WHERE state = @state ORDER BY created_at DESC`,
+      )
+      .all({ state });
+  }
+
+  getConflict(id: string): ConflictRow | null {
+    const row = this.db
+      .prepare<{ id: string }, ConflictRow>(`SELECT * FROM conflicts WHERE id = @id`)
+      .get({ id });
+    return row ?? null;
+  }
+
+  setConflictState(id: string, state: string, resolvedAtIso?: string): void {
+    this.db
+      .prepare(`UPDATE conflicts SET state = @state, resolved_at = @resolvedAt WHERE id = @id`)
       .run({ id, state, resolvedAt: resolvedAtIso ?? null });
   }
 }

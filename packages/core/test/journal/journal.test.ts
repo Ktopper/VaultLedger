@@ -41,6 +41,7 @@ describe("openJournal", () => {
       reason: "x",
       memory_id: null,
       commit_sha: null,
+      approval_id: null,
       created_at: "2026-07-01T00:00:00.000Z",
       status: null,
     } as unknown as TransactionRow;
@@ -92,6 +93,7 @@ describe("Journal transactions", () => {
       reason: "initial capture",
       memory_id: "mem_1",
       commit_sha: "deadbeef",
+      approval_id: null,
       created_at: "2026-07-01T00:00:00.000Z",
       status: "applied",
       ...overrides,
@@ -126,9 +128,9 @@ describe("Journal transactions", () => {
 
   test("listTransactions returns newest-first and respects limit", () => {
     const j = makeJournal();
-    j.recordTransaction(row({ id: "tx_1", created_at: "2026-07-01T00:00:00.000Z" }));
-    j.recordTransaction(row({ id: "tx_2", created_at: "2026-07-02T00:00:00.000Z" }));
-    j.recordTransaction(row({ id: "tx_3", created_at: "2026-07-03T00:00:00.000Z" }));
+    j.recordTransaction(row({ id: "tx_1", commit_sha: "sha-1", created_at: "2026-07-01T00:00:00.000Z" }));
+    j.recordTransaction(row({ id: "tx_2", commit_sha: "sha-2", created_at: "2026-07-02T00:00:00.000Z" }));
+    j.recordTransaction(row({ id: "tx_3", commit_sha: "sha-3", created_at: "2026-07-03T00:00:00.000Z" }));
 
     const all = j.listTransactions({});
     expect(all.map((t) => t.id)).toEqual(["tx_3", "tx_2", "tx_1"]);
@@ -142,9 +144,9 @@ describe("Journal transactions", () => {
     const sameTs = "2026-07-01T00:00:00.000Z";
     // Insert three rows with the IDENTICAL created_at; newest-inserted must
     // come first so undoSession's newest-first guarantee holds.
-    j.recordTransaction(row({ id: "tx_a", created_at: sameTs }));
-    j.recordTransaction(row({ id: "tx_b", created_at: sameTs }));
-    j.recordTransaction(row({ id: "tx_c", created_at: sameTs }));
+    j.recordTransaction(row({ id: "tx_a", commit_sha: "sha-a", created_at: sameTs }));
+    j.recordTransaction(row({ id: "tx_b", commit_sha: "sha-b", created_at: sameTs }));
+    j.recordTransaction(row({ id: "tx_c", commit_sha: "sha-c", created_at: sameTs }));
 
     const all = j.listTransactions({});
     expect(all.map((t) => t.id)).toEqual(["tx_c", "tx_b", "tx_a"]);
@@ -152,8 +154,8 @@ describe("Journal transactions", () => {
 
   test("listTransactions filters by session", () => {
     const j = makeJournal();
-    j.recordTransaction(row({ id: "tx_1", session: "session-a" }));
-    j.recordTransaction(row({ id: "tx_2", session: "session-b" }));
+    j.recordTransaction(row({ id: "tx_1", commit_sha: "sha-1", session: "session-a" }));
+    j.recordTransaction(row({ id: "tx_2", commit_sha: "sha-2", session: "session-b" }));
 
     const filtered = j.listTransactions({ session: "session-b" });
     expect(filtered.map((t) => t.id)).toEqual(["tx_2"]);
@@ -185,8 +187,8 @@ describe("Journal transactions", () => {
       expires: null,
       last_referenced: null,
     });
-    j.recordTransaction(row({ id: "tx_1", memory_id: "mem_1" }));
-    j.recordTransaction(row({ id: "tx_2", memory_id: "mem_2" }));
+    j.recordTransaction(row({ id: "tx_1", commit_sha: "sha-1", memory_id: "mem_1" }));
+    j.recordTransaction(row({ id: "tx_2", commit_sha: "sha-2", memory_id: "mem_2" }));
 
     const filtered = j.listTransactions({ entity: "Nova" });
     expect(filtered.map((t) => t.id)).toEqual(["tx_1"]);

@@ -13,6 +13,7 @@ import { BrokerError } from "../../src/errors.js";
 import { MemoryStore } from "../../src/memory/store.js";
 import { recall } from "../../src/recall/recall.js";
 import { undoTransaction } from "../../src/broker/undo.js";
+import { Conflicts } from "../../src/conflicts/queue.js";
 import type { PermissionsManifest } from "../../src/schemas/manifest.js";
 
 const MANIFEST: PermissionsManifest = {
@@ -290,5 +291,193 @@ describe("MemoryStore", () => {
     const patchText = createPatch(path, onDisk, onDisk + "\nv2");
     await store.revise({ id, patch: patchText, reason: "add v2", session: "s1" });
     expect(readFileSync(join(vaultRoot, path), "utf8")).toBe(onDisk + "\nv2");
+  });
+
+  test("remember queues a conflict when a live (working) same-entity peer already conflicts on a fact", async () => {
+    const { store, journal } = await makeStore();
+    const a = await store.remember({
+      content: "Deadline: 2026-08-15",
+      entity: "nova",
+      reason: "seed",
+      session: "s1",
+    });
+    // "working" (not just "canonical") is already a live status for the
+    // contradiction entity matcher, so this is enough to make A a comparable
+    // peer for B's post-remember check.
+    await store.promote({ id: a.id, target_status: "working", reason: "confirmed", session: "s1" });
+
+    await store.remember({
+      content: "Deadline: 2026-09-01",
+      entity: "nova",
+      reason: "seed",
+      session: "s1",
+    });
+
+    const open = journal.listConflicts("open");
+    expect(open).toHaveLength(1);
+    expect(open[0]!.fact_key).toBe("deadline");
+    expect(open[0]!.kind).toBe("value-conflict");
+  });
+
+  test("remember does not queue a conflict for a non-contradicting same-entity peer", async () => {
+    const { store, journal } = await makeStore();
+    const a = await store.remember({
+      content: "Deadline: 2026-08-15",
+      entity: "nova",
+      reason: "seed",
+      session: "s1",
+    });
+    await store.promote({ id: a.id, target_status: "working", reason: "confirmed", session: "s1" });
+
+    await store.remember({
+      content: "Deadline: 2026-08-15",
+      entity: "nova",
+      reason: "seed",
+      session: "s1",
+    });
+
+    expect(journal.listConflicts("open")).toHaveLength(0);
+  });
+
+  test("revise runs the contradiction check after the patch lands", async () => {
+    const { store, journal, vaultRoot } = await makeStore();
+    const a = await store.remember({
+      content: "Owner: Alice",
+      entity: "nova",
+      reason: "seed",
+      session: "s1",
+    });
+    await store.promote({ id: a.id, target_status: "working", reason: "confirmed", session: "s1" });
+
+    const b = await store.remember({
+      content: "Location: Paris",
+      entity: "nova",
+      reason: "seed",
+      session: "s1",
+    });
+    // Sanity: no conflict yet (differing, unrelated fact).
+    expect(journal.listConflicts("open")).toHaveLength(0);
+
+    const before = readFileSync(join(vaultRoot, b.path), "utf8");
+    const after = before.replace("Location: Paris", "Location: Paris\nOwner: Bob");
+    const patchText = createPatch(b.path, before, after);
+    await store.revise({ id: b.id, patch: patchText, reason: "add owner", session: "s1" });
+
+    const open = journal.listConflicts("open");
+    expect(open).toHaveLength(1);
+    expect(open[0]!.fact_key).toBe("owner");
+  });
+
+  test("revise on a memory that supersedes a live peer queues no conflict (lineage guard holds through the store path)", async () => {
+    const { store, journal, vaultRoot } = await makeStore();
+
+    // A: live (working) peer with a deadline fact.
+    const a = await store.remember({
+      content: "deadline: 2026-08-15",
+      entity: "nova",
+      reason: "seed",
+      session: "s1",
+    });
+    await store.promote({ id: a.id, target_status: "working", reason: "confirmed", session: "s1" });
+
+    // B: same entity, SAME deadline initially (so remember() queues nothing),
+    // then marked as superseding A directly in the journal.
+    const b = await store.remember({
+      content: "deadline: 2026-08-15",
+      entity: "nova",
+      reason: "seed",
+      session: "s1",
+    });
+    expect(journal.listConflicts("open")).toHaveLength(0);
+    journal.updateMemory(b.id, { supersedes: a.id });
+
+    // Revise B so its deadline now DIFFERS from A's. Without the lineage
+    // exclusion this would queue a value-conflict; because B supersedes A,
+    // the matcher excludes A and nothing is queued.
+    const before = readFileSync(join(vaultRoot, b.path), "utf8");
+    const after = before.replace("deadline: 2026-08-15", "deadline: 2026-09-01");
+    const patchText = createPatch(b.path, before, after);
+    await store.revise({ id: b.id, patch: patchText, reason: "update deadline", session: "s1" });
+
+    // Sanity: the revise actually changed the on-disk deadline.
+    expect(readFileSync(join(vaultRoot, b.path), "utf8")).toContain("deadline: 2026-09-01");
+    expect(journal.listConflicts("open")).toHaveLength(0);
+  });
+
+  test("remember accepts a supersedes id, writes it into both the journal row and the file's ledger frontmatter, and the matcher excludes the superseded memory (no conflict queued)", async () => {
+    const { store, journal, vaultRoot } = await makeStore();
+
+    const a = await store.remember({
+      content: "deadline: 2026-08-15",
+      entity: "nova",
+      reason: "seed",
+      session: "s1",
+    });
+    await store.promote({ id: a.id, target_status: "working", reason: "confirmed", session: "s1" });
+
+    // B supersedes A directly via remember()'s new `supersedes` input, and
+    // carries a CONTRADICTING deadline. Without the lineage exclusion this
+    // would queue a value-conflict; because B declares it supersedes A, the
+    // matcher must exclude A and nothing is queued.
+    const b = await store.remember({
+      content: "deadline: 2026-09-01",
+      entity: "nova",
+      reason: "updated belief",
+      session: "s1",
+      supersedes: a.id,
+    });
+
+    expect(journal.listConflicts("open")).toHaveLength(0);
+
+    const bRow = journal.getMemory(b.id);
+    expect(bRow!.supersedes).toBe(a.id);
+
+    const bRaw = readFileSync(join(vaultRoot, b.path), "utf8");
+    const bParsed = matter(bRaw);
+    expect((bParsed.data.ledger as Record<string, unknown>).supersedes).toBe(a.id);
+
+    // CONTROL: same contradicting deadline, same entity, but NO supersedes —
+    // proves the exclusion above is what suppressed the conflict, not
+    // something else (e.g. a general dedup on fact_key).
+    const c = await store.remember({
+      content: "deadline: 2026-10-01",
+      entity: "nova",
+      reason: "unrelated new claim",
+      session: "s1",
+    });
+    const open = journal.listConflicts("open");
+    expect(open).toHaveLength(1);
+    expect(open[0]!.fact_key).toBe("deadline");
+    expect([open[0]!.memory_a, open[0]!.memory_b].sort()).toEqual([a.id, c.id].sort());
+  });
+
+  test("forget hides its open conflict via the both-sides-live filter (no proactive moot)", async () => {
+    const { store, journal } = await makeStore();
+    const a = await store.remember({
+      content: "Deadline: 2026-08-15",
+      entity: "nova",
+      reason: "seed",
+      session: "s1",
+    });
+    await store.promote({ id: a.id, target_status: "working", reason: "confirmed", session: "s1" });
+
+    const b = await store.remember({
+      content: "Deadline: 2026-09-01",
+      entity: "nova",
+      reason: "seed",
+      session: "s1",
+    });
+    const openBefore = journal.listConflicts("open");
+    expect(openBefore).toHaveLength(1);
+    const conflictId = openBefore[0]!.id;
+
+    await store.forget({ id: b.id, reason: "no longer relevant", session: "s1" });
+
+    // The raw journal row's state is untouched (forget no longer proactively
+    // moots it); the both-sides-live Conflicts.list('open') filter is what
+    // hides it, solely because b is now 'forgotten'.
+    expect(journal.getConflict(conflictId)!.state).toBe("open");
+    const conflicts = new Conflicts(journal);
+    expect(conflicts.list("open")).toHaveLength(0);
   });
 });

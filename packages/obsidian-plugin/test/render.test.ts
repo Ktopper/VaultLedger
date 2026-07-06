@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, test } from "vitest";
-import { groupBySession, renderDiff, renderProvenance } from "../src/render.js";
+import { groupBySession, renderConflict, renderDiff, renderProvenance } from "../src/render.js";
 
 describe("renderDiff", () => {
   test("colors +/- lines and preserves line content as text", () => {
@@ -64,6 +64,61 @@ describe("renderProvenance", () => {
     const el = renderProvenance({ reason: "<img onerror=alert(1)>" });
     expect(el.querySelectorAll("img").length).toBe(0);
     expect(el.textContent).toContain("<img onerror=alert(1)>");
+  });
+});
+
+describe("renderConflict", () => {
+  test("renders entity/kind/detail and both memory refs as text", () => {
+    const el = renderConflict({
+      row: {
+        id: "cf_1",
+        entity: "nova",
+        kind: "value-conflict",
+        detail: 'deadline: "2026-08-15" vs "2026-09-01"',
+      },
+      memoryA: { id: "mem_a", path: "Agent/Memory/mem_a.md" },
+      memoryB: { id: "mem_b", path: "Agent/Memory/mem_b.md" },
+    });
+    expect(el.textContent).toContain("nova");
+    expect(el.textContent).toContain("value-conflict");
+    expect(el.textContent).toContain('deadline: "2026-08-15" vs "2026-09-01"');
+    expect(el.textContent).toContain("mem_a");
+    expect(el.textContent).toContain("Agent/Memory/mem_a.md");
+    expect(el.textContent).toContain("mem_b");
+    expect(el.textContent).toContain("Agent/Memory/mem_b.md");
+  });
+
+  test("a missing memory side renders as '?' rather than throwing", () => {
+    const el = renderConflict({
+      row: { id: "cf_1", entity: "nova", kind: "value-conflict", detail: "detail text" },
+      memoryA: { id: "mem_a", path: "Agent/Memory/mem_a.md" },
+      memoryB: null,
+    });
+    expect(el.textContent).toContain("?");
+  });
+
+  // SECURITY: every field (entity/kind/detail/id/path) comes from an agent's
+  // proposed note content — attacker-influenced. renderConflict must NEVER use
+  // innerHTML — only createElement + textContent — so a hostile conflict in
+  // ANY field never executes.
+  test("SECURITY: hostile content in EVERY field (entity/kind/detail/path) never executes — rendered as literal text", () => {
+    const el = renderConflict({
+      row: {
+        id: "cf_1",
+        entity: "<img src=e onerror=alert('entity')>",
+        kind: "<script>kind()</script>",
+        detail: "<img src=x onerror=alert(1)>",
+      },
+      memoryA: { id: "<script>ida()</script>", path: "<script>evil()</script>" },
+      memoryB: { id: "mem_b", path: "<img src=b onerror=alert('pathB')>" },
+    });
+    // Exhaustive: no field's payload materializes as a live element.
+    expect(el.querySelectorAll("img,script").length).toBe(0);
+    expect(el.textContent).toContain("<img src=e onerror=alert('entity')>");
+    expect(el.textContent).toContain("<script>kind()</script>");
+    expect(el.textContent).toContain("<img src=x onerror=alert(1)>");
+    expect(el.textContent).toContain("<script>evil()</script>");
+    expect(el.textContent).toContain("<img src=b onerror=alert('pathB')>");
   });
 });
 

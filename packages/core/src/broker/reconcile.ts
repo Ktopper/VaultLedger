@@ -29,7 +29,9 @@ export const MESSAGE_RE = /^ledger:\s+(\S+)\s+(.+?)(?:\s+\[([^\]]+)\])?\s+(\S+)\
  * full vault-relative path) — acceptable for v0.1 since the repaired row's
  * purpose is audit-trail completeness, not driving further writes.
  */
-export async function reconcile(deps: ReconcileDeps): Promise<{ repaired: number }> {
+export async function reconcile(
+  deps: ReconcileDeps,
+): Promise<{ repaired: number; approvalsClosed: number }> {
   const { git, journal, now, genId } = deps;
   const commits = await git.listLedgerCommits();
 
@@ -57,12 +59,67 @@ export async function reconcile(deps: ReconcileDeps): Promise<{ repaired: number
       reason: "reconciled from commit",
       memory_id: memoryId ?? null,
       commit_sha: sha,
+      approval_id: null,
       created_at: now(),
       status: "applied",
     };
-    journal.recordTransaction(row);
-    repaired += 1;
+    // recordTransactionIfNew (not recordTransaction): two processes can race
+    // to repair the same missing commit; ON CONFLICT(commit_sha) DO NOTHING
+    // converges them on one row instead of the loser crashing.
+    if (journal.recordTransactionIfNew(row)) {
+      repaired += 1;
+    }
   }
 
-  return { repaired };
+  const approvalsClosed = closeStaleApprovals(journal, now);
+
+  return { repaired, approvalsClosed };
+}
+
+/**
+ * Second reconcile pass (crash-recovery, the approve->apply gap): a process
+ * can crash after `Approvals.approve` has applied the held operation (the
+ * file is patched, the commit landed, the transaction row is 'applied') but
+ * BEFORE `Journal.setApprovalState` flips the approval row out of 'pending'
+ * — leaving an approval that LOOKS like it's still awaiting a human, when
+ * the edit it describes has already gone through.
+ *
+ * SOUND id-link match (not a heuristic): when `Approvals.approve` re-runs a
+ * held op through the broker, it passes the approval's id as
+ * `broker.apply(op, { approvalId })`, which stamps the resulting transaction
+ * row's `approval_id`. So an approval is closed to 'approved' IFF the journal
+ * has an APPLIED transaction whose `approval_id` equals the approval's id —
+ * the EXACT row produced by applying THAT approval, nothing else.
+ *
+ * Why exact-id and not a path/time heuristic: a "same path, committed after
+ * the approval" heuristic FALSE-CLOSES an unrelated op. Concretely — a
+ * propose_edit on `Agent/Notes/x.md` is queued at t1; an unrelated DIRECT
+ * revise lands on that same path at t2; the heuristic would mark the approval
+ * 'approved' even though the approval's OWN patch never applied, corrupting
+ * the audit trail's "every mutation is attributable" invariant. (Matching on
+ * hash_before doesn't save it either — two different ops can start from the
+ * same file state.) The id-link makes a false-close impossible: a different
+ * op carries a different — or null — approval_id and simply won't match.
+ *
+ * Only ops applied THROUGH the broker's approve path carry an approval_id, so
+ * the `promote`->canonical approval (whose approve() calls `store.setStatus`,
+ * recording no approval_id-tagged transaction) will NOT auto-close on crash —
+ * it just stays pending, which is safe (no false-close; a human re-acts).
+ */
+function closeStaleApprovals(journal: Journal, now: () => string): number {
+  const pending = journal.listApprovals("pending");
+  let closed = 0;
+
+  for (const approval of pending) {
+    // Query by approval_id (indexed lookup, not a full-table scan per pending
+    // approval). Any APPLIED transaction tagged with this approval's id is the
+    // exact deferred execution of its held op — close the approval.
+    const appliedForThisApproval = journal.getAppliedTransactionsByApprovalId(approval.id);
+    if (appliedForThisApproval.length > 0) {
+      journal.setApprovalState(approval.id, "approved", now());
+      closed += 1;
+    }
+  }
+
+  return closed;
 }

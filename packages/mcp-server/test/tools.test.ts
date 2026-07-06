@@ -91,6 +91,32 @@ describe("buildTools", () => {
     expect(memories.some((m) => m.id === result.id)).toBe(true);
   });
 
+  test("memory_remember accepts and forwards an optional supersedes id (wired through to the memory row + file frontmatter)", async () => {
+    const { tools } = await setup();
+    const remember = tools.get("memory_remember")!;
+
+    const a = await remember.handler({
+      content: "deadline: 2026-08-15",
+      entity: "nova",
+      reason: "seed",
+    });
+    expect(a.error).toBeUndefined();
+
+    const b = await remember.handler({
+      content: "deadline: 2026-09-01",
+      entity: "nova",
+      reason: "updated belief",
+      supersedes: a.id,
+    });
+
+    expect(b.error).toBeUndefined();
+    const provenance = b.provenance as Record<string, unknown>;
+    expect(provenance.supersedes).toBe(a.id);
+
+    const abs = join(vault.vaultDir, b.path as string);
+    expect(readFileSync(abs, "utf8")).toContain(`supersedes: ${a.id as string}`);
+  });
+
   test("memory_recall filters by entity", async () => {
     const { tools } = await setup();
     const remember = tools.get("memory_remember")!;

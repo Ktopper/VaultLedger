@@ -82,9 +82,23 @@ timestamp / op / path / status, with an **Undo** button on non-reverted rows.
 pre-transaction state) and a new git commit records the revert; the row's
 status updates to `reverted` (Undo button no longer shown for it) after refresh.
 
-3. Click the "Conflicts" tab.
+3. Using an agent/MCP client (or two quick `store.remember(...)` calls against
+   the SAME vault/entity via a script) create two memories for the same
+   entity that state a conflicting fact — e.g. remember "nova's deadline is
+   2026-08-15" then remember "nova's deadline is 2026-09-01". Contradiction
+   detection runs automatically after each `remember`/`revise`.
+4. Click the "Conflicts" tab.
 
-**Expected:** shows "none (v0.3)" — conflict detection isn't implemented yet.
+**Expected:** the tab lists the open conflict — entity, kind, detail (e.g.
+`deadline: "2026-08-15" vs "2026-09-01"`), and both memories' id/path — with
+**Resolve** and **Dismiss** buttons. If there are no open conflicts, the tab
+shows "No open conflicts."
+
+5. Click **Resolve** (or **Dismiss**) on the conflict.
+
+**Expected:** the conflict disappears from the list after the view
+auto-refreshes; re-running detection later (e.g. via `ledger conflicts
+<vault> --rescan`) does not resurrect a resolved/dismissed conflict.
 
 ## 5. Provenance hover
 

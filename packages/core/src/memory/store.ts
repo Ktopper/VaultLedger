@@ -6,6 +6,7 @@ import type { z } from "zod";
 import { Broker } from "../broker/broker.js";
 import { hashFile } from "../broker/hash.js";
 import { BrokerError } from "../errors.js";
+import { checkContradictions } from "../contradiction/check.js";
 import type { Journal, MemoryRow } from "../journal/journal.js";
 import type { Confidence, MemoryStatus } from "../schemas/provenance.js";
 
@@ -33,6 +34,17 @@ export interface RememberInput {
   session: string;
   tags?: string[];
   confidence?: ConfidenceValue;
+  /**
+   * Id of the memory this new one supersedes (an updated belief on the same
+   * entity). Wired into BOTH the file's `ledger.supersedes` frontmatter and
+   * the journal `memories.supersedes` column, which is what the
+   * contradiction matcher's lineage exclusion (contradiction/matcher.ts)
+   * reads to exclude this pair from comparison — the single biggest
+   * false-positive guard only fires if a caller actually sets this. No hard
+   * validation: if it points at a nonexistent id, the matcher simply won't
+   * find it in the same-entity set (harmless).
+   */
+  supersedes?: string;
 }
 
 export interface RememberResult {
@@ -96,6 +108,7 @@ export class MemoryStore {
     const id = this.genId("mem");
     const path = `${this.agentDir}/${id}.md`;
     const created = this.now();
+    const supersedes = input.supersedes ?? null;
 
     // v0.1 limitation: if `content` itself begins with its own `---`
     // frontmatter block, matter.stringify does not merge/relocate it — the
@@ -109,7 +122,7 @@ export class MemoryStore {
         source: input.session,
         reason: input.reason,
         confidence: input.confidence ?? "medium",
-        supersedes: null,
+        supersedes,
         expires: null,
       },
     });
@@ -137,7 +150,7 @@ export class MemoryStore {
       confidence: input.confidence ?? "medium",
       created,
       source: input.session,
-      supersedes: null,
+      supersedes,
       expires: null,
       last_referenced: null,
     };
@@ -148,6 +161,15 @@ export class MemoryStore {
     // Link the create transaction to this memory so undo can reach the memory
     // row (mark it 'reverted') and listTransactions({entity}) can join.
     this.journal.setTransactionMemoryId(txnId, id);
+
+    // Post-commit, non-blocking contradiction check (design v0.3a §5): runs
+    // AFTER the write is fully committed (broker + journal), never before —
+    // it reads the just-written file back off disk. Lock-free and
+    // self-swallowing; see checkContradictions' own doc comment.
+    checkContradictions(
+      { journal: this.journal, vaultRoot: this.vaultRoot, now: this.now, genId: this.genId },
+      id,
+    );
 
     return { id, path, txnId };
   }
@@ -180,6 +202,16 @@ export class MemoryStore {
     if (!("queued" in result) && result.txnId !== undefined) {
       this.journal.setTransactionMemoryId(result.txnId, input.id);
     }
+
+    // Post-commit, non-blocking contradiction check (design v0.3a §5) — see
+    // the matching call in `remember` for rationale. A direct agent-zone
+    // revise always lands immediately (broker.apply never queues a revise —
+    // only propose_edit re-queues), so by here the patch is committed on disk
+    // and the check reads the just-written note.
+    checkContradictions(
+      { journal: this.journal, vaultRoot: this.vaultRoot, now: this.now, genId: this.genId },
+      input.id,
+    );
   }
 
   /**
@@ -277,6 +309,12 @@ export class MemoryStore {
     if (result.txnId !== undefined) {
       this.journal.setTransactionMemoryId(result.txnId, input.id);
     }
+    // Conflicts naming this memory are NOT proactively touched here (design
+    // §4.3): the both-sides-live filter in Conflicts.list() is the SOLE
+    // mechanism for hiding them, now that the memory's status is
+    // 'forgotten' — and it un-hides them again if the forget is later
+    // undone (the memory goes live again), rather than permanently baking
+    // in a 'moot' state that a re-detect could never reopen.
   }
 
   /**

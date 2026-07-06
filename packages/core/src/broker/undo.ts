@@ -125,6 +125,7 @@ async function runUndoTransaction(
     reason: `revert of ${txnId}`,
     memory_id: txn.memory_id,
     commit_sha: revertSha,
+    approval_id: null,
     created_at: now(),
     status: "applied",
   };
@@ -135,6 +136,15 @@ async function runUndoTransaction(
       journal.setMemoryStatus(txn.memory_id, derivedMemoryStatus);
     }
     journal.recordTransaction(revertRow);
+    // Conflict liveness is NOT proactively touched here (see design §4.3):
+    // undoing THIS transaction doesn't necessarily mean the memory is dead or
+    // that any conflict naming it is stale — an unrelated revise-undo leaves
+    // the memory live and any open conflict on it fully valid. The
+    // both-sides-live filter in Conflicts.list() is the SOLE mechanism for
+    // hiding a conflict whose memory has died: if the memory really did just
+    // go dead (derivedMemoryStatus above lands on 'reverted'), the filter
+    // hides its conflicts automatically; if the memory is still live, its
+    // conflicts correctly stay visible.
   });
 
   return { revertSha, revertTxnId };
