@@ -72,6 +72,20 @@ export function lineageIds(mem: MemoryRow, journal: Journal): Set<string> {
  * same-entity peers, with `mem` itself and its whole supersedes lineage
  * (in both directions) excluded — a memory should never be compared against
  * its own revision history.
+ *
+ * SECURITY EXCEPTION (v0.3a post-merge fix): the lineage exclusion is NOT
+ * honored when the excluded candidate is still-live CANONICAL. `supersedes`
+ * is an unvalidated field on `remember` (memory/store.ts) — a misbehaving or
+ * prompt-injected agent could otherwise write a new memory that sets
+ * `supersedes` to a canonical memory's id purely to make the lineage filter
+ * hide it from comparison, silently defeating detection with no approval
+ * gate in between (two live contradictory beliefs, zero flags raised).
+ * Canonical is a durable, human-approved belief (spec §5.4: "canonical is
+ * never silently contradicted"), so a new claim that supersedes canonical
+ * must still surface a conflict; a human dismisses it if the update is
+ * legitimate. Superseding a WORKING/scratch (provisional) belief remains a
+ * legitimate intentional update, so the lineage exclusion still applies
+ * there (false-positive guard preserved).
  */
 export class DefaultEntityMatcher implements EntityMatcher {
   comparisonSet(mem: MemoryRow, journal: Journal): MemoryRow[] {
@@ -81,7 +95,10 @@ export class DefaultEntityMatcher implements EntityMatcher {
     const lineage = lineageIds(mem, journal);
 
     return candidates.filter(
-      (c) => c.id !== mem.id && LIVE_STATUSES.has(c.status) && !lineage.has(c.id),
+      (c) =>
+        c.id !== mem.id &&
+        LIVE_STATUSES.has(c.status) &&
+        (!lineage.has(c.id) || c.status === "canonical"),
     );
   }
 }

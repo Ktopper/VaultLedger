@@ -451,6 +451,60 @@ describe("MemoryStore", () => {
     expect([open[0]!.memory_a, open[0]!.memory_b].sort()).toEqual([a.id, c.id].sort());
   });
 
+  test("EVASION: supersedes must not hide a live CANONICAL belief — a conflict is still queued", async () => {
+    const { store, journal } = await makeStore();
+
+    // A: remember + drive to CANONICAL through the real store (durable status
+    // write, same mechanism promote() uses for scratch->working).
+    const a = await store.remember({
+      content: "deadline: 2026-08-15",
+      entity: "nova",
+      reason: "seed",
+      session: "s1",
+    });
+    await store.setStatus(a.id, "canonical", "approved as durable belief", "s1");
+    expect(journal.getMemory(a.id)!.status).toBe("canonical");
+
+    // B: a misbehaving/prompt-injected agent writes a NEW memory that claims
+    // to supersede the canonical belief, with a contradicting deadline. This
+    // must NOT be a silent, approval-free kill switch against canonical.
+    const b = await store.remember({
+      content: "deadline: 2026-09-01",
+      entity: "nova",
+      reason: "updated belief",
+      session: "s1",
+      supersedes: a.id,
+    });
+
+    const open = journal.listConflicts("open");
+    expect(open).toHaveLength(1);
+    expect(open[0]!.fact_key).toBe("deadline");
+    expect([open[0]!.memory_a, open[0]!.memory_b].sort()).toEqual([a.id, b.id].sort());
+  });
+
+  test("CONTROL: supersedes still hides the conflict when the superseded belief is only WORKING (not canonical)", async () => {
+    const { store, journal } = await makeStore();
+
+    const a = await store.remember({
+      content: "deadline: 2026-08-15",
+      entity: "nova",
+      reason: "seed",
+      session: "s1",
+    });
+    await store.promote({ id: a.id, target_status: "working", reason: "confirmed", session: "s1" });
+    expect(journal.getMemory(a.id)!.status).toBe("working");
+
+    await store.remember({
+      content: "deadline: 2026-09-01",
+      entity: "nova",
+      reason: "updated belief",
+      session: "s1",
+      supersedes: a.id,
+    });
+
+    expect(journal.listConflicts("open")).toHaveLength(0);
+  });
+
   test("forget hides its open conflict via the both-sides-live filter (no proactive moot)", async () => {
     const { store, journal } = await makeStore();
     const a = await store.remember({

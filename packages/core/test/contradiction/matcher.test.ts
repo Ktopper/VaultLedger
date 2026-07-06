@@ -40,10 +40,13 @@ describe("DefaultEntityMatcher.comparisonSet", () => {
     expect(result.map((m) => m.id).sort()).toEqual(["mem_2"]);
   });
 
-  test("lineage: B supersedes A -> neither includes the other", () => {
+  // Uses WORKING memories: the lineage exclusion still fully applies to
+  // provisional beliefs. (Canonical lineage members are deliberately NOT hidden
+  // — see the "canonical exception" tests below.)
+  test("lineage (working): B supersedes A -> neither includes the other", () => {
     const j = makeJournal();
-    j.insertMemory(memRow({ id: "mem_a", status: "canonical", supersedes: null }));
-    j.insertMemory(memRow({ id: "mem_b", status: "canonical", supersedes: "mem_a" }));
+    j.insertMemory(memRow({ id: "mem_a", status: "working", supersedes: null }));
+    j.insertMemory(memRow({ id: "mem_b", status: "working", supersedes: "mem_a" }));
 
     const a = j.getMemory("mem_a")!;
     const b = j.getMemory("mem_b")!;
@@ -52,11 +55,11 @@ describe("DefaultEntityMatcher.comparisonSet", () => {
     expect(matcher.comparisonSet(a, j).map((m) => m.id)).not.toContain("mem_b");
   });
 
-  test("transitive lineage: A<-B<-C -> none of the three include each other", () => {
+  test("transitive lineage (working): A<-B<-C -> none of the three include each other", () => {
     const j = makeJournal();
-    j.insertMemory(memRow({ id: "mem_a", status: "canonical", supersedes: null }));
-    j.insertMemory(memRow({ id: "mem_b", status: "canonical", supersedes: "mem_a" }));
-    j.insertMemory(memRow({ id: "mem_c", status: "canonical", supersedes: "mem_b" }));
+    j.insertMemory(memRow({ id: "mem_a", status: "working", supersedes: null }));
+    j.insertMemory(memRow({ id: "mem_b", status: "working", supersedes: "mem_a" }));
+    j.insertMemory(memRow({ id: "mem_c", status: "working", supersedes: "mem_b" }));
     // An unrelated same-entity peer that should still show up for all three.
     j.insertMemory(memRow({ id: "mem_d", status: "canonical", supersedes: null }));
 
@@ -84,6 +87,24 @@ describe("DefaultEntityMatcher.comparisonSet", () => {
     const mem = j.getMemory("mem_1")!;
     const result = matcher.comparisonSet(mem, j).map((m) => m.id).sort();
     expect(result).toEqual(["mem_2", "mem_3"]);
+  });
+
+  test("canonical exception: a lineage-linked CANONICAL candidate IS still returned (supersedes must not hide a live canonical belief)", () => {
+    const j = makeJournal();
+    j.insertMemory(memRow({ id: "mem_a", status: "canonical", supersedes: null }));
+    j.insertMemory(memRow({ id: "mem_b", status: "working", supersedes: "mem_a" }));
+
+    const b = j.getMemory("mem_b")!;
+    expect(matcher.comparisonSet(b, j).map((m) => m.id)).toContain("mem_a");
+  });
+
+  test("canonical exception is scoped: a lineage-linked WORKING candidate is NOT returned", () => {
+    const j = makeJournal();
+    j.insertMemory(memRow({ id: "mem_a", status: "working", supersedes: null }));
+    j.insertMemory(memRow({ id: "mem_b", status: "working", supersedes: "mem_a" }));
+
+    const b = j.getMemory("mem_b")!;
+    expect(matcher.comparisonSet(b, j).map((m) => m.id)).not.toContain("mem_a");
   });
 
   test("different-entity memories are excluded; null-entity mem returns []", () => {
