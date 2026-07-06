@@ -99,15 +99,19 @@ describe("checkContradictions", () => {
     expect([open[0]!.memory_a, open[0]!.memory_b].sort()).toEqual(["mem_a", "mem_b"]);
   });
 
-  test("lineage: B supersedes A (same entity, differing deadline) -> no conflict queued", () => {
+  // The superseded belief is WORKING (provisional): superseding it is a
+  // legitimate intentional update, so the lineage exclusion applies and no
+  // conflict is queued. (Superseding a CANONICAL belief is a different case —
+  // it must still surface a conflict; see the store-level EVASION test.)
+  test("lineage: B supersedes a WORKING A (same entity, differing deadline) -> no conflict queued", () => {
     const { journal, vaultRoot, now, genId } = setup();
 
-    writeNote(vaultRoot, "mem_a.md", "canonical", { deadline: "2026-08-15" });
-    journal.insertMemory(memRow({ id: "mem_a", path: "mem_a.md", entity: "nova", status: "canonical", supersedes: null }));
+    writeNote(vaultRoot, "mem_a.md", "working", { deadline: "2026-08-15" });
+    journal.insertMemory(memRow({ id: "mem_a", path: "mem_a.md", entity: "nova", status: "working", supersedes: null }));
 
-    writeNote(vaultRoot, "mem_b.md", "canonical", { deadline: "2026-09-01" });
+    writeNote(vaultRoot, "mem_b.md", "working", { deadline: "2026-09-01" });
     journal.insertMemory(
-      memRow({ id: "mem_b", path: "mem_b.md", entity: "nova", status: "canonical", supersedes: "mem_a" }),
+      memRow({ id: "mem_b", path: "mem_b.md", entity: "nova", status: "working", supersedes: "mem_a" }),
     );
 
     checkContradictions({ journal, vaultRoot, now, genId }, "mem_b");
@@ -160,5 +164,30 @@ describe("checkContradictions", () => {
     const open = journal.listConflicts("open");
     expect(open).toHaveLength(1);
     expect([open[0]!.memory_a, open[0]!.memory_b].sort()).toEqual(["mem_a", "mem_b"]);
+  });
+
+  test("detail is built in id-sorted order so each value is attributed to the right memory (checked mem sorts AFTER its peer)", () => {
+    const { journal, vaultRoot, now, genId } = setup();
+
+    // Peer id sorts BEFORE the checked memory's id, so memory_a = the peer.
+    writeNote(vaultRoot, "mem_aaa.md", "canonical", { deadline: "2026-08-15" });
+    journal.insertMemory(memRow({ id: "mem_aaa", path: "mem_aaa.md", entity: "nova", status: "canonical" }));
+
+    writeNote(vaultRoot, "mem_zzz.md", "scratch", { deadline: "2026-09-01" });
+    journal.insertMemory(memRow({ id: "mem_zzz", path: "mem_zzz.md", entity: "nova", status: "scratch" }));
+
+    checkContradictions({ journal, vaultRoot, now, genId }, "mem_zzz");
+    const open = journal.listConflicts("open");
+    expect(open).toHaveLength(1);
+    const c = open[0]!;
+    // memory_a is the id-sorted low = mem_aaa (deadline 2026-08-15); memory_b is
+    // mem_zzz (deadline 2026-09-01). The detail's FIRST value must belong to
+    // memory_a. Before the fix, detection ran in checked-mem (zzz) first order,
+    // so the detail read "2026-09-01 vs 2026-08-15" while memory_a was mem_aaa —
+    // the value attributed to A was actually B's.
+    expect(c.memory_a).toBe("mem_aaa");
+    expect(c.memory_b).toBe("mem_zzz");
+    expect(c.detail).not.toBeNull();
+    expect(c.detail!.indexOf("2026-08-15")).toBeLessThan(c.detail!.indexOf("2026-09-01"));
   });
 });

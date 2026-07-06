@@ -315,6 +315,32 @@ detection across the agent zone on demand (respecting the all-states dedup).
 - **Promotion-rule automation** and the **memory-health report / `ledger memory
   audit`** (spec §8).
 
+**v0.3b patch backlog (post-v0.3a-merge review — none blocking, low severity):**
+- **Governance: gate/approve `forget` of a live `canonical` belief.** Today an
+  agent can silently `memory_forget` a canonical memory (no approval, no
+  `supersedes`) → it drops out of the comparison set entirely, a broader evasion
+  of "canonical is never silently contradicted" than the supersedes hole already
+  closed. Forgetting canonical should require approval (mirror the working→
+  canonical promotion gate), or at least raise a review item. (Belongs with the
+  promotion-rule / lifecycle work.)
+- **`extract` fact-line precision:** `FACT_LINE_RE` treats any `word: rest` prose
+  line as a fact — a bare URL (`https: //…`) parses as key `https` → spurious
+  conflicts. Stoplist generic keys and skip `//`-leading values.
+- **Frontmatter timestamps with a time component UTC-shift the date** → treat a
+  datetime (not a bare `yyyy-mm-dd`) as unparseable rather than canonicalizing a
+  possibly-shifted day.
+- **No calendar-validity check** on parsed dates (`2026-02-31` canonicalizes).
+- **The `isn't` negation branch is effectively unreachable** (only affects missed
+  detections / recall, never precision) — tidy the regex.
+- **`resolve` of an already-`dismissed` conflict silently overwrites state** — a
+  `409` (or no-op with a clear result) would be cleaner than a silent flip.
+- **`journal.ts` `getAppliedTransactionsByApprovalId` comment claims an "indexed
+  lookup" but there is no index on `approval_id`** — add the index or fix the
+  comment.
+- **`--rescan` is O(n²) per entity** (each memory re-runs `comparisonSet`) with a
+  silent 100k `queryMemories` truncation — fine for personal vaults; note the cap
+  and consider batching.
+
 **v1.1:** embedding/LLM-assisted contradiction + entity matching (drops into the
 `ContradictionDetector` / `EntityMatcher` interfaces).
 

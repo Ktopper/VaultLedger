@@ -48,9 +48,19 @@ export function checkContradictions(deps: CheckContradictionsDeps, memId: string
         continue;
       }
 
-      const found = detector.detect({ text: memText }, { text: peerText });
+      // Run detection in id-sorted (memory_a=lo, memory_b=hi) order so the
+      // detector's "a-value vs b-value" `detail` string attributes each value to
+      // the SAME side the stored memory_a/memory_b ids do. Detecting in raw
+      // mem-vs-peer order would mislabel the values whenever mem.id sorts after
+      // peer.id, so a human could forget the wrong memory.
+      const memIsLo = mem.id < peer.id;
+      const lo = memIsLo ? mem.id : peer.id;
+      const hi = memIsLo ? peer.id : mem.id;
+      const loText = memIsLo ? memText : peerText;
+      const hiText = memIsLo ? peerText : memText;
+
+      const found = detector.detect({ text: loText }, { text: hiText });
       for (const conflict of found) {
-        const [lo, hi] = [mem.id, peer.id].sort() as [string, string];
         journal.insertConflict({
           id: genId("cf"),
           memory_a: lo,
