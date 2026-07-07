@@ -24,6 +24,13 @@ export const RejectionCode = {
   // a second time (an audit-integrity hole: two operators could each believe
   // THEY were the one who closed it).
   ALREADY_CLOSED: "ALREADY_CLOSED",
+  // v0.3a addition (ledger-block tamper closure): an unapproved revise whose
+  // patch changes the note's `ledger:` provenance block (status / entity /
+  // supersedes). Those fields are governed -- an agent self-promoting to
+  // canonical, silently dropping an entity from the comparison set, or
+  // faking a supersedes lineage link would each bypass the human approval
+  // gate, so none of the existing codes fit and this gets its own.
+  LEDGER_GUARD: "LEDGER_GUARD",
 } as const;
 
 export type RejectionCode = (typeof RejectionCode)[keyof typeof RejectionCode];
@@ -40,6 +47,10 @@ const RETRIABLE: Record<RejectionCode, boolean> = {
   ALREADY_REVERTED: false,
   INVALID_TRANSITION: false,
   ALREADY_CLOSED: false,
+  // Retrying the identical unapproved revise won't help -- the ledger block
+  // is still unapproved to change; the caller must go through
+  // promote/forget/setStatus (or get human approval) instead.
+  LEDGER_GUARD: false,
 };
 
 export interface Rejection {

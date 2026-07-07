@@ -7,7 +7,7 @@ import type { ApprovalRow, Journal, TransactionRow } from "../journal/journal.js
 import { resolveZone } from "../zones.js";
 import { hashBytes, hashFile } from "./hash.js";
 import { applyPatch } from "./patch.js";
-import { assertStructurePreserved } from "./lint.js";
+import { assertStructurePreserved, ledgerBlockChanged } from "./lint.js";
 import { assertContainedAndReadable } from "./containment.js";
 import { formatMessage, type LedgerGit } from "./git.js";
 import { withVaultLock } from "../concurrency/lock.js";
@@ -306,6 +306,18 @@ export class Broker {
     const before = readFileSync(abs, "utf8");
     const after = applyPatch(before, op.patch, this.patchThreshold);
     assertStructurePreserved(before, after);
+
+    // Ledger-block tamper guard (v0.3a): status/entity/supersedes are
+    // governed provenance fields -- promote/forget/setStatus are the only
+    // legitimate way to change them, and those always call apply() with
+    // approved:true. An unapproved revise (the only path an agent-zone
+    // memory_revise can reach) must not be able to silently rewrite them.
+    if (!approved && ledgerBlockChanged(before, after)) {
+      throw new BrokerError(
+        "LEDGER_GUARD",
+        `revise may not change the ledger: provenance block without approval — status/entity/supersedes are governed (use promote/forget/setStatus): ${op.path}`,
+      );
+    }
 
     writeFileSync(abs, after, "utf8");
 

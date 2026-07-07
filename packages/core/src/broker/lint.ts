@@ -80,3 +80,66 @@ export function assertStructurePreserved(before: string, after: string): void {
     );
   }
 }
+
+/**
+ * Canonicalize an arbitrary JSON-ish value so two values that differ only in
+ * object-key order compare equal via JSON.stringify: object keys are sorted
+ * recursively; array order IS significant (reordering array elements is a
+ * real change) so arrays are walked element-wise but not reordered.
+ */
+function canonicalize(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(canonicalize);
+  }
+  if (value !== null && typeof value === "object") {
+    const sortedKeys = Object.keys(value as Record<string, unknown>).sort();
+    const out: Record<string, unknown> = {};
+    for (const key of sortedKeys) {
+      out[key] = canonicalize((value as Record<string, unknown>)[key]);
+    }
+    return out;
+  }
+  return value;
+}
+
+/** Extract the `ledger` frontmatter field from a parsed gray-matter data
+ * object, normalizing "absent" or "not an object" to `null` so "no ledger
+ * block" is a well-defined, comparable value. */
+function normalizeLedger(data: Record<string, unknown>): unknown {
+  const ledger = data.ledger;
+  return ledger !== null && typeof ledger === "object" ? ledger : null;
+}
+
+/**
+ * Governance guard (v0.3a, ledger-block tamper closure): does the note's
+ * `ledger:` frontmatter block (status/entity/supersedes/...) differ between
+ * `before` and `after`, canonically (a mere key reorder is NOT a change)?
+ *
+ * Deliberately narrower than `assertStructurePreserved` — it looks ONLY at
+ * the `ledger` frontmatter field, ignoring the body and every other
+ * frontmatter key, so an unapproved revise that edits body text or an
+ * unrelated fact field (e.g. `deadline:`) is unaffected.
+ *
+ * Adding a ledger block where there was none, or removing one entirely, both
+ * count as CHANGED: normalizeLedger maps "no block" to `null` and a present
+ * block to an object, and `null` never canonically equals an object.
+ */
+export function ledgerBlockChanged(before: string, after: string): boolean {
+  let beforeLedger: unknown;
+  let afterLedger: unknown;
+  try {
+    beforeLedger = normalizeLedger(matter(before).data as Record<string, unknown>);
+  } catch {
+    // Defensive: shouldn't happen (callers run this after
+    // assertStructurePreserved, which already proved `before`/`after` parse),
+    // but an unparsable input is treated as "changed" rather than silently
+    // passing the guard.
+    return true;
+  }
+  try {
+    afterLedger = normalizeLedger(matter(after).data as Record<string, unknown>);
+  } catch {
+    return true;
+  }
+  return JSON.stringify(canonicalize(beforeLedger)) !== JSON.stringify(canonicalize(afterLedger));
+}

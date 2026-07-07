@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { assertStructurePreserved } from "../../src/broker/lint.js";
+import { assertStructurePreserved, ledgerBlockChanged } from "../../src/broker/lint.js";
 import { BrokerError } from "../../src/errors.js";
 
 describe("assertStructurePreserved", () => {
@@ -63,5 +63,58 @@ describe("assertStructurePreserved", () => {
       expect(e).toBeInstanceOf(BrokerError);
       expect((e as BrokerError).code).toBe("SYNTAX_BREAK");
     }
+  });
+});
+
+describe("ledgerBlockChanged", () => {
+  const base =
+    "---\nledger:\n  status: working\n  entity: alice\n  supersedes: null\ntitle: X\n---\n\nBody text.\n";
+
+  test("returns true when ledger.status differs", () => {
+    const after =
+      "---\nledger:\n  status: canonical\n  entity: alice\n  supersedes: null\ntitle: X\n---\n\nBody text.\n";
+    expect(ledgerBlockChanged(base, after)).toBe(true);
+  });
+
+  test("returns true when ledger.entity differs", () => {
+    const after =
+      "---\nledger:\n  status: working\n  entity: bob\n  supersedes: null\ntitle: X\n---\n\nBody text.\n";
+    expect(ledgerBlockChanged(base, after)).toBe(true);
+  });
+
+  test("returns true when ledger.supersedes differs", () => {
+    const after =
+      "---\nledger:\n  status: working\n  entity: alice\n  supersedes: mem_123\ntitle: X\n---\n\nBody text.\n";
+    expect(ledgerBlockChanged(base, after)).toBe(true);
+  });
+
+  test("returns true when a ledger block is added where there was none", () => {
+    const before = "---\ntitle: X\n---\n\nBody text.\n";
+    const after = base;
+    expect(ledgerBlockChanged(before, after)).toBe(true);
+  });
+
+  test("returns true when a ledger block is removed", () => {
+    const before = base;
+    const after = "---\ntitle: X\n---\n\nBody text.\n";
+    expect(ledgerBlockChanged(before, after)).toBe(true);
+  });
+
+  test("returns false when only the body differs", () => {
+    const after =
+      "---\nledger:\n  status: working\n  entity: alice\n  supersedes: null\ntitle: X\n---\n\nBody text, revised.\n";
+    expect(ledgerBlockChanged(base, after)).toBe(false);
+  });
+
+  test("returns false when only a non-ledger frontmatter key differs", () => {
+    const after =
+      "---\nledger:\n  status: working\n  entity: alice\n  supersedes: null\ntitle: X\ndeadline: 2026-01-01\n---\n\nBody text.\n";
+    expect(ledgerBlockChanged(base, after)).toBe(false);
+  });
+
+  test("returns false when ledger keys are merely reordered with identical values", () => {
+    const after =
+      "---\nledger:\n  entity: alice\n  supersedes: null\n  status: working\ntitle: X\n---\n\nBody text.\n";
+    expect(ledgerBlockChanged(base, after)).toBe(false);
   });
 });
