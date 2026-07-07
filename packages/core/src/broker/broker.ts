@@ -322,6 +322,24 @@ export class Broker {
       );
     }
 
+    // DATA-LOSS GUARD (baseline the pre-image): if this note has never been
+    // committed to git -- a pre-existing/untracked user note on its first
+    // broker edit -- commit its CURRENT pre-edit content FIRST. Otherwise the
+    // edit commit below is the file's first-ever appearance in git, so undo's
+    // `git revert` of it would DELETE the note and lose the pre-edit bytes
+    // entirely, breaking the core rollback guarantee (README: "rollback via
+    // git revert"). The baseline uses a NON-`ledger:` message so reconcile
+    // never turns it into an (undoable) transaction -- it is a pure custody
+    // snapshot. Idempotent: once the file is tracked at HEAD this is skipped.
+    // (`create` can't hit this: it rejects a pre-existing path with
+    // TARGET_EXISTS, so an undo of a create legitimately deletes the file.)
+    if ((await this.git.fileAtHead(op.path)) === null) {
+      await this.git.commitFile(
+        op.path,
+        `VaultLedger baseline: took pre-existing ${basename(op.path)} under ledger custody`,
+      );
+    }
+
     writeFileSync(abs, after, "utf8");
 
     const message = formatMessage({
