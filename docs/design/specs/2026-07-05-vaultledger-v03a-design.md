@@ -366,7 +366,10 @@ detection across the agent zone on demand (respecting the all-states dedup).
   approval-queue's `dispatchApply` of a human-approved held op). Belt-and-braces:
   `reindex` now FLAGS (never refuses — rebuildability invariant) an out-of-broker
   canonical elevation via `ReindexResult.elevatedToCanonical` + a loud CLI warning.
-  Two-step file-tamper→reindex evasion is closed at the write channel.
+  Two-step file-tamper→reindex evasion is closed at the write channel. (Review
+  follow-up: the guard was extended to cover the TOP-LEVEL `entity` field — it is
+  a governed sibling of `ledger:`, not inside it — and renamed
+  `governedProvenanceChanged`; `tags` stays excluded as metadata.)
 
 **v0.3b backlog (post-ledger-guard review — two MEDIUMs + LOW nits):**
 - **MEDIUM — content-revise of a canonical belief is ungated.** The ledger-guard
@@ -381,6 +384,16 @@ detection across the agent zone on demand (respecting the all-states dedup).
   never re-opens it). Nastier now that the canonical-exception trains users to
   dismiss benign rows. Fix: fold a value-hash into `fact_key` (or the unique key),
   OR re-open a dismissed row when the new `detail` differs.
+- **MEDIUM — `entity` is not persisted to the note file (journal-only), so a
+  plain `reindex` nulls it for agent-created memories.** `remember`'s
+  `matter.stringify` writes only `{ledger:{…}}`; `entity` is passed to the journal
+  row but never into the file's top-level frontmatter, yet `reindex` recovers
+  entity FROM the file (`parseMemoryNote` reads top-level `entity`). So after any
+  journal rebuild, agent-created beliefs lose their entity → drop from every
+  same-entity comparison set — no attacker required. (Surfaced by the ledger-guard
+  review; independent of the guard, which now correctly protects a file-resident
+  entity.) Fix: `remember` should write `entity` into the note's top-level
+  frontmatter so it survives reindex, mirroring status/supersedes in `ledger:`.
 - **LOW nits:** (a) URL stoplist drops legit `file:`/`tel:` body-fact keys by key
   NAME alone — shape-check the value (`scheme://…`) instead. (b) slash-style
   datetimes aren't covered by the datetime→unparseable guard. (c) matcher
