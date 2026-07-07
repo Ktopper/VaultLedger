@@ -1,5 +1,5 @@
 import { describe, expect, test, afterEach } from "vitest";
-import { mkdtempSync, rmSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import matter from "gray-matter";
@@ -92,6 +92,44 @@ describe("undo", () => {
     const store = new MemoryStore({ broker, journal, now, genId, vaultRoot });
     return { store, journal, git, vaultRoot, now, genId };
   }
+
+  test("undo of a revise to a PRE-EXISTING (untracked) note restores it, never deletes it (data-loss guard)", async () => {
+    const { broker, journal, git, vaultRoot, now, genId } = await makeHarness();
+
+    // A real user's note that existed on disk BEFORE VaultLedger touched it and
+    // was never committed (init runs `git init` with no baseline commit).
+    // Written directly, NOT through the broker.
+    const original =
+      "# Nova\n\nLaunch target is Q3.\nOwner is Alice.\nStatus is green.\nBudget is approved.\nNotes: none yet.\n";
+    const rel = "Projects/Nova.md";
+    mkdirSync(join(vaultRoot, "Projects"), { recursive: true });
+    writeFileSync(join(vaultRoot, rel), original, "utf8");
+
+    // An approved edit to that trusted-zone note through the broker.
+    const updated =
+      "# Nova\n\nLaunch target is Q4.\nOwner is Alice.\nStatus is green.\nBudget is approved.\nNotes: none yet.\n";
+    const patchText = createPatch("Nova.md", original, updated);
+    const reviseResult = await broker.apply(
+      {
+        op: "revise",
+        path: rel,
+        expected_hash: hashBytes(Buffer.from(original, "utf8")),
+        patch: patchText,
+        reason: "correct launch target",
+        session: "s1",
+      },
+      { approved: true },
+    );
+    if (!reviseResult.ok || "queued" in reviseResult) throw new Error("expected applied");
+    expect(readFileSync(join(vaultRoot, rel), "utf8")).toBe(updated);
+
+    // Undo MUST restore the pre-edit note, never delete the user's file or lose
+    // its original bytes. Before the baseline fix, revert of the edit commit
+    // (the file's first-ever git appearance) DELETED the note.
+    await undoTransaction({ git, journal, now, genId }, reviseResult.txnId!);
+    expect(existsSync(join(vaultRoot, rel))).toBe(true);
+    expect(readFileSync(join(vaultRoot, rel), "utf8")).toBe(original);
+  });
 
   test("undoTransaction reverts a revise back to the exact pre-revise bytes and records a revert transaction", async () => {
     const { broker, journal, git, vaultRoot, now, genId } = await makeHarness();

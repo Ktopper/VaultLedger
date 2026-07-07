@@ -126,10 +126,24 @@ export class MemoryStore {
     const created = this.now();
     const supersedes = input.supersedes ?? null;
 
-    // v0.1 limitation: if `content` itself begins with its own `---`
-    // frontmatter block, matter.stringify does not merge/relocate it — the
-    // ledger block is prepended and the caller's leading `---` ends up in the
-    // body. Callers pass plain content in v0.1.
+    // Neutralize a smuggled leading frontmatter block: `matter.stringify`
+    // MERGES a `---...---` block at the START of `content` into the emitted
+    // frontmatter (verified), so unstripped agent content could inject a forged
+    // top-level `entity`/`tags` (or any field) into the note's REAL provenance
+    // — the journal row would say entity=null while the file says the forged
+    // value, and a reindex would adopt it, poisoning comparison sets (the same
+    // detonate-on-reindex class as the ledger-guard). Provenance is set ONLY by
+    // the store (the ledger block) and the trusted entity/tags params, never by
+    // body text. `matter(content).content` drops a leading block; on malformed
+    // YAML (matter throws) we prefix a newline so `stringify` can't treat the
+    // `---` as frontmatter (a block must sit at byte 0).
+    let body: string;
+    try {
+      body = matter(input.content).content;
+    } catch {
+      body = input.content.startsWith("---") ? `\n${input.content}` : input.content;
+    }
+
     // Persist `entity` and `tags` as TOP-LEVEL frontmatter (siblings of
     // `ledger:`), not only to the journal. reindex recovers them FROM the file
     // (parseMemoryNote reads data.entity / data.tags); if they lived only in
@@ -156,7 +170,7 @@ export class MemoryStore {
     if (Array.isArray(input.tags) && input.tags.length > 0) {
       frontmatter.tags = input.tags;
     }
-    const noteBody = matter.stringify(input.content, frontmatter);
+    const noteBody = matter.stringify(body, frontmatter);
 
     const result = await this.broker.apply({
       op: "create",

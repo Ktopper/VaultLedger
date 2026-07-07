@@ -82,11 +82,16 @@ timestamp / op / path / status, with an **Undo** button on non-reverted rows.
 pre-transaction state) and a new git commit records the revert; the row's
 status updates to `reverted` (Undo button no longer shown for it) after refresh.
 
-3. Using an agent/MCP client (or two quick `store.remember(...)` calls against
-   the SAME vault/entity via a script) create two memories for the same
-   entity that state a conflicting fact — e.g. remember "nova's deadline is
-   2026-08-15" then remember "nova's deadline is 2026-09-01". Contradiction
-   detection runs automatically after each `remember`/`revise`.
+3. Create a contradiction for the SAME entity. Two preconditions (precision-first
+   by design): facts must be `key: value` lines, and at least one side must be a
+   **live** belief (`working`/`canonical`) — two fresh `scratch` claims are not
+   compared. So the recipe is remember → promote → contradicting remember:
+   - `store.remember({ content: "deadline: 2026-08-15", entity: "nova", ... })` → memory A (scratch)
+   - `store.promote({ id: A, target_status: "working", ... })` → A is now live (scratch→working is immediate)
+   - `store.remember({ content: "deadline: 2026-09-01", entity: "nova", ... })` → contradiction queued
+   Contradiction detection runs automatically after each `remember`/`revise`.
+   (A bare prose sentence like "nova's deadline is 2026-08-15" extracts no fact
+   and will NOT conflict — use the `key: value` form.)
 4. Click the "Conflicts" tab.
 
 **Expected:** the tab lists the open conflict — entity, kind, detail (e.g.
