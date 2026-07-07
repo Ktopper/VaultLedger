@@ -9,7 +9,8 @@ import { loadServerContext, type ServerContext } from "./context.js";
 import { buildTools, type ToolDef } from "./tools.js";
 
 const SERVER_NAME = "vaultledger-mcp";
-const SERVER_VERSION = "0.1.0";
+// Keep in sync with packages/mcp-server/package.json "version".
+const SERVER_VERSION = "0.3.0";
 
 /** Static tool-name list, independent of any ServerContext — used by the
  * placeholder smoke test and anything that just wants the tool surface
