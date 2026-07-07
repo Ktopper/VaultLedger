@@ -130,7 +130,15 @@ export class MemoryStore {
     // frontmatter block, matter.stringify does not merge/relocate it — the
     // ledger block is prepended and the caller's leading `---` ends up in the
     // body. Callers pass plain content in v0.1.
-    const noteBody = matter.stringify(input.content, {
+    // Persist `entity` and `tags` as TOP-LEVEL frontmatter (siblings of
+    // `ledger:`), not only to the journal. reindex recovers them FROM the file
+    // (parseMemoryNote reads data.entity / data.tags); if they lived only in
+    // the journal, a plain journal rebuild would null every agent-created
+    // memory's entity, silently emptying every same-entity contradiction
+    // comparison set (detection off vault-wide, no adversary required). `entity`
+    // is a governed field — the ledger-guard (governedProvenanceChanged) blocks
+    // unapproved edits of it once it is file-resident.
+    const frontmatter: Record<string, unknown> = {
       ledger: {
         id,
         status: "scratch",
@@ -141,7 +149,14 @@ export class MemoryStore {
         supersedes,
         expires: null,
       },
-    });
+    };
+    if (typeof input.entity === "string") {
+      frontmatter.entity = input.entity;
+    }
+    if (Array.isArray(input.tags) && input.tags.length > 0) {
+      frontmatter.tags = input.tags;
+    }
+    const noteBody = matter.stringify(input.content, frontmatter);
 
     const result = await this.broker.apply({
       op: "create",
