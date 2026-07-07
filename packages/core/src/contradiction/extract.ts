@@ -56,6 +56,11 @@ const MONTH_DAY_YEAR_RE = /^([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s*(
 // "day Mon[ year]" / "day Month[ year]"
 const DAY_MONTH_YEAR_RE = /^(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]{3,9})\.?,?\s*(\d{4})?$/;
 const NUMBER_RE = /^-?\d+(\.\d+)?$/;
+// A date-shaped value that also carries a time component (yyyy-mm-dd followed
+// by "T" or a space and then a digit). Interpreting the time would require
+// picking a timezone, which can shift the calendar day nondeterministically —
+// so these are always unparseable rather than silently narrowed to a date.
+const DATETIME_RE = /^\d{4}-\d{2}-\d{2}[T ]\d/;
 
 /**
  * Try to interpret `trimmed` as a date. Returns:
@@ -65,6 +70,10 @@ const NUMBER_RE = /^-?\d+(\.\d+)?$/;
  *  - null if it isn't date-shaped at all (caller falls through to number/string)
  */
 function tryDate(trimmed: string): CanonicalValue | null {
+  if (DATETIME_RE.test(trimmed)) {
+    return { type: "unparseable", raw: trimmed };
+  }
+
   const iso = ISO_DATE_RE.exec(trimmed);
   if (iso) {
     return { type: "date", value: `${iso[1]!}-${iso[2]!}-${iso[3]!}` };
@@ -178,10 +187,21 @@ export function extract(noteText: string): MemoryFacts {
     let asString: string;
     if (rawValue instanceof Date) {
       // gray-matter's YAML engine (js-yaml) auto-coerces unquoted
-      // yyyy-mm-dd-shaped scalars into JS Date objects. toISOString() is
-      // deterministic (always UTC, no local-timezone/system-clock
-      // dependence) given the Date object's fixed internal timestamp.
-      asString = rawValue.toISOString().slice(0, 10);
+      // yyyy-mm-dd-shaped (and datetime-shaped) scalars into JS Date
+      // objects. toISOString() is deterministic (always UTC, no
+      // local-timezone/system-clock dependence) given the Date object's
+      // fixed internal timestamp — but we can't recover the *original*
+      // scalar text here to see whether it carried a time component. As a
+      // proxy: a date-only YAML scalar parses to UTC midnight, so a
+      // non-midnight UTC time-of-day means the source had a time component.
+      // In that case emit the full ISO string so DATETIME_RE below marks it
+      // unparseable (never day-shifted); only a date-only value canonicalizes.
+      const isMidnightUtc =
+        rawValue.getUTCHours() === 0 &&
+        rawValue.getUTCMinutes() === 0 &&
+        rawValue.getUTCSeconds() === 0 &&
+        rawValue.getUTCMilliseconds() === 0;
+      asString = isMidnightUtc ? rawValue.toISOString().slice(0, 10) : rawValue.toISOString();
     } else if (
       typeof rawValue === "string" ||
       typeof rawValue === "number" ||

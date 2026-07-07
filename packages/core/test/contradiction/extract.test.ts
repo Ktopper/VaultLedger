@@ -58,6 +58,24 @@ describe("canonicalize", () => {
     expect(canonicalize("2026/08/15")).toEqual({ type: "date", value: "2026-08-15" });
   });
 
+  test("a datetime with a 'T' time component is unparseable (no day-shift risk)", () => {
+    expect(canonicalize("2026-08-15T09:00:00")).toEqual({
+      type: "unparseable",
+      raw: "2026-08-15T09:00:00",
+    });
+  });
+
+  test("a datetime with a space-separated time component is unparseable", () => {
+    expect(canonicalize("2026-08-15 09:00")).toEqual({
+      type: "unparseable",
+      raw: "2026-08-15 09:00",
+    });
+  });
+
+  test("a bare date (no time) still canonicalizes to a date", () => {
+    expect(canonicalize("2026-08-15")).toEqual({ type: "date", value: "2026-08-15" });
+  });
+
   test("NFC/NFD unicode forms canonicalize equal", () => {
     const nfc = "café".normalize("NFC");
     const nfd = "café".normalize("NFD");
@@ -140,6 +158,29 @@ owner: Alice
     expect(facts.has("https")).toBe(false);
     expect(facts.get("owner")).toEqual({ type: "string", value: "alice" });
     expect(facts.size).toBe(1);
+  });
+
+  test("frontmatter datetime with a time component is unparseable (no UTC day-shift)", () => {
+    const note = `---
+ledger:
+  id: mem_1
+when: 2026-08-15T09:00:00Z
+---
+`;
+    const facts = extract(note);
+    const when = facts.get("when");
+    expect(when?.type).toBe("unparseable");
+  });
+
+  test("frontmatter bare date still canonicalizes to a date", () => {
+    const note = `---
+ledger:
+  id: mem_1
+deadline: 2026-08-15
+---
+`;
+    const facts = extract(note);
+    expect(facts.get("deadline")).toEqual({ type: "date", value: "2026-08-15" });
   });
 
   test("two notes with different body URLs produce no 'https' fact on either side", () => {
