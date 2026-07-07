@@ -98,12 +98,33 @@ describe("MemoryStore", () => {
     });
     expect(parsed.content.trim()).toBe("Alice prefers dark mode.");
 
+    // entity + tags MUST be written as TOP-LEVEL frontmatter (siblings of
+    // `ledger:`), not just to the journal — otherwise they are journal-only and
+    // a plain reindex nulls entity for every agent-created memory, silently
+    // emptying every same-entity contradiction comparison set. reindex recovers
+    // them FROM the file (parseMemoryNote reads data.entity / data.tags).
+    expect(parsed.data.entity).toBe("alice");
+    expect(parsed.data.tags).toEqual(["preferences", "ui"]);
+
     const row = journal.getMemory(id);
     expect(row).not.toBeNull();
     expect(row!.status).toBe("scratch");
     expect(row!.entity).toBe("alice");
     expect(row!.path).toBe(path);
     expect(journal.getTags(id).sort()).toEqual(["preferences", "ui"]);
+  });
+
+  test("remember omits the entity/tags frontmatter keys when none are supplied", async () => {
+    const { store, vaultRoot } = await makeStore();
+    const { path } = await store.remember({
+      content: "A bare note.",
+      reason: "no entity",
+      session: "s1",
+    });
+    const parsed = matter(readFileSync(join(vaultRoot, path), "utf8"));
+    expect(parsed.data.entity).toBeUndefined();
+    expect(parsed.data.tags).toBeUndefined();
+    expect(parsed.data.ledger).toBeDefined();
   });
 
   test("remember returns the create txnId and links memory_id onto that transaction", async () => {

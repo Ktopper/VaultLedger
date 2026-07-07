@@ -133,10 +133,22 @@ function upsertMemory(journal: Journal, note: ParsedMemoryNote): boolean {
   const elevatedToCanonical =
     existing !== null && existing.status !== "canonical" && note.patch.status === "canonical";
 
+  // Entity-durability fallback: a "legacy" note whose file predates
+  // entity-in-frontmatter parses with entity=null, but the journal row may
+  // still hold the real entity. On an INCREMENTAL reindex, preserve it rather
+  // than nulling it -- a routine reindex must not silently empty a memory's
+  // same-entity comparison set. (A fresh rebuild from an empty journal has no
+  // prior row to fall back on; notes written after the remember() fix carry
+  // entity in the file and recover cleanly. See design §9.)
+  const patch =
+    note.patch.entity == null && existing?.entity != null
+      ? { ...note.patch, entity: existing.entity }
+      : note.patch;
+
   if (existing) {
-    journal.updateMemory(note.id, note.patch);
+    journal.updateMemory(note.id, patch);
   } else {
-    const row: MemoryRow = { id: note.id, ...note.patch, last_referenced: null } as MemoryRow;
+    const row: MemoryRow = { id: note.id, ...patch, last_referenced: null } as MemoryRow;
     journal.insertMemory(row);
   }
 

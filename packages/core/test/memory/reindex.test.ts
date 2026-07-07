@@ -372,4 +372,108 @@ describe("reindex", () => {
     expect(result.memories).toBe(1);
     expect(result.elevatedToCanonical).toEqual([]);
   });
+
+  // entity-durability (v0.3a): a "legacy" note whose file predates
+  // entity-in-frontmatter carries no top-level `entity:` field, so it parses
+  // with entity=null. On an INCREMENTAL reindex the journal row's real entity
+  // must be preserved, not nulled -- otherwise a routine reindex silently
+  // empties every same-entity contradiction comparison set.
+  // ---------------------------------------------------------------------
+  async function seedLegacyNoteNoEntity(
+    git: LedgerGit,
+    vaultRoot: string,
+    opts: { id: string; status: string; created: string; body: string },
+  ): Promise<void> {
+    const relPath = `Agent/Memory/${opts.id}.md`;
+    // NOTE: no top-level `entity:` -- the pre-fix note shape.
+    const noteBody = matter.stringify(opts.body, {
+      ledger: {
+        id: opts.id,
+        status: opts.status,
+        created: opts.created,
+        source: "s1",
+        reason: "seed",
+        confidence: "medium",
+        supersedes: null,
+        expires: null,
+      },
+    });
+    mkdirSync(join(vaultRoot, "Agent/Memory"), { recursive: true });
+    writeFileSync(join(vaultRoot, relPath), noteBody, "utf8");
+    await git.commitFile(
+      relPath,
+      formatMessage({ op: "create", basename: `${opts.id}.md`, memoryId: opts.id, session: "s1" }),
+    );
+  }
+
+  test("incremental reindex preserves a journal-only entity when the file lacks a top-level entity", async () => {
+    const { journal, git, vaultRoot, now, genId } = await makeHarness();
+
+    await seedLegacyNoteNoEntity(git, vaultRoot, {
+      id: "mem_legacy",
+      status: "working",
+      created: now(),
+      body: "A pre-fix memory whose entity lived only in the journal.",
+    });
+    // The journal already holds the real entity (as it would after remember()).
+    journal.insertMemory({
+      id: "mem_legacy",
+      path: "Agent/Memory/mem_legacy.md",
+      entity: "nova",
+      status: "working",
+      confidence: "medium",
+      created: now(),
+      source: "s1",
+      supersedes: null,
+      expires: null,
+      last_referenced: null,
+    });
+
+    await reindex({ vaultRoot, git, journal, now, genId });
+
+    // The file declares no entity, but the incremental reindex must NOT wipe
+    // the journal's known entity.
+    expect(journal.getMemory("mem_legacy")!.entity).toBe("nova");
+  });
+
+  test("round-trip: a memory remembered by the store survives a FULL journal rebuild with its entity intact", async () => {
+    const { journal, git, vaultRoot, now, genId } = await makeHarness();
+    const broker = new Broker({ vaultRoot, git, journal, manifest: MANIFEST, now, genId });
+    const store = new MemoryStore({ broker, journal, now, genId, vaultRoot });
+
+    const { id } = await store.remember({
+      content: "Nova's deadline is 2026-08-15.",
+      entity: "nova",
+      tags: ["deadline"],
+      reason: "seed",
+      session: "s1",
+    });
+    expect(journal.getMemory(id)!.entity).toBe("nova");
+
+    // Total journal loss -> rebuild from disk + git into a fresh empty journal.
+    const freshJournal = new Journal(openJournal(":memory:"));
+    await reindex({ vaultRoot, git, journal: freshJournal, now, genId });
+
+    // entity (and tags) recovered PURELY from the file, because remember() now
+    // writes them into the note's top-level frontmatter.
+    expect(freshJournal.getMemory(id)!.entity).toBe("nova");
+    expect(freshJournal.getTags(id)).toEqual(["deadline"]);
+  });
+
+  test("a full rebuild (empty journal) cannot recover a legacy note's journal-only entity -> null (documented gap)", async () => {
+    const { journal, git, vaultRoot, now, genId } = await makeHarness();
+
+    await seedLegacyNoteNoEntity(git, vaultRoot, {
+      id: "mem_legacy2",
+      status: "working",
+      created: now(),
+      body: "No entity in the file; empty journal has nothing to fall back on.",
+    });
+
+    // Journal is empty -- no prior row -> entity genuinely unrecoverable. This
+    // locks the documented residual: legacy notes need the entity backfilled
+    // into their files (or to be re-remembered) to survive a full rebuild.
+    await reindex({ vaultRoot, git, journal, now, genId });
+    expect(journal.getMemory("mem_legacy2")!.entity).toBeNull();
+  });
 });
