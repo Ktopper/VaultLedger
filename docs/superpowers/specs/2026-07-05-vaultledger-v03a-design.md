@@ -336,23 +336,38 @@ detection across the agent zone on demand (respecting the all-states dedup).
   (see §4.3): `MemoryStore.forget` now queues an approval instead of applying
   when the target is `canonical`, mirroring the working→canonical promotion
   gate exactly.
-- **`extract` fact-line precision:** `FACT_LINE_RE` treats any `word: rest` prose
+- ~~**`extract` fact-line precision:** `FACT_LINE_RE` treats any `word: rest` prose
   line as a fact — a bare URL (`https: //…`) parses as key `https` → spurious
-  conflicts. Stoplist generic keys and skip `//`-leading values.
-- **Frontmatter timestamps with a time component UTC-shift the date** → treat a
-  datetime (not a bare `yyyy-mm-dd`) as unparseable rather than canonicalizing a
-  possibly-shifted day.
-- **No calendar-validity check** on parsed dates (`2026-02-31` canonicalizes).
-- **The `isn't` negation branch is effectively unreachable** (only affects missed
-  detections / recall, never precision) — tidy the regex.
-- **`resolve` of an already-`dismissed` conflict silently overwrites state** — a
-  `409` (or no-op with a clear result) would be cleaner than a silent flip.
-- **`journal.ts` `getAppliedTransactionsByApprovalId` comment claims an "indexed
-  lookup" but there is no index on `approval_id`** — add the index or fix the
-  comment.
-- **`--rescan` is O(n²) per entity** (each memory re-runs `comparisonSet`) with a
-  silent 100k `queryMemories` truncation — fine for personal vaults; note the cap
-  and consider batching.
+  conflicts.~~ SHIPPED: URL-scheme stoplist + skip `//`-leading values in `extract`.
+- ~~**Frontmatter timestamps with a time component UTC-shift the date.**~~ SHIPPED:
+  a datetime (not a bare `yyyy-mm-dd`) is now `unparseable` (never day-shifted);
+  YAML-coerced `Date`s use a non-midnight-UTC proxy to detect a time component.
+- ~~**No calendar-validity check** on parsed dates (`2026-02-31` canonicalizes).~~
+  SHIPPED: fixed month-length table + leap rule; invalid dates → `unparseable`.
+- ~~**The `isn't` negation branch is effectively unreachable.**~~ SHIPPED: the
+  negation regex now matches `X isn't Y` as its own alternative (adds a real
+  detection; precision unchanged).
+- ~~**`resolve` of an already-`dismissed` conflict silently overwrites state.**~~
+  SHIPPED: `Conflicts.resolve`/`dismiss` only transition from `open`; a closed
+  conflict throws `ALREADY_CLOSED` → the bridge maps it to `409`.
+- ~~**`journal.ts` `getAppliedTransactionsByApprovalId` claims an "indexed lookup"
+  but there is no index on `approval_id`.**~~ SHIPPED: partial index
+  `ix_transactions_approval ON transactions(approval_id) WHERE approval_id IS NOT NULL`.
+- ~~**`--rescan` silent 100k truncation.**~~ SHIPPED: named `RESCAN_MEMORY_CAP`,
+  a `--limit` override, and a warning when the cap is hit. (The O(n²)-per-entity
+  scan itself is left as-is — fine for personal vaults; batching still deferred.)
+- **Durable-status tamper residual (same evasion class, pre-existing, not
+  agent-triggerable).** The forget/promote gates read status from the *journal*,
+  but the *file* is the durable source of truth and `revise` does not guard the
+  `ledger:` provenance block (v0.1 §12). So: `revise` flips `ledger.status:
+  canonical→working` in the file (gate still holds — journal still canonical) →
+  a later `reindex` trusts the file and downgrades the journal row → `forget`
+  (or `promote`) now sees `working` and skips the gate. It equally defeats both
+  gates, so it's a property of the durable-status model, not of the forget gate.
+  Not agent-reachable via MCP (`reindex` is admin/CLI, and the auto-reindex only
+  fires on an *empty* journal). Fix candidates: guard the `ledger:` block on
+  `revise`, or have `reindex` refuse to silently downgrade a `canonical` row.
+  (Found in the WU-C review.)
 
 **v1.1:** embedding/LLM-assisted contradiction + entity matching (drops into the
 `ContradictionDetector` / `EntityMatcher` interfaces).
