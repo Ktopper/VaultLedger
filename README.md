@@ -4,10 +4,10 @@
 an Obsidian vault (or any markdown folder) as persistent memory, with
 provenance, approval, and rollback enforced *in code, not prompts*.
 
-> **Status:** v0.1 in development. This is the deterministic write-broker core —
-> the layer every agent write must pass through. See [`spec.md`](spec.md) for the
-> product spec and [`docs/design/specs/`](docs/design/specs/) for the
-> v0.1 design.
+> **Status:** v0.3.0. Shipped: the deterministic write-broker core (v0.1), the
+> review surface (v0.2 — localhost HTTP bridge + Obsidian plugin), and write-time
+> contradiction detection (v0.3a). See [`spec.md`](spec.md) for the product spec
+> and [`docs/design/specs/`](docs/design/specs/) for the designs.
 
 ## Why
 
@@ -69,6 +69,13 @@ pnpm build
 This builds `@vaultledger/core`, `@vaultledger/cli` (the `ledger` bin), and
 `@vaultledger/mcp-server` (the `vaultledger-mcp` bin) via `tsc --build`.
 
+> **Invoking `ledger`:** pnpm links the `ledger` bin from
+> `packages/cli/dist/index.js`, which doesn't exist until `pnpm build` runs — so
+> the link is skipped during the initial `pnpm install`. After building, either
+> run `pnpm install` once more to (re)create the bin link, or invoke the CLI
+> directly as `node packages/cli/dist/index.js <args>` (equivalent to `ledger
+> <args>` below). The MCP server is likewise `node packages/mcp-server/dist/index.js`.
+
 **2. Initialize a vault**
 
 ```sh
@@ -92,16 +99,17 @@ Point an MCP-capable client at the built server binary, passing the vault as
 ```json
 {
   "mcpServers": {
-    "vaultledger": { "command": "vaultledger-mcp", "args": ["--vault", "/absolute/path/to/your/vault"] }
+    "vaultledger": {
+      "command": "node",
+      "args": ["/absolute/path/to/VaultLedger/packages/mcp-server/dist/index.js", "--vault", "/absolute/path/to/your/vault"]
+    }
   }
 }
 ```
 
-`vaultledger-mcp` resolves to `packages/mcp-server/dist/index.js` (its `bin`
-entry) once the package is installed/linked; if you're running straight out
-of this repo without a global link, point `command` at
-`node` and `args` at `["<repo>/packages/mcp-server/dist/index.js", "--vault", "..."]`
-instead. The server exposes 7 tools: `memory_recall`, `memory_remember`,
+Running straight out of this repo, `node <repo>/packages/mcp-server/dist/index.js`
+is the reliable invocation (the bare `vaultledger-mcp` bin only resolves once the
+package is globally installed/linked). The server exposes 7 tools: `memory_recall`, `memory_remember`,
 `memory_revise`, `memory_promote`, `memory_forget`, `vault_propose_edit`, and
 `ledger_status`.
 
@@ -222,6 +230,25 @@ the same attribute, or a narrow negation flip) between two *live* memories on th
 same entity, and never between a memory and the one it supersedes. It's a
 "favor precision over recall" design: a noisy conflict queue is useless, so when
 a value can't be canonicalized with confidence it is **not** flagged.
+
+**Two preconditions** for a flag (both are precision-first by design, so it's
+worth stating them explicitly):
+
+1. **Facts are `key: value` lines.** The extractor reads declared facts like
+   `deadline: 2026-08-15` — a bare prose sentence (`the deadline is Q4`) is *not*
+   parsed as a fact, so two prose notes never conflict.
+2. **At least one side is a *live* belief** (`working` or `canonical`). Detection
+   protects *established* truth from new drift; two brand-new `scratch` claims are
+   deliberately not compared (both are still provisional).
+
+Minimal reproduction (via the MCP tools):
+
+```text
+1. memory_remember { "content": "deadline: 2026-08-15", "entity": "nova", "reason": "..." }   → scratch memory A
+2. memory_promote  { "id": "<A>", "target_status": "working", "reason": "..." }               → A is now live (scratch→working is immediate, no approval)
+3. memory_remember { "content": "deadline: 2026-09-01", "entity": "nova", "reason": "..." }   → contradiction queued
+4. ledger conflicts /path/to/vault                                                            → deadline: "2026-08-15" vs "2026-09-01"
+```
 
 Detected conflicts land in a queue, surfaced three ways:
 

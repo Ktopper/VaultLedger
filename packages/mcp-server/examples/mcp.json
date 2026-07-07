@@ -1,5 +1,13 @@
 {
+  "_comment": "Run `pnpm install && pnpm build` in the VaultLedger repo first, then set both absolute paths. `command` invokes the built MCP server directly with node (the repo is not published to npm, so a bare `vaultledger-mcp` bin is not on PATH unless you globally install/link it). Point --vault at the vault you ran `ledger init` on.",
   "mcpServers": {
-    "vaultledger": { "command": "vaultledger-mcp", "args": ["--vault", "/absolute/path/to/vault"] }
+    "vaultledger": {
+      "command": "node",
+      "args": [
+        "/absolute/path/to/VaultLedger/packages/mcp-server/dist/index.js",
+        "--vault",
+        "/absolute/path/to/vault"
+      ]
+    }
   }
 }
