@@ -38,6 +38,11 @@ export type ApproveResult = { applied: true } | { stale: true };
  *     status) AND mirrors it onto the journal row — NOT a bare
  *     `journal.setMemoryStatus`, which would leave the file stale and lose the
  *     promotion on the next reindex.
+ *   - `forget`: a canonical-belief forget (queued by `MemoryStore.forget`,
+ *     mirroring the `promote` gate) is likewise not a path-based broker op.
+ *     It is applied via `MemoryStore.forget(input, {approved:true})`, which
+ *     bypasses the gate and runs the real tombstone (frontmatter flip +
+ *     archive move + journal update).
  *   - anything else: INVALID_TRANSITION (an unrecognized held op is a
  *     journal-integrity problem, not a normal rejection path).
  */
@@ -106,6 +111,20 @@ export class Approvals {
         const reason = typeof op.reason === "string" ? op.reason : "approved canonical promotion";
         const session = typeof op.session === "string" ? op.session : "approval";
         await this.store.setStatus(memoryId, "canonical", reason, session);
+        this.journal.setApprovalState(id, "approved", this.now());
+        return { applied: true };
+      }
+      case "forget": {
+        // A canonical-forget is not a path-based broker op at all
+        // (Broker.apply rejects `forget` with NOT_FOUND by design, same as
+        // `promote` — see broker.ts). It is applied via
+        // MemoryStore.forget(..., {approved:true}), which bypasses the
+        // canonical gate and runs the real tombstone (frontmatter flip +
+        // archive move + journal update) — mirrors the `promote` case above.
+        const memoryId = op.id as string;
+        const reason = typeof op.reason === "string" ? op.reason : "approved canonical forget";
+        const session = typeof op.session === "string" ? op.session : "approval";
+        await this.store.forget({ id: memoryId, reason, session }, { approved: true });
         this.journal.setApprovalState(id, "approved", this.now());
         return { applied: true };
       }

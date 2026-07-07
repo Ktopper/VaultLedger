@@ -58,6 +58,43 @@ describe("canonicalize", () => {
     expect(canonicalize("2026/08/15")).toEqual({ type: "date", value: "2026-08-15" });
   });
 
+  test("a datetime with a 'T' time component is unparseable (no day-shift risk)", () => {
+    expect(canonicalize("2026-08-15T09:00:00")).toEqual({
+      type: "unparseable",
+      raw: "2026-08-15T09:00:00",
+    });
+  });
+
+  test("a datetime with a space-separated time component is unparseable", () => {
+    expect(canonicalize("2026-08-15 09:00")).toEqual({
+      type: "unparseable",
+      raw: "2026-08-15 09:00",
+    });
+  });
+
+  test("a bare date (no time) still canonicalizes to a date", () => {
+    expect(canonicalize("2026-08-15")).toEqual({ type: "date", value: "2026-08-15" });
+  });
+
+  test("calendar-invalid dates are unparseable", () => {
+    expect(canonicalize("2026-02-31")).toEqual({ type: "unparseable", raw: "2026-02-31" });
+    expect(canonicalize("2026-13-01")).toEqual({ type: "unparseable", raw: "2026-13-01" });
+    expect(canonicalize("2026-00-10")).toEqual({ type: "unparseable", raw: "2026-00-10" });
+    expect(canonicalize("2026-04-31")).toEqual({ type: "unparseable", raw: "2026-04-31" });
+    expect(canonicalize("2026-02-29")).toEqual({ type: "unparseable", raw: "2026-02-29" });
+  });
+
+  test("leap-year Feb 29 is valid; non-leap Feb 28/Dec 31 are valid", () => {
+    expect(canonicalize("2024-02-29")).toEqual({ type: "date", value: "2024-02-29" });
+    expect(canonicalize("2026-02-28")).toEqual({ type: "date", value: "2026-02-28" });
+    expect(canonicalize("2026-12-31")).toEqual({ type: "date", value: "2026-12-31" });
+  });
+
+  test("calendar-invalid month-name dates are unparseable", () => {
+    expect(canonicalize("Apr 31, 2026")).toEqual({ type: "unparseable", raw: "Apr 31, 2026" });
+    expect(canonicalize("31 Apr 2026")).toEqual({ type: "unparseable", raw: "31 Apr 2026" });
+  });
+
   test("NFC/NFD unicode forms canonicalize equal", () => {
     const nfc = "café".normalize("NFC");
     const nfd = "café".normalize("NFD");
@@ -126,5 +163,59 @@ body text without colon
     const facts = extract(note);
     expect(facts.has("tags")).toBe(false);
     expect(facts.get("owner")).toEqual({ type: "string", value: "alice" });
+  });
+
+  test("a bare URL in a body line is not parsed as a fact (no spurious 'https' key)", () => {
+    const note = `---
+ledger:
+  id: mem_1
+---
+See https://example.com for details
+owner: Alice
+`;
+    const facts = extract(note);
+    expect(facts.has("https")).toBe(false);
+    expect(facts.get("owner")).toEqual({ type: "string", value: "alice" });
+    expect(facts.size).toBe(1);
+  });
+
+  test("frontmatter datetime with a time component is unparseable (no UTC day-shift)", () => {
+    const note = `---
+ledger:
+  id: mem_1
+when: 2026-08-15T09:00:00Z
+---
+`;
+    const facts = extract(note);
+    const when = facts.get("when");
+    expect(when?.type).toBe("unparseable");
+  });
+
+  test("frontmatter bare date still canonicalizes to a date", () => {
+    const note = `---
+ledger:
+  id: mem_1
+deadline: 2026-08-15
+---
+`;
+    const facts = extract(note);
+    expect(facts.get("deadline")).toEqual({ type: "date", value: "2026-08-15" });
+  });
+
+  test("two notes with different body URLs produce no 'https' fact on either side", () => {
+    const noteA = `---
+ledger:
+  id: mem_1
+---
+See https://example.com for details
+`;
+    const noteB = `---
+ledger:
+  id: mem_2
+---
+See https://other.example for details
+`;
+    expect(extract(noteA).has("https")).toBe(false);
+    expect(extract(noteB).has("https")).toBe(false);
   });
 });

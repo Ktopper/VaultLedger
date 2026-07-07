@@ -1,5 +1,5 @@
 import { describe, expect, test, afterEach } from "vitest";
-import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createPatch } from "diff";
@@ -195,6 +195,51 @@ describe("Approvals", () => {
     // Durable: the file frontmatter must also read canonical.
     expect(matter(readFileSync(join(vaultRoot, path), "utf8")).data.ledger.status).toBe("canonical");
     expect(journal.getApproval(approvalId)!.state).toBe("approved");
+  });
+
+  test("approve() dispatches a held forget op to store.forget({approved:true}), archiving a canonical memory", async () => {
+    const { approvals, store, journal, vaultRoot } = await makeHarness();
+
+    const { id: memId, path } = await store.remember({
+      content: "well established fact",
+      reason: "seed",
+      session: "s1",
+    });
+    await store.setStatus(memId, "canonical", "approved as durable belief", "s1");
+
+    const queued = await store.forget({ id: memId, reason: "dodge contradiction check", session: "s1" });
+    expect(queued).toHaveProperty("queued", true);
+    const approvalId = (queued as { queued: true; approvalId: string }).approvalId;
+
+    const result = await approvals.approve(approvalId);
+    expect(result).toEqual({ applied: true });
+
+    expect(journal.getMemory(memId)!.status).toBe("forgotten");
+    expect(existsSync(join(vaultRoot, path))).toBe(false);
+    expect(existsSync(join(vaultRoot, `Agent/Archive/${memId}.md`))).toBe(true);
+    expect(journal.getApproval(approvalId)!.state).toBe("approved");
+  });
+
+  test("reject() on a held forget leaves the memory canonical and un-archived", async () => {
+    const { approvals, store, journal, vaultRoot } = await makeHarness();
+
+    const { id: memId, path } = await store.remember({
+      content: "well established fact 2",
+      reason: "seed",
+      session: "s1",
+    });
+    await store.setStatus(memId, "canonical", "approved as durable belief", "s1");
+
+    const queued = await store.forget({ id: memId, reason: "dodge contradiction check", session: "s1" });
+    expect(queued).toHaveProperty("queued", true);
+    const approvalId = (queued as { queued: true; approvalId: string }).approvalId;
+
+    approvals.reject(approvalId);
+
+    expect(journal.getMemory(memId)!.status).toBe("canonical");
+    expect(existsSync(join(vaultRoot, path))).toBe(true);
+    expect(existsSync(join(vaultRoot, `Agent/Archive/${memId}.md`))).toBe(false);
+    expect(journal.getApproval(approvalId)!.state).toBe("rejected");
   });
 
   test("approve() on an unknown id throws NOT_FOUND", async () => {

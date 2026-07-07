@@ -1,3 +1,4 @@
+import { BrokerError } from "../errors.js";
 import type { ConflictRow, Journal, MemoryRow } from "../journal/journal.js";
 
 // A memory in any of these statuses is not "live" and its conflicts are
@@ -49,11 +50,30 @@ export class Conflicts {
   }
 
   resolve(id: string, nowIso: string): void {
-    this.journal.setConflictState(id, "resolved", nowIso);
+    this.transition(id, "resolved", nowIso);
   }
 
   dismiss(id: string, nowIso: string): void {
-    this.journal.setConflictState(id, "dismissed", nowIso);
+    this.transition(id, "dismissed", nowIso);
+  }
+
+  // Guards the open -> resolved/dismissed transition: only a conflict
+  // currently in state 'open' may move. A non-existent id throws NOT_FOUND
+  // (consistent with get() signaling "no such conflict" rather than a silent
+  // no-op that would look like success). A conflict that's already
+  // resolved/dismissed throws ALREADY_CLOSED instead of letting a second
+  // resolve/dismiss silently overwrite its terminal state -- e.g. a
+  // dismissed conflict flipping to resolved (or vice-versa) is an
+  // audit-integrity hole, not a legitimate transition.
+  private transition(id: string, nextState: "resolved" | "dismissed", nowIso: string): void {
+    const row = this.journal.getConflict(id);
+    if (!row) {
+      throw new BrokerError("NOT_FOUND", `no conflict with id ${id}`);
+    }
+    if (row.state !== "open") {
+      throw new BrokerError("ALREADY_CLOSED", `conflict ${id} is already ${row.state}`);
+    }
+    this.journal.setConflictState(id, nextState, nowIso);
   }
 
   /** Enrich + apply the both-sides-live filter; null if either side is dead/missing. */

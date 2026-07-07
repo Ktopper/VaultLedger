@@ -79,6 +79,22 @@ export interface ForgetInput {
   session: string;
 }
 
+export interface ForgetOptions {
+  /** Bypass the canonical-forget approval gate (set by Approvals.approve when
+   * applying a previously-held forget). Harmless on scratch/working memories,
+   * which never hit the gate anyway. */
+  approved?: boolean;
+}
+
+/**
+ * Discriminated union (mirrors `PromoteResult`'s applied-vs-queued split):
+ * a scratch/working forget (or an approved canonical one) lands immediately
+ * and returns `{ forgotten: true, id }`; an unapproved canonical forget is
+ * held for approval and returns `{ queued: true, approvalId }` instead of
+ * archiving anything.
+ */
+export type ForgetResult = { forgotten: true; id: string } | { queued: true; approvalId: string };
+
 /**
  * Memory lifecycle on top of the Broker (design §memory lifecycle). Every
  * mutation still routes through the broker (or `broker.archive`) so the
@@ -273,25 +289,73 @@ export class MemoryStore {
   }
 
   /**
-   * Archive the memory's file (tombstone) and mark its journal row forgotten.
+   * Archive the memory's file (tombstone) and mark its journal row forgotten
+   * — UNLESS the memory is `canonical`, in which case forget is gated behind
+   * human approval, mirroring the working->canonical promotion gate in
+   * `promote()` (design: canonical-forget evasion closure). Rationale: an
+   * agent calling `memory_forget` on a canonical belief is an approval-free
+   * way to make it disappear (e.g. to dodge the contradiction matcher's
+   * comparison set) — the same evasion class already closed for
+   * `supersedes`. Scratch/working forgets stay immediate (provisional
+   * beliefs don't need a human gate).
    *
-   * Concurrency note (design §12, accepted v0.2 limitation): forget is TWO
-   * broker calls — `flipFrontmatterStatus` (a locked revise commit) then
-   * `broker.archive` (a locked move commit). Each individually acquires and
-   * holds the cross-process vault lock, so neither races another process's
-   * git/journal writes; but the two are NOT jointly atomic — a concurrent
-   * reader can observe the intermediate state (status=forgotten in the file,
-   * note not yet moved to Agent/Archive). That intermediate state is
-   * transient and self-heals: the next reindex recovers the correct
+   * Concurrency note (design §12, accepted v0.2 limitation): the APPLIED path
+   * is TWO broker calls — `flipFrontmatterStatus` (a locked revise commit)
+   * then `broker.archive` (a locked move commit). Each individually acquires
+   * and holds the cross-process vault lock, so neither races another
+   * process's git/journal writes; but the two are NOT jointly atomic — a
+   * concurrent reader can observe the intermediate state (status=forgotten in
+   * the file, note not yet moved to Agent/Archive). That intermediate state
+   * is transient and self-heals: the next reindex recovers the correct
    * status/path from disk. NOT wrapped in a single outer lock on purpose —
    * the inner broker calls already take the lock and proper-lockfile is
    * non-reentrant, so an outer acquire would deadlock; single-commit atomic
    * forget is left to a future milestone.
    */
-  async forget(input: ForgetInput): Promise<void> {
+  async forget(input: ForgetInput, opts?: ForgetOptions): Promise<ForgetResult> {
     const mem = this.journal.getMemory(input.id);
     if (!mem) {
       throw new BrokerError("NOT_FOUND", `no memory with id ${input.id}`);
+    }
+
+    // Idempotent re-apply (mirrors promote's setStatus early-return). If the
+    // memory is already forgotten, treat this as a no-op success rather than
+    // re-running the tombstone: the second broker.archive would throw
+    // TARGET_EXISTS on the already-moved note. This matters for the crash gap
+    // in Approvals.approve() — if the process dies after store.forget applied
+    // but before the approval was marked 'approved', the approval stays
+    // pending and a human re-approves, re-entering here on the now-forgotten
+    // memory. Without this guard that re-approve would wedge (throw) and leave
+    // the approval stuck pending.
+    if (mem.status === "forgotten") {
+      return { forgotten: true, id: input.id };
+    }
+
+    if (mem.status === "canonical" && !opts?.approved) {
+      // EXECUTION CONTRACT FOR Approvals.approve(): the held op below is an
+      // op:"forget" (schemas/operation.ts ForgetOp shape), which
+      // Broker.apply() rejects by design (it operates on a memory id, not a
+      // path — see broker.ts). approve() MUST DISPATCH on the held op — a
+      // held `forget` is executed by calling `store.forget(..., {approved:
+      // true})` directly, NOT via broker.apply. Mirrors the `promote` held
+      // op exactly.
+      const approvalId = this.genId("apr");
+      this.journal.insertApproval({
+        id: approvalId,
+        held_operation: JSON.stringify({
+          op: "forget",
+          id: input.id,
+          reason: input.reason,
+          session: input.session,
+        }),
+        zone: "canonical-forget",
+        reason: input.reason,
+        session: input.session,
+        state: "pending",
+        created_at: this.now(),
+        resolved_at: null,
+      });
+      return { queued: true, approvalId };
     }
 
     // Durable status (design §6.0): flip the note's `ledger.status` to
@@ -315,6 +379,7 @@ export class MemoryStore {
     // 'forgotten' — and it un-hides them again if the forget is later
     // undone (the memory goes live again), rather than permanently baking
     // in a 'moot' state that a re-detect could never reopen.
+    return { forgotten: true, id: input.id };
   }
 
   /**

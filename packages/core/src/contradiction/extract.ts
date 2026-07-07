@@ -56,6 +56,27 @@ const MONTH_DAY_YEAR_RE = /^([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s*(
 // "day Mon[ year]" / "day Month[ year]"
 const DAY_MONTH_YEAR_RE = /^(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]{3,9})\.?,?\s*(\d{4})?$/;
 const NUMBER_RE = /^-?\d+(\.\d+)?$/;
+// A date-shaped value that also carries a time component (yyyy-mm-dd followed
+// by "T" or a space and then a digit). Interpreting the time would require
+// picking a timezone, which can shift the calendar day nondeterministically —
+// so these are always unparseable rather than silently narrowed to a date.
+const DATETIME_RE = /^\d{4}-\d{2}-\d{2}[T ]\d/;
+
+// Deterministic calendar validation — no Date object involved (Date-based
+// validation would silently roll over, e.g. new Date(2026, 1, 31) becomes
+// Mar 3), so month lengths are computed from a fixed table + leap-year rule.
+const DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+function isLeapYear(year: number): boolean {
+  return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+}
+
+function isValidCalendarDate(year: number, month: number, day: number): boolean {
+  if (month < 1 || month > 12) return false;
+  if (day < 1) return false;
+  const maxDay = month === 2 && isLeapYear(year) ? 29 : DAYS_IN_MONTH[month - 1]!;
+  return day <= maxDay;
+}
 
 /**
  * Try to interpret `trimmed` as a date. Returns:
@@ -65,8 +86,18 @@ const NUMBER_RE = /^-?\d+(\.\d+)?$/;
  *  - null if it isn't date-shaped at all (caller falls through to number/string)
  */
 function tryDate(trimmed: string): CanonicalValue | null {
+  if (DATETIME_RE.test(trimmed)) {
+    return { type: "unparseable", raw: trimmed };
+  }
+
   const iso = ISO_DATE_RE.exec(trimmed);
   if (iso) {
+    const year = parseInt(iso[1]!, 10);
+    const month = parseInt(iso[2]!, 10);
+    const day = parseInt(iso[3]!, 10);
+    if (!isValidCalendarDate(year, month, day)) {
+      return { type: "unparseable", raw: trimmed };
+    }
     return { type: "date", value: `${iso[1]!}-${iso[2]!}-${iso[3]!}` };
   }
 
@@ -82,6 +113,9 @@ function tryDate(trimmed: string): CanonicalValue | null {
     const mm = MONTHS[monthName.toLowerCase()];
     if (mm) {
       if (year) {
+        if (!isValidCalendarDate(parseInt(year, 10), parseInt(mm, 10), parseInt(day, 10))) {
+          return { type: "unparseable", raw: trimmed };
+        }
         return { type: "date", value: `${year}-${mm}-${day.padStart(2, "0")}` };
       }
       return { type: "unparseable", raw: trimmed };
@@ -96,6 +130,9 @@ function tryDate(trimmed: string): CanonicalValue | null {
     const mm = MONTHS[monthName.toLowerCase()];
     if (mm) {
       if (year) {
+        if (!isValidCalendarDate(parseInt(year, 10), parseInt(mm, 10), parseInt(day, 10))) {
+          return { type: "unparseable", raw: trimmed };
+        }
         return { type: "date", value: `${year}-${mm}-${day.padStart(2, "0")}` };
       }
       return { type: "unparseable", raw: trimmed };
@@ -148,6 +185,26 @@ export function foldEntity(s: string): string {
 // "**owner:** Alice", or "owner：Alice".
 const FACT_LINE_RE = /^\s*(?:\*\*)?([A-Za-z][\w \-]*?)(?:\*\*)?\s*[:：]\s*(.+?)\s*$/;
 
+// URL schemes that must never be captured as a fact key/value: a bare URL
+// like "See https://example.com" would otherwise parse as key "https",
+// value "//example.com" — a prose sentence, not a declared fact.
+const URL_SCHEME_STOPLIST = new Set([
+  "http",
+  "https",
+  "ftp",
+  "ftps",
+  "mailto",
+  "file",
+  "tel",
+  "ws",
+  "wss",
+]);
+
+function looksLikeUrl(key: string, value: string): boolean {
+  if (URL_SCHEME_STOPLIST.has(key)) return true;
+  return value.startsWith("//");
+}
+
 export function extract(noteText: string): MemoryFacts {
   const { data, content } = matter(noteText);
   const facts: MemoryFacts = new Map();
@@ -158,10 +215,21 @@ export function extract(noteText: string): MemoryFacts {
     let asString: string;
     if (rawValue instanceof Date) {
       // gray-matter's YAML engine (js-yaml) auto-coerces unquoted
-      // yyyy-mm-dd-shaped scalars into JS Date objects. toISOString() is
-      // deterministic (always UTC, no local-timezone/system-clock
-      // dependence) given the Date object's fixed internal timestamp.
-      asString = rawValue.toISOString().slice(0, 10);
+      // yyyy-mm-dd-shaped (and datetime-shaped) scalars into JS Date
+      // objects. toISOString() is deterministic (always UTC, no
+      // local-timezone/system-clock dependence) given the Date object's
+      // fixed internal timestamp — but we can't recover the *original*
+      // scalar text here to see whether it carried a time component. As a
+      // proxy: a date-only YAML scalar parses to UTC midnight, so a
+      // non-midnight UTC time-of-day means the source had a time component.
+      // In that case emit the full ISO string so DATETIME_RE below marks it
+      // unparseable (never day-shifted); only a date-only value canonicalizes.
+      const isMidnightUtc =
+        rawValue.getUTCHours() === 0 &&
+        rawValue.getUTCMinutes() === 0 &&
+        rawValue.getUTCSeconds() === 0 &&
+        rawValue.getUTCMilliseconds() === 0;
+      asString = isMidnightUtc ? rawValue.toISOString().slice(0, 10) : rawValue.toISOString();
     } else if (
       typeof rawValue === "string" ||
       typeof rawValue === "number" ||
@@ -188,6 +256,7 @@ export function extract(noteText: string): MemoryFacts {
     const rawValue = m[2]!.replace(/^\*+\s*/, "").replace(/\s*\*+$/, "");
 
     const folded = foldKey(key);
+    if (looksLikeUrl(folded, rawValue)) continue; // URL/scheme, not a fact
     if (facts.has(folded)) continue; // first occurrence wins
     facts.set(folded, canonicalize(rawValue));
   }

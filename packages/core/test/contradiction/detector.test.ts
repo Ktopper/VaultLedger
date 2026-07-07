@@ -70,6 +70,19 @@ describe("HeuristicDetector", () => {
     ]);
   });
 
+  test("negation-conflict: contracted \"isn't\" is recognized as a negation of \"is\"", () => {
+    const a = note({}, "The build is green");
+    const b = note({}, "The build isn't green");
+    const conflicts = detector.detect(a, b);
+    expect(conflicts).toEqual([
+      {
+        kind: "negation-conflict",
+        factKey: "the build::green",
+        detail: '"the build is green" contradicted by negation',
+      },
+    ]);
+  });
+
   test("negation with different object is NOT flagged", () => {
     const a = note({}, "The project is active");
     const b = note({}, "The project is delayed");
