@@ -8,6 +8,16 @@ import { loadContext, type LoadContextDeps } from "../context.js";
 // still sits as dead weight in the table. So iterate LIVE memories only.
 const DEAD_STATUSES = new Set(["forgotten", "reverted", "retired"]);
 
+// --rescan loads up to this many memories in one queryMemories() call, then
+// runs checkContradictions (an O(n) comparison-set scan per memory, so the
+// whole pass is O(n^2)) against each live one. Both the flat cap and the
+// per-memory O(n^2) cost are deliberate v0.3a-scope tradeoffs, not
+// oversights: a real fix (cursor-batched scanning, or an indexed candidate
+// set instead of a full comparison sweep) is deferred to a future release.
+// Exported so a caller/test can reference the same value the default (no
+// --limit) rescan uses.
+export const RESCAN_MEMORY_CAP = 100_000;
+
 export interface ConflictsOptions extends LoadContextDeps {
   action?: "resolve" | "dismiss";
   id?: string;
@@ -15,6 +25,9 @@ export interface ConflictsOptions extends LoadContextDeps {
    * before listing (respects the detector's dedupe key, so re-running is
    * idempotent — no duplicate/resurrected conflicts). */
   rescan?: boolean;
+  /** Override RESCAN_MEMORY_CAP for this run (mainly a test seam; a real
+   * caller with a vault that large should also consider why). */
+  limit?: number;
   out?: (s: string) => void;
 }
 
@@ -63,7 +76,13 @@ export async function conflictsCommand(
     }
 
     if (opts.rescan) {
-      const all = ctx.journal.queryMemories({ limit: 100000 });
+      const cap = opts.limit ?? RESCAN_MEMORY_CAP;
+      const all = ctx.journal.queryMemories({ limit: cap });
+      if (all.length >= cap) {
+        out(
+          `warning: --rescan scanned the first ${cap} memories; results may be incomplete (cap reached)`,
+        );
+      }
       for (const mem of all) {
         // Skip dead memories: running detection off a forgotten/reverted/
         // retired memory can only ever insert a zombie conflict row (its own

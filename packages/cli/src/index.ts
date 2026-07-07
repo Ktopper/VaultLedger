@@ -128,23 +128,40 @@ export function buildProgram(): Command {
     .command("conflicts <vaultDir> [action] [id]")
     .description("list open conflicts, or resolve/dismiss one by id")
     .option("--rescan", "re-run contradiction detection against every memory", false)
-    .action(async (vaultDir: string, action: string | undefined, id: string | undefined, opts: { rescan: boolean }) => {
-      if (action !== undefined && action !== "resolve" && action !== "dismiss") {
-        console.error(`invalid action: ${action} (expected "resolve" or "dismiss")`);
-        process.exitCode = 1;
-        return;
-      }
-      if (action !== undefined && id === undefined) {
-        console.error(`--action ${action} requires an id`);
-        process.exitCode = 1;
-        return;
-      }
-      try {
-        await conflictsCommand(vaultDir, { action, id, rescan: opts.rescan });
-      } catch (e) {
-        reportError(e);
-      }
-    });
+    .option("--limit <n>", "override the --rescan memory scan cap (default: RESCAN_MEMORY_CAP)")
+    .action(
+      async (
+        vaultDir: string,
+        action: string | undefined,
+        id: string | undefined,
+        opts: { rescan: boolean; limit?: string },
+      ) => {
+        if (action !== undefined && action !== "resolve" && action !== "dismiss") {
+          console.error(`invalid action: ${action} (expected "resolve" or "dismiss")`);
+          process.exitCode = 1;
+          return;
+        }
+        if (action !== undefined && id === undefined) {
+          console.error(`--action ${action} requires an id`);
+          process.exitCode = 1;
+          return;
+        }
+        let limit: number | undefined;
+        if (opts.limit !== undefined) {
+          if (!/^\d+$/.test(opts.limit) || Number.parseInt(opts.limit, 10) < 1) {
+            console.error(`invalid --limit: ${opts.limit} (expected a positive integer)`);
+            process.exitCode = 1;
+            return;
+          }
+          limit = Number.parseInt(opts.limit, 10);
+        }
+        try {
+          await conflictsCommand(vaultDir, { action, id, rescan: opts.rescan, limit });
+        } catch (e) {
+          reportError(e);
+        }
+      },
+    );
 
   program
     .command("serve <vault>")
