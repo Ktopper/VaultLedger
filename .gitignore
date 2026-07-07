@@ -40,6 +40,9 @@ coverage/
 # Local-only planning docs (kept private, not published)
 evaluation.md
 build-prompts.md
+# Build-process plans (agentic-worker scaffolding) — kept locally, not published.
+# The published design record lives in docs/design/specs/.
+docs/design/plans/
 
 # Stray editor/harness temp files
 _tmp_*

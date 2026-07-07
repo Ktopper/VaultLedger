@@ -3,7 +3,7 @@
 **Working name:** VaultLedger
 **One-liner:** Git for agent beliefs — a governed memory broker that lets any AI agent use an Obsidian vault (or any markdown folder) as persistent memory, with provenance, approval, and rollback enforced in code, not prompts.
 **Stack:** TypeScript throughout (Node MCP server + write broker; Obsidian plugin; SQLite index)
-**Status:** Spec v1.1 — July 3, 2026 (v1.1 folds in the Undertow lifecycle merge; see `docs/superpowers/specs/2026-07-03-undertow-integration-decision.md`)
+**Status:** Spec v1.1 — July 3, 2026 (v1.1 folds in the Undertow lifecycle merge; see `docs/design/specs/2026-07-03-undertow-integration-decision.md`)
 
 ---
 
@@ -132,7 +132,7 @@ vaultledger/
 - **v0.1 (prove the loop):** core broker + MCP server + CLI approve/undo. Demo: Claude Code session writes memory, laptop reboot, next session recalls with provenance; bad write rolled back with one command.
 - **v0.2 (the demo that sells):** Obsidian plugin — approval queue, diff view, rollback, provenance hover.
 - **v0.3 (lifecycle + audit — absorbs Undertow concepts):** `memory_distill` + `memory_retire` + source-relations table; promotion rules; contradiction queue; source-linked staleness (distillation flagged when a source is retired/revised); memory-health report surfaced in plugin queues and `ledger memory audit`. Split into two cycles:
-  - **v0.3a (this cycle):** contradiction queue + three v0.2-backlog hardening items — see `docs/superpowers/specs/2026-07-05-vaultledger-v03a-design.md`. The contradiction matcher is built lineage-aware so it directly feeds v0.3b's source-linked staleness.
+  - **v0.3a (this cycle):** contradiction queue + three v0.2-backlog hardening items — see `docs/design/specs/2026-07-05-vaultledger-v03a-design.md`. The contradiction matcher is built lineage-aware so it directly feeds v0.3b's source-linked staleness.
   - **v0.3b (Undertow merge, build-prompts Prompt 10.5):** `memory_distill`/`memory_retire`, the `memory_relations` table, source-linked staleness, optional numeric confidence, promotion rules, and the memory-health report / `ledger memory audit`.
 - **v1.0:** polish, packaged installers, docs, second-brain/Claudian integration guides.
 - **Later:** embeddings-assisted conflict detection, replay/regret analysis (which memories fed which answers, and which fed errors), team tier (shared vault, multi-agent write arbitration), audit export.

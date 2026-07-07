@@ -3,7 +3,7 @@
 **Date:** 2026-07-03
 **Scope:** Milestone v0.2 ("the demo that sells") — build-prompts Prompt 9.
 **Parent spec:** `spec.md` §2/§8, and the v0.1 design
-(`docs/superpowers/specs/2026-07-02-vaultledger-v01-design.md`). Where this doc is
+(`docs/design/specs/2026-07-02-vaultledger-v01-design.md`). Where this doc is
 silent, those govern.
 **Builds on:** the hardened v0.1 core (trust-boundary security fixes:
 containment, symlink realpath, `.ledger`/`.git` always-excluded, case-insensitive

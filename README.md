@@ -6,7 +6,7 @@ provenance, approval, and rollback enforced *in code, not prompts*.
 
 > **Status:** v0.1 in development. This is the deterministic write-broker core —
 > the layer every agent write must pass through. See [`spec.md`](spec.md) for the
-> product spec and [`docs/superpowers/specs/`](docs/superpowers/specs/) for the
+> product spec and [`docs/design/specs/`](docs/design/specs/) for the
 > v0.1 design.
 
 ## Why
@@ -266,9 +266,8 @@ Concurrency (v0.2): `core` gained a WAL journal and a cross-process mutation loc
 writes, `undo`, and thus the CLI, MCP server, and bridge — acquires, so `ledger
 serve` and `vaultledger-mcp` are safe against one vault at once.
 
-For the full designs and plans, see
-[`docs/superpowers/specs/`](docs/superpowers/specs/) and
-[`docs/superpowers/plans/`](docs/superpowers/plans/) (v0.1: `2026-07-02-*`; v0.2:
+For the full designs, see
+[`docs/design/specs/`](docs/design/specs/) (v0.1: `2026-07-02-*`; v0.2:
 `2026-07-03-*`; v0.3a: `2026-07-05-*`).
 
 ## Stack
