@@ -618,8 +618,10 @@ describe("Broker", () => {
   // ledger-block tamper guard (v0.3a): status/entity/supersedes governance
   // -------------------------------------------------------------------
 
+  // Realistic memory-note shape: `entity` is a TOP-LEVEL frontmatter field, a
+  // sibling of `ledger:` (MemoryProvenance has no entity), and is governed.
   const LEDGER_NOTE =
-    "---\nledger:\n  status: working\n  entity: alice\n  supersedes: null\n---\n\n" +
+    "---\nledger:\n  status: working\n  supersedes: null\nentity: alice\n---\n\n" +
     "Alice prefers dark mode.\nShe also prefers larger fonts.\nAnd a minimal sidebar.\n" +
     "She reads mostly technical documentation.\nHer timezone is US/Pacific.\n";
 
@@ -651,10 +653,13 @@ describe("Broker", () => {
     expect(journal.listTransactions({}).some((t) => t.op === "revise")).toBe(false);
   });
 
-  test("unapproved revise rewriting ledger.entity throws LEDGER_GUARD and writes nothing", async () => {
+  test("unapproved revise rewriting the top-level entity throws LEDGER_GUARD and writes nothing", async () => {
     const { broker, journal, vaultRoot } = await makeBroker();
     await createAgentFile(broker, "Agent/Memory/lg2.md", LEDGER_NOTE);
 
+    // entity is a TOP-LEVEL field (not in the ledger: block) — the guard must
+    // still catch it: rewriting it drops the belief from its same-entity
+    // comparison set (the review found the ledger-only guard missed this).
     const tampered = LEDGER_NOTE.replace("entity: alice", "entity: bob");
     const patchText = createPatch("lg2.md", LEDGER_NOTE, tampered);
     const expectedHash = hashBytes(Buffer.from(LEDGER_NOTE, "utf8"));

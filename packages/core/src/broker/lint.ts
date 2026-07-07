@@ -110,25 +110,41 @@ function normalizeLedger(data: Record<string, unknown>): unknown {
   return ledger !== null && typeof ledger === "object" ? ledger : null;
 }
 
+/** The governed-provenance slice of a note's parsed frontmatter: the `ledger:`
+ * block PLUS the top-level `entity` field. `entity` is deliberately NOT part
+ * of the `ledger:` block (see MemoryProvenance — it has no entity) but it IS a
+ * governed field: the contradiction matcher keys its same-entity comparison
+ * set on it, so silently rewriting/removing it drops a belief from every
+ * comparison — exactly the evasion this guard exists to stop. `tags` is
+ * intentionally excluded: it is descriptive metadata that gates no behavior.
+ * A non-string entity normalizes to `null` so "no entity" is comparable. */
+function governedSlice(data: Record<string, unknown>): unknown {
+  return {
+    ledger: normalizeLedger(data),
+    entity: typeof data.entity === "string" ? data.entity : null,
+  };
+}
+
 /**
- * Governance guard (v0.3a, ledger-block tamper closure): does the note's
- * `ledger:` frontmatter block (status/entity/supersedes/...) differ between
- * `before` and `after`, canonically (a mere key reorder is NOT a change)?
+ * Governance guard (v0.3a, provenance tamper closure): does the note's
+ * governed provenance — the `ledger:` block (status/supersedes/...) plus the
+ * top-level `entity` field — differ between `before` and `after`, canonically
+ * (a mere key reorder is NOT a change)?
  *
- * Deliberately narrower than `assertStructurePreserved` — it looks ONLY at
- * the `ledger` frontmatter field, ignoring the body and every other
- * frontmatter key, so an unapproved revise that edits body text or an
- * unrelated fact field (e.g. `deadline:`) is unaffected.
+ * Deliberately narrower than `assertStructurePreserved` — it looks ONLY at the
+ * governed slice, ignoring the body and every other frontmatter key, so an
+ * unapproved revise that edits body text or an unrelated fact field (e.g.
+ * `deadline:`) is unaffected.
  *
- * Adding a ledger block where there was none, or removing one entirely, both
- * count as CHANGED: normalizeLedger maps "no block" to `null` and a present
- * block to an object, and `null` never canonically equals an object.
+ * Adding a ledger block/entity where there was none, or removing one entirely,
+ * both count as CHANGED: the absent side normalizes to `null`, which never
+ * canonically equals a present value.
  */
-export function ledgerBlockChanged(before: string, after: string): boolean {
-  let beforeLedger: unknown;
-  let afterLedger: unknown;
+export function governedProvenanceChanged(before: string, after: string): boolean {
+  let beforeSlice: unknown;
+  let afterSlice: unknown;
   try {
-    beforeLedger = normalizeLedger(matter(before).data as Record<string, unknown>);
+    beforeSlice = governedSlice(matter(before).data as Record<string, unknown>);
   } catch {
     // Defensive: shouldn't happen (callers run this after
     // assertStructurePreserved, which already proved `before`/`after` parse),
@@ -137,9 +153,9 @@ export function ledgerBlockChanged(before: string, after: string): boolean {
     return true;
   }
   try {
-    afterLedger = normalizeLedger(matter(after).data as Record<string, unknown>);
+    afterSlice = governedSlice(matter(after).data as Record<string, unknown>);
   } catch {
     return true;
   }
-  return JSON.stringify(canonicalize(beforeLedger)) !== JSON.stringify(canonicalize(afterLedger));
+  return JSON.stringify(canonicalize(beforeSlice)) !== JSON.stringify(canonicalize(afterSlice));
 }

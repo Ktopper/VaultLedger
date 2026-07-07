@@ -24,12 +24,13 @@ export const RejectionCode = {
   // a second time (an audit-integrity hole: two operators could each believe
   // THEY were the one who closed it).
   ALREADY_CLOSED: "ALREADY_CLOSED",
-  // v0.3a addition (ledger-block tamper closure): an unapproved revise whose
-  // patch changes the note's `ledger:` provenance block (status / entity /
-  // supersedes). Those fields are governed -- an agent self-promoting to
-  // canonical, silently dropping an entity from the comparison set, or
-  // faking a supersedes lineage link would each bypass the human approval
-  // gate, so none of the existing codes fit and this gets its own.
+  // v0.3a addition (provenance tamper closure): an unapproved revise whose
+  // patch changes a note's governed provenance -- the `ledger:` block
+  // (status / supersedes) or the top-level `entity` field. Those are governed
+  // -- an agent self-promoting to canonical, faking a supersedes lineage
+  // link, or silently dropping a belief from its same-entity comparison set
+  // by rewriting entity would each bypass the human approval gate, so none of
+  // the existing codes fit and this gets its own.
   LEDGER_GUARD: "LEDGER_GUARD",
 } as const;
 

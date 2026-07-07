@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { assertStructurePreserved, ledgerBlockChanged } from "../../src/broker/lint.js";
+import { assertStructurePreserved, governedProvenanceChanged } from "../../src/broker/lint.js";
 import { BrokerError } from "../../src/errors.js";
 
 describe("assertStructurePreserved", () => {
@@ -66,55 +66,73 @@ describe("assertStructurePreserved", () => {
   });
 });
 
-describe("ledgerBlockChanged", () => {
+describe("governedProvenanceChanged", () => {
+  // Realistic note shape: `entity` is a TOP-LEVEL frontmatter field (a sibling
+  // of `ledger:`, NOT inside it — see MemoryProvenance, which has no entity),
+  // and it is a governed field (the contradiction matcher's comparison set is
+  // keyed on it), so a change to it must be caught by the guard.
   const base =
-    "---\nledger:\n  status: working\n  entity: alice\n  supersedes: null\ntitle: X\n---\n\nBody text.\n";
+    "---\nledger:\n  status: working\n  supersedes: null\nentity: alice\ntitle: X\n---\n\nBody text.\n";
 
   test("returns true when ledger.status differs", () => {
     const after =
-      "---\nledger:\n  status: canonical\n  entity: alice\n  supersedes: null\ntitle: X\n---\n\nBody text.\n";
-    expect(ledgerBlockChanged(base, after)).toBe(true);
+      "---\nledger:\n  status: canonical\n  supersedes: null\nentity: alice\ntitle: X\n---\n\nBody text.\n";
+    expect(governedProvenanceChanged(base, after)).toBe(true);
   });
 
-  test("returns true when ledger.entity differs", () => {
+  test("returns true when the top-level entity differs", () => {
     const after =
-      "---\nledger:\n  status: working\n  entity: bob\n  supersedes: null\ntitle: X\n---\n\nBody text.\n";
-    expect(ledgerBlockChanged(base, after)).toBe(true);
+      "---\nledger:\n  status: working\n  supersedes: null\nentity: bob\ntitle: X\n---\n\nBody text.\n";
+    expect(governedProvenanceChanged(base, after)).toBe(true);
+  });
+
+  test("returns true when the top-level entity is removed", () => {
+    const after =
+      "---\nledger:\n  status: working\n  supersedes: null\ntitle: X\n---\n\nBody text.\n";
+    expect(governedProvenanceChanged(base, after)).toBe(true);
+  });
+
+  test("returns true when a top-level entity is added where there was none", () => {
+    const before =
+      "---\nledger:\n  status: working\n  supersedes: null\ntitle: X\n---\n\nBody text.\n";
+    const after =
+      "---\nledger:\n  status: working\n  supersedes: null\nentity: sneaky\ntitle: X\n---\n\nBody text.\n";
+    expect(governedProvenanceChanged(before, after)).toBe(true);
   });
 
   test("returns true when ledger.supersedes differs", () => {
     const after =
-      "---\nledger:\n  status: working\n  entity: alice\n  supersedes: mem_123\ntitle: X\n---\n\nBody text.\n";
-    expect(ledgerBlockChanged(base, after)).toBe(true);
+      "---\nledger:\n  status: working\n  supersedes: mem_123\nentity: alice\ntitle: X\n---\n\nBody text.\n";
+    expect(governedProvenanceChanged(base, after)).toBe(true);
   });
 
   test("returns true when a ledger block is added where there was none", () => {
-    const before = "---\ntitle: X\n---\n\nBody text.\n";
+    const before = "---\nentity: alice\ntitle: X\n---\n\nBody text.\n";
     const after = base;
-    expect(ledgerBlockChanged(before, after)).toBe(true);
+    expect(governedProvenanceChanged(before, after)).toBe(true);
   });
 
   test("returns true when a ledger block is removed", () => {
     const before = base;
-    const after = "---\ntitle: X\n---\n\nBody text.\n";
-    expect(ledgerBlockChanged(before, after)).toBe(true);
+    const after = "---\nentity: alice\ntitle: X\n---\n\nBody text.\n";
+    expect(governedProvenanceChanged(before, after)).toBe(true);
   });
 
   test("returns false when only the body differs", () => {
     const after =
-      "---\nledger:\n  status: working\n  entity: alice\n  supersedes: null\ntitle: X\n---\n\nBody text, revised.\n";
-    expect(ledgerBlockChanged(base, after)).toBe(false);
+      "---\nledger:\n  status: working\n  supersedes: null\nentity: alice\ntitle: X\n---\n\nBody text, revised.\n";
+    expect(governedProvenanceChanged(base, after)).toBe(false);
   });
 
-  test("returns false when only a non-ledger frontmatter key differs", () => {
+  test("returns false when only a non-governed frontmatter key differs", () => {
     const after =
-      "---\nledger:\n  status: working\n  entity: alice\n  supersedes: null\ntitle: X\ndeadline: 2026-01-01\n---\n\nBody text.\n";
-    expect(ledgerBlockChanged(base, after)).toBe(false);
+      "---\nledger:\n  status: working\n  supersedes: null\nentity: alice\ntitle: X\ndeadline: 2026-01-01\n---\n\nBody text.\n";
+    expect(governedProvenanceChanged(base, after)).toBe(false);
   });
 
-  test("returns false when ledger keys are merely reordered with identical values", () => {
+  test("returns false when governed fields are merely reordered with identical values", () => {
     const after =
-      "---\nledger:\n  entity: alice\n  supersedes: null\n  status: working\ntitle: X\n---\n\nBody text.\n";
-    expect(ledgerBlockChanged(base, after)).toBe(false);
+      "---\nentity: alice\nledger:\n  supersedes: null\n  status: working\ntitle: X\n---\n\nBody text.\n";
+    expect(governedProvenanceChanged(base, after)).toBe(false);
   });
 });
