@@ -76,6 +76,25 @@ describe("canonicalize", () => {
     expect(canonicalize("2026-08-15")).toEqual({ type: "date", value: "2026-08-15" });
   });
 
+  test("calendar-invalid dates are unparseable", () => {
+    expect(canonicalize("2026-02-31")).toEqual({ type: "unparseable", raw: "2026-02-31" });
+    expect(canonicalize("2026-13-01")).toEqual({ type: "unparseable", raw: "2026-13-01" });
+    expect(canonicalize("2026-00-10")).toEqual({ type: "unparseable", raw: "2026-00-10" });
+    expect(canonicalize("2026-04-31")).toEqual({ type: "unparseable", raw: "2026-04-31" });
+    expect(canonicalize("2026-02-29")).toEqual({ type: "unparseable", raw: "2026-02-29" });
+  });
+
+  test("leap-year Feb 29 is valid; non-leap Feb 28/Dec 31 are valid", () => {
+    expect(canonicalize("2024-02-29")).toEqual({ type: "date", value: "2024-02-29" });
+    expect(canonicalize("2026-02-28")).toEqual({ type: "date", value: "2026-02-28" });
+    expect(canonicalize("2026-12-31")).toEqual({ type: "date", value: "2026-12-31" });
+  });
+
+  test("calendar-invalid month-name dates are unparseable", () => {
+    expect(canonicalize("Apr 31, 2026")).toEqual({ type: "unparseable", raw: "Apr 31, 2026" });
+    expect(canonicalize("31 Apr 2026")).toEqual({ type: "unparseable", raw: "31 Apr 2026" });
+  });
+
   test("NFC/NFD unicode forms canonicalize equal", () => {
     const nfc = "café".normalize("NFC");
     const nfd = "café".normalize("NFD");

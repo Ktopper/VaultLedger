@@ -62,6 +62,22 @@ const NUMBER_RE = /^-?\d+(\.\d+)?$/;
 // so these are always unparseable rather than silently narrowed to a date.
 const DATETIME_RE = /^\d{4}-\d{2}-\d{2}[T ]\d/;
 
+// Deterministic calendar validation — no Date object involved (Date-based
+// validation would silently roll over, e.g. new Date(2026, 1, 31) becomes
+// Mar 3), so month lengths are computed from a fixed table + leap-year rule.
+const DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+function isLeapYear(year: number): boolean {
+  return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+}
+
+function isValidCalendarDate(year: number, month: number, day: number): boolean {
+  if (month < 1 || month > 12) return false;
+  if (day < 1) return false;
+  const maxDay = month === 2 && isLeapYear(year) ? 29 : DAYS_IN_MONTH[month - 1]!;
+  return day <= maxDay;
+}
+
 /**
  * Try to interpret `trimmed` as a date. Returns:
  *  - {type:"date", ...} for a recognized, fully-determined (year present) date
@@ -76,6 +92,12 @@ function tryDate(trimmed: string): CanonicalValue | null {
 
   const iso = ISO_DATE_RE.exec(trimmed);
   if (iso) {
+    const year = parseInt(iso[1]!, 10);
+    const month = parseInt(iso[2]!, 10);
+    const day = parseInt(iso[3]!, 10);
+    if (!isValidCalendarDate(year, month, day)) {
+      return { type: "unparseable", raw: trimmed };
+    }
     return { type: "date", value: `${iso[1]!}-${iso[2]!}-${iso[3]!}` };
   }
 
@@ -91,6 +113,9 @@ function tryDate(trimmed: string): CanonicalValue | null {
     const mm = MONTHS[monthName.toLowerCase()];
     if (mm) {
       if (year) {
+        if (!isValidCalendarDate(parseInt(year, 10), parseInt(mm, 10), parseInt(day, 10))) {
+          return { type: "unparseable", raw: trimmed };
+        }
         return { type: "date", value: `${year}-${mm}-${day.padStart(2, "0")}` };
       }
       return { type: "unparseable", raw: trimmed };
@@ -105,6 +130,9 @@ function tryDate(trimmed: string): CanonicalValue | null {
     const mm = MONTHS[monthName.toLowerCase()];
     if (mm) {
       if (year) {
+        if (!isValidCalendarDate(parseInt(year, 10), parseInt(mm, 10), parseInt(day, 10))) {
+          return { type: "unparseable", raw: trimmed };
+        }
         return { type: "date", value: `${year}-${mm}-${day.padStart(2, "0")}` };
       }
       return { type: "unparseable", raw: trimmed };
