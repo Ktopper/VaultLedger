@@ -356,18 +356,36 @@ detection across the agent zone on demand (respecting the all-states dedup).
 - ~~**`--rescan` silent 100k truncation.**~~ SHIPPED: named `RESCAN_MEMORY_CAP`,
   a `--limit` override, and a warning when the cap is hit. (The O(n²)-per-entity
   scan itself is left as-is — fine for personal vaults; batching still deferred.)
-- **Durable-status tamper residual (same evasion class, pre-existing, not
-  agent-triggerable).** The forget/promote gates read status from the *journal*,
-  but the *file* is the durable source of truth and `revise` does not guard the
-  `ledger:` provenance block (v0.1 §12). So: `revise` flips `ledger.status:
-  canonical→working` in the file (gate still holds — journal still canonical) →
-  a later `reindex` trusts the file and downgrades the journal row → `forget`
-  (or `promote`) now sees `working` and skips the gate. It equally defeats both
-  gates, so it's a property of the durable-status model, not of the forget gate.
-  Not agent-reachable via MCP (`reindex` is admin/CLI, and the auto-reindex only
-  fires on an *empty* journal). Fix candidates: guard the `ledger:` block on
-  `revise`, or have `reindex` refuse to silently downgrade a `canonical` row.
-  (Found in the WU-C review.)
+- ~~**Durable-status tamper residual (status/entity/supersedes rewritable via an
+  unapproved `revise` of the `ledger:` block).**~~ SHIPPED (branch
+  `fix/v0.3a-ledger-guard`): `Broker.applyRevise` now rejects an UNAPPROVED revise
+  whose diff changes the parsed `ledger:` block with `LEDGER_GUARD` (→ bridge 403)
+  — closing the whole class (status self-promote, entity rewrite that drops a
+  memory from every comparison set, faked supersedes). The only legitimate
+  ledger-block writers pass `approved:true` (`flipFrontmatterStatus`, and the
+  approval-queue's `dispatchApply` of a human-approved held op). Belt-and-braces:
+  `reindex` now FLAGS (never refuses — rebuildability invariant) an out-of-broker
+  canonical elevation via `ReindexResult.elevatedToCanonical` + a loud CLI warning.
+  Two-step file-tamper→reindex evasion is closed at the write channel.
+
+**v0.3b backlog (post-ledger-guard review — two MEDIUMs + LOW nits):**
+- **MEDIUM — content-revise of a canonical belief is ungated.** The ledger-guard
+  protects the `ledger:` block, but the BODY of a canonical belief can still be
+  inverted across 2–3 unapproved revises (the ~50% patch-size cap is iterable).
+  Same family, distinct hole. Fix: route a `revise` whose target is `canonical`
+  through the approval queue, mirroring the promote/forget gates.
+- **MEDIUM — dismiss-once, contradict-forever.** The conflict dedup key
+  (`UNIQUE(pair_lo,pair_hi,kind,fact_key)`) omits the conflicting VALUES, so one
+  dismissed conflict on a pair+fact permanently swallows every FUTURE
+  different-valued contradiction on that same pair+fact (`ON CONFLICT DO NOTHING`
+  never re-opens it). Nastier now that the canonical-exception trains users to
+  dismiss benign rows. Fix: fold a value-hash into `fact_key` (or the unique key),
+  OR re-open a dismissed row when the new `detail` differs.
+- **LOW nits:** (a) URL stoplist drops legit `file:`/`tel:` body-fact keys by key
+  NAME alone — shape-check the value (`scheme://…`) instead. (b) slash-style
+  datetimes aren't covered by the datetime→unparseable guard. (c) matcher
+  asymmetry in the canonical-exception (audit both directions of a transitive
+  chain). (d) the `isn't` negation misses a curly apostrophe (`isn't`).
 
 **v1.1:** embedding/LLM-assisted contradiction + entity matching (drops into the
 `ContradictionDetector` / `EntityMatcher` interfaces).
