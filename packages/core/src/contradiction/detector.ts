@@ -14,11 +14,16 @@ export interface ContradictionDetector {
   detect(a: { text: string }, b: { text: string }): DetectedConflict[];
 }
 
-// Simple declarative statement: "<subject> is [not|no longer|isn't] <object>".
-// Exact normalized subject+object match only — no fuzzy matching. Intentionally
-// narrow: one "X is Y" clause per line; compound sentences (multiple clauses /
-// conjunctions) are scoped out by design to keep precision high.
-const NEGATION_LINE_RE = /^\s*(.+?)\s+is\s+(not\s+|no longer\s+|isn't\s+)?(.+?)\s*$/i;
+// Simple declarative statement: "<subject> is [not|no longer] <object>" or
+// "<subject> isn't <object>". Exact normalized subject+object match only — no
+// fuzzy matching. Intentionally narrow: one "X is Y" clause per line;
+// compound sentences (multiple clauses / conjunctions) are scoped out by
+// design to keep precision high.
+//
+// "isn't" is matched as its own alternative (not as a suffix on "is\s+")
+// because "is" in "isn't" is not followed by whitespace — "X isn't Y" has no
+// standalone " is " substring for the first alternative to anchor on.
+const NEGATION_LINE_RE = /^\s*(.+?)\s+(?:is\s+(not\s+|no longer\s+)?|(isn't)\s+)(.+?)\s*$/i;
 
 function fold(s: string): string {
   return s.toLowerCase().replace(/\s+/g, " ").trim();
@@ -49,8 +54,8 @@ function extractStatements(bodyText: string): Statement[] {
     const m = NEGATION_LINE_RE.exec(line);
     if (!m) continue;
     const subject = m[1]!;
-    const negation = m[2];
-    const object = m[3]!;
+    const negation = m[2] ?? m[3]; // "not"/"no longer" (alt 1) or "isn't" (alt 2)
+    const object = m[4]!;
     statements.push({
       subject: fold(subject),
       negated: negation !== undefined,
