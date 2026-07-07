@@ -318,6 +318,19 @@ export class MemoryStore {
       throw new BrokerError("NOT_FOUND", `no memory with id ${input.id}`);
     }
 
+    // Idempotent re-apply (mirrors promote's setStatus early-return). If the
+    // memory is already forgotten, treat this as a no-op success rather than
+    // re-running the tombstone: the second broker.archive would throw
+    // TARGET_EXISTS on the already-moved note. This matters for the crash gap
+    // in Approvals.approve() — if the process dies after store.forget applied
+    // but before the approval was marked 'approved', the approval stays
+    // pending and a human re-approves, re-entering here on the now-forgotten
+    // memory. Without this guard that re-approve would wedge (throw) and leave
+    // the approval stuck pending.
+    if (mem.status === "forgotten") {
+      return { forgotten: true, id: input.id };
+    }
+
     if (mem.status === "canonical" && !opts?.approved) {
       // EXECUTION CONTRACT FOR Approvals.approve(): the held op below is an
       // op:"forget" (schemas/operation.ts ForgetOp shape), which

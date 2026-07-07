@@ -314,6 +314,25 @@ describe("MemoryStore", () => {
     expect(journal.getMemory(id)!.status).toBe("forgotten");
   });
 
+  test("forget on an already-forgotten memory is an idempotent no-op (crash-gap re-approve safe)", async () => {
+    const { store, journal, vaultRoot } = await makeStore();
+    const { id } = await store.remember({ content: "forget me once", reason: "seed", session: "s1" });
+
+    // First forget applies the tombstone (working memory, no gate).
+    await store.forget({ id, reason: "gone", session: "s1" });
+    const archivePath = `Agent/Archive/${id}.md`;
+    expect(existsSync(join(vaultRoot, archivePath))).toBe(true);
+    expect(journal.getMemory(id)!.status).toBe("forgotten");
+
+    // A second forget (e.g. a human re-approving a canonical-forget after the
+    // process crashed before the approval was marked approved) must NOT throw
+    // TARGET_EXISTS on the already-archived note — it returns success cleanly.
+    const again = await store.forget({ id, reason: "gone again", session: "s1" }, { approved: true });
+    expect(again).toEqual({ forgotten: true, id });
+    expect(existsSync(join(vaultRoot, archivePath))).toBe(true);
+    expect(journal.getMemory(id)!.status).toBe("forgotten");
+  });
+
   test("revise links its transaction to the memory id", async () => {
     const { store, journal, vaultRoot } = await makeStore();
     const { id, path } = await store.remember({ content: "line1\nline2", reason: "seed", session: "s1" });
