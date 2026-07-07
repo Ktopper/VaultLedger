@@ -146,9 +146,11 @@ export class Journal {
   /**
    * Applied transactions produced by approving the given approval — the sound
    * link reconcile uses to close a stale pending approval (design §5,
-   * approve->apply crash gap). Filtered in SQL by `approval_id` (not an
-   * unbounded full-table scan per pending approval) and by `status='applied'`
-   * so a later-reverted apply doesn't count as still-applied.
+   * approve->apply crash gap). Filtered in SQL by `approval_id` (an indexed
+   * lookup against the partial `ix_transactions_approval` index — see db.ts —
+   * not an unbounded full-table scan per pending approval) and by
+   * `status='applied'` so a later-reverted apply doesn't count as
+   * still-applied.
    */
   getAppliedTransactionsByApprovalId(approvalId: string): TransactionRow[] {
     return this.db

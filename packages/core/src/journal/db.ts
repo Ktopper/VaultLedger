@@ -99,6 +99,7 @@ export function openJournal(dbPath: string): Database.Database {
   createTransactionsCommitShaIndex(db);
   migrateConflictsTable(db);
   migrateTransactionsTable(db);
+  createTransactionsApprovalIndex(db);
   return db;
 }
 
@@ -147,6 +148,21 @@ function createTransactionsCommitShaIndex(db: Database.Database): void {
 const TRANSACTIONS_MIGRATED_COLUMNS: Array<{ name: string; type: string }> = [
   { name: "approval_id", type: "TEXT" },
 ];
+
+// Non-unique partial index backing getAppliedTransactionsByApprovalId's
+// lookup (journal.ts): most rows have a NULL approval_id (only applied
+// transactions produced by approving a held operation carry one), so the
+// index is partial to stay small, and non-unique because one approval can
+// legitimately produce multiple transaction rows (e.g. a multi-file apply).
+// Must run AFTER migrateTransactionsTable so the column exists on a
+// pre-v0.3a journal being upgraded (a fresh journal already has the column
+// from SCHEMA_SQL). CREATE INDEX IF NOT EXISTS keeps repeated opens
+// idempotent, matching the rest of this file's migration style.
+function createTransactionsApprovalIndex(db: Database.Database): void {
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS ix_transactions_approval ON transactions(approval_id) WHERE approval_id IS NOT NULL;`,
+  );
+}
 
 function migrateTransactionsTable(db: Database.Database): void {
   const existing = new Set(
