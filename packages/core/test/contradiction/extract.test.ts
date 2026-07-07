@@ -127,4 +127,35 @@ body text without colon
     expect(facts.has("tags")).toBe(false);
     expect(facts.get("owner")).toEqual({ type: "string", value: "alice" });
   });
+
+  test("a bare URL in a body line is not parsed as a fact (no spurious 'https' key)", () => {
+    const note = `---
+ledger:
+  id: mem_1
+---
+See https://example.com for details
+owner: Alice
+`;
+    const facts = extract(note);
+    expect(facts.has("https")).toBe(false);
+    expect(facts.get("owner")).toEqual({ type: "string", value: "alice" });
+    expect(facts.size).toBe(1);
+  });
+
+  test("two notes with different body URLs produce no 'https' fact on either side", () => {
+    const noteA = `---
+ledger:
+  id: mem_1
+---
+See https://example.com for details
+`;
+    const noteB = `---
+ledger:
+  id: mem_2
+---
+See https://other.example for details
+`;
+    expect(extract(noteA).has("https")).toBe(false);
+    expect(extract(noteB).has("https")).toBe(false);
+  });
 });

@@ -148,6 +148,26 @@ export function foldEntity(s: string): string {
 // "**owner:** Alice", or "owner：Alice".
 const FACT_LINE_RE = /^\s*(?:\*\*)?([A-Za-z][\w \-]*?)(?:\*\*)?\s*[:：]\s*(.+?)\s*$/;
 
+// URL schemes that must never be captured as a fact key/value: a bare URL
+// like "See https://example.com" would otherwise parse as key "https",
+// value "//example.com" — a prose sentence, not a declared fact.
+const URL_SCHEME_STOPLIST = new Set([
+  "http",
+  "https",
+  "ftp",
+  "ftps",
+  "mailto",
+  "file",
+  "tel",
+  "ws",
+  "wss",
+]);
+
+function looksLikeUrl(key: string, value: string): boolean {
+  if (URL_SCHEME_STOPLIST.has(key)) return true;
+  return value.startsWith("//");
+}
+
 export function extract(noteText: string): MemoryFacts {
   const { data, content } = matter(noteText);
   const facts: MemoryFacts = new Map();
@@ -188,6 +208,7 @@ export function extract(noteText: string): MemoryFacts {
     const rawValue = m[2]!.replace(/^\*+\s*/, "").replace(/\s*\*+$/, "");
 
     const folded = foldKey(key);
+    if (looksLikeUrl(folded, rawValue)) continue; // URL/scheme, not a fact
     if (facts.has(folded)) continue; // first occurrence wins
     facts.set(folded, canonicalize(rawValue));
   }
