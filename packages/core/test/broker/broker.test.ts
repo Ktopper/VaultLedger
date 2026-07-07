@@ -11,6 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createPatch } from "diff";
+import matter from "gray-matter";
 import { Broker } from "../../src/broker/broker.js";
 import { LedgerGit } from "../../src/broker/git.js";
 import { Journal } from "../../src/journal/journal.js";
@@ -611,6 +612,173 @@ describe("Broker", () => {
     }
     expect(thrown).toBeInstanceOf(BrokerError);
     expect((thrown as BrokerError).code).toBe("SYNTAX_BREAK");
+  });
+
+  // -------------------------------------------------------------------
+  // ledger-block tamper guard (v0.3a): status/entity/supersedes governance
+  // -------------------------------------------------------------------
+
+  // Realistic memory-note shape: `entity` is a TOP-LEVEL frontmatter field, a
+  // sibling of `ledger:` (MemoryProvenance has no entity), and is governed.
+  const LEDGER_NOTE =
+    "---\nledger:\n  status: working\n  supersedes: null\nentity: alice\n---\n\n" +
+    "Alice prefers dark mode.\nShe also prefers larger fonts.\nAnd a minimal sidebar.\n" +
+    "She reads mostly technical documentation.\nHer timezone is US/Pacific.\n";
+
+  test("unapproved revise flipping ledger.status working->canonical throws LEDGER_GUARD and writes nothing", async () => {
+    const { broker, journal, vaultRoot } = await makeBroker();
+    await createAgentFile(broker, "Agent/Memory/lg1.md", LEDGER_NOTE);
+
+    const tampered = LEDGER_NOTE.replace("status: working", "status: canonical");
+    const patchText = createPatch("lg1.md", LEDGER_NOTE, tampered);
+    const expectedHash = hashBytes(Buffer.from(LEDGER_NOTE, "utf8"));
+
+    let thrown: unknown;
+    try {
+      await broker.apply({
+        op: "revise",
+        path: "Agent/Memory/lg1.md",
+        expected_hash: expectedHash,
+        patch: patchText,
+        reason: "self-promote",
+        session: "s1",
+      });
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(BrokerError);
+    expect((thrown as BrokerError).code).toBe("LEDGER_GUARD");
+
+    expect(readFileSync(join(vaultRoot, "Agent/Memory/lg1.md"), "utf8")).toBe(LEDGER_NOTE);
+    expect(journal.listTransactions({}).some((t) => t.op === "revise")).toBe(false);
+  });
+
+  test("unapproved revise rewriting the top-level entity throws LEDGER_GUARD and writes nothing", async () => {
+    const { broker, journal, vaultRoot } = await makeBroker();
+    await createAgentFile(broker, "Agent/Memory/lg2.md", LEDGER_NOTE);
+
+    // entity is a TOP-LEVEL field (not in the ledger: block) — the guard must
+    // still catch it: rewriting it drops the belief from its same-entity
+    // comparison set (the review found the ledger-only guard missed this).
+    const tampered = LEDGER_NOTE.replace("entity: alice", "entity: bob");
+    const patchText = createPatch("lg2.md", LEDGER_NOTE, tampered);
+    const expectedHash = hashBytes(Buffer.from(LEDGER_NOTE, "utf8"));
+
+    let thrown: unknown;
+    try {
+      await broker.apply({
+        op: "revise",
+        path: "Agent/Memory/lg2.md",
+        expected_hash: expectedHash,
+        patch: patchText,
+        reason: "rewrite entity",
+        session: "s1",
+      });
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(BrokerError);
+    expect((thrown as BrokerError).code).toBe("LEDGER_GUARD");
+
+    expect(readFileSync(join(vaultRoot, "Agent/Memory/lg2.md"), "utf8")).toBe(LEDGER_NOTE);
+    expect(journal.listTransactions({}).some((t) => t.op === "revise")).toBe(false);
+  });
+
+  test("unapproved revise rewriting ledger.supersedes throws LEDGER_GUARD and writes nothing", async () => {
+    const { broker, journal, vaultRoot } = await makeBroker();
+    await createAgentFile(broker, "Agent/Memory/lg3.md", LEDGER_NOTE);
+
+    const tampered = LEDGER_NOTE.replace("supersedes: null", "supersedes: mem_fake");
+    const patchText = createPatch("lg3.md", LEDGER_NOTE, tampered);
+    const expectedHash = hashBytes(Buffer.from(LEDGER_NOTE, "utf8"));
+
+    let thrown: unknown;
+    try {
+      await broker.apply({
+        op: "revise",
+        path: "Agent/Memory/lg3.md",
+        expected_hash: expectedHash,
+        patch: patchText,
+        reason: "fake lineage",
+        session: "s1",
+      });
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(BrokerError);
+    expect((thrown as BrokerError).code).toBe("LEDGER_GUARD");
+
+    expect(readFileSync(join(vaultRoot, "Agent/Memory/lg3.md"), "utf8")).toBe(LEDGER_NOTE);
+    expect(journal.listTransactions({}).some((t) => t.op === "revise")).toBe(false);
+  });
+
+  test("unapproved revise that changes only the body succeeds", async () => {
+    const { broker, vaultRoot } = await makeBroker();
+    await createAgentFile(broker, "Agent/Memory/lg4.md", LEDGER_NOTE);
+
+    const updated = LEDGER_NOTE.replace(
+      "Alice prefers dark mode.",
+      "Alice prefers dark mode and large fonts.",
+    );
+    const patchText = createPatch("lg4.md", LEDGER_NOTE, updated);
+    const expectedHash = hashBytes(Buffer.from(LEDGER_NOTE, "utf8"));
+
+    const result = await broker.apply({
+      op: "revise",
+      path: "Agent/Memory/lg4.md",
+      expected_hash: expectedHash,
+      patch: patchText,
+      reason: "elaborate",
+      session: "s1",
+    });
+    expect(result.ok).toBe(true);
+    expect(readFileSync(join(vaultRoot, "Agent/Memory/lg4.md"), "utf8")).toBe(updated);
+  });
+
+  test("unapproved revise that changes only a non-ledger frontmatter key succeeds", async () => {
+    const { broker, vaultRoot } = await makeBroker();
+    const original =
+      "---\nledger:\n  status: working\n  entity: alice\n  supersedes: null\ndeadline: 2026-01-01\n---\n\nBody.\n";
+    await createAgentFile(broker, "Agent/Memory/lg5.md", original);
+
+    const updated = original.replace("deadline: 2026-01-01", "deadline: 2026-02-01");
+    const patchText = createPatch("lg5.md", original, updated);
+    const expectedHash = hashBytes(Buffer.from(original, "utf8"));
+
+    const result = await broker.apply({
+      op: "revise",
+      path: "Agent/Memory/lg5.md",
+      expected_hash: expectedHash,
+      patch: patchText,
+      reason: "reschedule",
+      session: "s1",
+    });
+    expect(result.ok).toBe(true);
+    expect(readFileSync(join(vaultRoot, "Agent/Memory/lg5.md"), "utf8")).toBe(updated);
+  });
+
+  test("revise passed { approved: true } that flips ledger.status succeeds (legit flip path unblocked)", async () => {
+    const { broker, vaultRoot } = await makeBroker();
+    await createAgentFile(broker, "Agent/Memory/lg6.md", LEDGER_NOTE);
+
+    const flipped = LEDGER_NOTE.replace("status: working", "status: canonical");
+    const patchText = createPatch("lg6.md", LEDGER_NOTE, flipped);
+    const expectedHash = hashBytes(Buffer.from(LEDGER_NOTE, "utf8"));
+
+    const result = await broker.apply(
+      {
+        op: "revise",
+        path: "Agent/Memory/lg6.md",
+        expected_hash: expectedHash,
+        patch: patchText,
+        reason: "approved promotion",
+        session: "s1",
+      },
+      { approved: true },
+    );
+    expect(result.ok).toBe(true);
+    const onDisk = readFileSync(join(vaultRoot, "Agent/Memory/lg6.md"), "utf8");
+    expect(matter(onDisk).data.ledger.status).toBe("canonical");
   });
 
   // -------------------------------------------------------------------

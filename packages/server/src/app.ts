@@ -35,6 +35,9 @@ const BROKER_ERROR_STATUS: Record<RejectionCode, number> = {
   PATCH_TOO_LARGE: 400,
   SYNTAX_BREAK: 400,
   APPROVAL_REQUIRED: 400,
+  // Governance refusal (ledger-block tamper guard), same family as
+  // FORBIDDEN_ZONE / APPROVAL_REQUIRED.
+  LEDGER_GUARD: 403,
 };
 
 const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);

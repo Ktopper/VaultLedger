@@ -7,7 +7,7 @@ import type { ApprovalRow, Journal, TransactionRow } from "../journal/journal.js
 import { resolveZone } from "../zones.js";
 import { hashBytes, hashFile } from "./hash.js";
 import { applyPatch } from "./patch.js";
-import { assertStructurePreserved } from "./lint.js";
+import { assertStructurePreserved, governedProvenanceChanged } from "./lint.js";
 import { assertContainedAndReadable } from "./containment.js";
 import { formatMessage, type LedgerGit } from "./git.js";
 import { withVaultLock } from "../concurrency/lock.js";
@@ -306,6 +306,21 @@ export class Broker {
     const before = readFileSync(abs, "utf8");
     const after = applyPatch(before, op.patch, this.patchThreshold);
     assertStructurePreserved(before, after);
+
+    // Provenance tamper guard (v0.3a): status/supersedes (in the ledger:
+    // block) AND the top-level entity are governed provenance fields --
+    // promote/forget/setStatus are the only legitimate way to change status,
+    // and every legitimate provenance write calls apply() with approved:true.
+    // An unapproved revise (the only path an agent-zone memory_revise can
+    // reach) must not be able to silently rewrite them (self-promote to
+    // canonical, fake a supersedes lineage, or drop a belief from every
+    // same-entity comparison set by rewriting/removing entity).
+    if (!approved && governedProvenanceChanged(before, after)) {
+      throw new BrokerError(
+        "LEDGER_GUARD",
+        `revise may not change governed provenance without approval — the ledger: block (status/supersedes) and the top-level entity are governed (use promote/forget/setStatus): ${op.path}`,
+      );
+    }
 
     writeFileSync(abs, after, "utf8");
 

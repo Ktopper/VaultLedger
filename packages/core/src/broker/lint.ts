@@ -80,3 +80,82 @@ export function assertStructurePreserved(before: string, after: string): void {
     );
   }
 }
+
+/**
+ * Canonicalize an arbitrary JSON-ish value so two values that differ only in
+ * object-key order compare equal via JSON.stringify: object keys are sorted
+ * recursively; array order IS significant (reordering array elements is a
+ * real change) so arrays are walked element-wise but not reordered.
+ */
+function canonicalize(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(canonicalize);
+  }
+  if (value !== null && typeof value === "object") {
+    const sortedKeys = Object.keys(value as Record<string, unknown>).sort();
+    const out: Record<string, unknown> = {};
+    for (const key of sortedKeys) {
+      out[key] = canonicalize((value as Record<string, unknown>)[key]);
+    }
+    return out;
+  }
+  return value;
+}
+
+/** Extract the `ledger` frontmatter field from a parsed gray-matter data
+ * object, normalizing "absent" or "not an object" to `null` so "no ledger
+ * block" is a well-defined, comparable value. */
+function normalizeLedger(data: Record<string, unknown>): unknown {
+  const ledger = data.ledger;
+  return ledger !== null && typeof ledger === "object" ? ledger : null;
+}
+
+/** The governed-provenance slice of a note's parsed frontmatter: the `ledger:`
+ * block PLUS the top-level `entity` field. `entity` is deliberately NOT part
+ * of the `ledger:` block (see MemoryProvenance — it has no entity) but it IS a
+ * governed field: the contradiction matcher keys its same-entity comparison
+ * set on it, so silently rewriting/removing it drops a belief from every
+ * comparison — exactly the evasion this guard exists to stop. `tags` is
+ * intentionally excluded: it is descriptive metadata that gates no behavior.
+ * A non-string entity normalizes to `null` so "no entity" is comparable. */
+function governedSlice(data: Record<string, unknown>): unknown {
+  return {
+    ledger: normalizeLedger(data),
+    entity: typeof data.entity === "string" ? data.entity : null,
+  };
+}
+
+/**
+ * Governance guard (v0.3a, provenance tamper closure): does the note's
+ * governed provenance — the `ledger:` block (status/supersedes/...) plus the
+ * top-level `entity` field — differ between `before` and `after`, canonically
+ * (a mere key reorder is NOT a change)?
+ *
+ * Deliberately narrower than `assertStructurePreserved` — it looks ONLY at the
+ * governed slice, ignoring the body and every other frontmatter key, so an
+ * unapproved revise that edits body text or an unrelated fact field (e.g.
+ * `deadline:`) is unaffected.
+ *
+ * Adding a ledger block/entity where there was none, or removing one entirely,
+ * both count as CHANGED: the absent side normalizes to `null`, which never
+ * canonically equals a present value.
+ */
+export function governedProvenanceChanged(before: string, after: string): boolean {
+  let beforeSlice: unknown;
+  let afterSlice: unknown;
+  try {
+    beforeSlice = governedSlice(matter(before).data as Record<string, unknown>);
+  } catch {
+    // Defensive: shouldn't happen (callers run this after
+    // assertStructurePreserved, which already proved `before`/`after` parse),
+    // but an unparsable input is treated as "changed" rather than silently
+    // passing the guard.
+    return true;
+  }
+  try {
+    afterSlice = governedSlice(matter(after).data as Record<string, unknown>);
+  } catch {
+    return true;
+  }
+  return JSON.stringify(canonicalize(beforeSlice)) !== JSON.stringify(canonicalize(afterSlice));
+}

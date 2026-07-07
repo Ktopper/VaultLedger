@@ -1,5 +1,5 @@
 import { describe, expect, test, afterEach } from "vitest";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import matter from "gray-matter";
@@ -291,5 +291,85 @@ describe("reindex", () => {
     // Exactly one row for mem_dup, and it kept the first-walked file's entity.
     expect(journal.queryMemories({}).filter((m) => m.id === "mem_dup")).toHaveLength(1);
     expect(journal.getMemory("mem_dup")!.entity).toBe("alice");
+  });
+
+  // -------------------------------------------------------------------
+  // reindex tripwire (v0.3a): flag, never refuse, an out-of-broker
+  // canonical elevation caught at recovery time (defense-in-depth for the
+  // ledger-block guard closed in Broker.applyRevise -- this catches an edit
+  // made directly to the vault file, outside the broker entirely).
+  // -------------------------------------------------------------------
+
+  test("incremental reindex flags an out-of-band canonical elevation, but still adopts it", async () => {
+    const { journal, git, vaultRoot, now, genId } = await makeHarness();
+    const broker = new Broker({ vaultRoot, git, journal, manifest: MANIFEST, now, genId });
+    const store = new MemoryStore({ broker, journal, now, genId, vaultRoot });
+
+    const { id, path } = await store.remember({ content: "x", reason: "seed", session: "s1" });
+    await store.promote({ id, target_status: "working", reason: "confirmed", session: "s1" });
+    expect(journal.getMemory(id)!.status).toBe("working");
+
+    // Out-of-band edit: the file is patched directly (NOT through the
+    // broker), flipping ledger.status to canonical without ever going
+    // through the promote/approval gate.
+    const abs = join(vaultRoot, path);
+    const parsed = matter(readFileSync(abs, "utf8"));
+    const currentLedger = parsed.data.ledger as Record<string, unknown>;
+    const tampered = matter.stringify(parsed.content, {
+      ...parsed.data,
+      ledger: { ...currentLedger, status: "canonical" },
+    });
+    writeFileSync(abs, tampered, "utf8");
+
+    // The journal row here is the SAME (non-empty, pre-existing) journal
+    // used above -- an incremental reindex, not a fresh rebuild.
+    const result = await reindex({ vaultRoot, git, journal, now, genId });
+
+    expect(result.elevatedToCanonical).toContain(path);
+    // Reindex must NEVER refuse to adopt a status (the journal is
+    // disposable/rebuildable) -- it flags loudly and still adopts.
+    expect(journal.getMemory(id)!.status).toBe("canonical");
+  });
+
+  test("an already-canonical row that stays canonical is NOT flagged", async () => {
+    const { journal, git, vaultRoot, now, genId } = await makeHarness();
+    const broker = new Broker({ vaultRoot, git, journal, manifest: MANIFEST, now, genId });
+    const store = new MemoryStore({ broker, journal, now, genId, vaultRoot });
+    const approvals = new Approvals({ broker, store, journal, now });
+
+    const { id } = await store.remember({ content: "y", reason: "seed", session: "s1" });
+    await store.promote({ id, target_status: "working", reason: "confirmed", session: "s1" });
+    const promotion = await store.promote({
+      id,
+      target_status: "canonical",
+      reason: "well established",
+      session: "s1",
+    });
+    await approvals.approve(promotion.approvalId!);
+    expect(journal.getMemory(id)!.status).toBe("canonical");
+
+    // Incremental reindex over the SAME journal: the row was already
+    // canonical before this run, so it must not be (re-)flagged.
+    const result = await reindex({ vaultRoot, git, journal, now, genId });
+    expect(result.elevatedToCanonical).toEqual([]);
+  });
+
+  test("a fresh full rebuild (empty journal) is NOT flagged for a canonical file", async () => {
+    const { journal, git, vaultRoot, now, genId } = await makeHarness();
+
+    await seedMemoryNote(git, vaultRoot, {
+      id: "mem_fresh_canon",
+      status: "canonical",
+      entity: "frank",
+      tags: [],
+      created: now(),
+      body: "Already canonical from the start.",
+    });
+
+    // Journal starts empty -- there is no prior row to compare against, so a
+    // full rebuild must never be noisy about a canonical file.
+    const result = await reindex({ vaultRoot, git, journal, now, genId });
+    expect(result.memories).toBe(1);
+    expect(result.elevatedToCanonical).toEqual([]);
   });
 });

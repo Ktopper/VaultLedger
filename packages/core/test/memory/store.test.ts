@@ -358,6 +358,55 @@ describe("MemoryStore", () => {
     expect(readFileSync(join(vaultRoot, path), "utf8")).toBe(onDisk + "\nv2");
   });
 
+  // -------------------------------------------------------------------
+  // ledger-block tamper guard (v0.3a): the agent-reachable evasion this
+  // closes -- a plain memory_revise self-promoting past the approval gate.
+  // -------------------------------------------------------------------
+
+  test("revise rejects a patch that self-promotes ledger.status to canonical (evasion closed)", async () => {
+    const { store, journal, vaultRoot } = await makeStore();
+    const { id, path } = await store.remember({
+      content: "Alice prefers dark mode.",
+      entity: "alice",
+      reason: "observed preference",
+      session: "s1",
+    });
+    await store.promote({ id, target_status: "working", reason: "confirmed", session: "s1" });
+
+    const before = readFileSync(join(vaultRoot, path), "utf8");
+    const parsed = matter(before);
+    const currentLedger = parsed.data.ledger as Record<string, unknown>;
+    const tampered = matter.stringify(parsed.content, {
+      ...parsed.data,
+      ledger: { ...currentLedger, status: "canonical" },
+    });
+    const patchText = createPatch(path, before, tampered);
+
+    let thrown: unknown;
+    try {
+      await store.revise({ id, patch: patchText, reason: "self-promote", session: "s1" });
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(BrokerError);
+    expect((thrown as BrokerError).code).toBe("LEDGER_GUARD");
+
+    // Nothing changed: journal row still 'working', file still 'working'.
+    expect(journal.getMemory(id)!.status).toBe("working");
+    expect(matter(readFileSync(join(vaultRoot, path), "utf8")).data.ledger.status).toBe("working");
+  });
+
+  test("the existing setStatus/promote (approved) path still promotes fine after the guard lands", async () => {
+    const { store, journal, vaultRoot } = await makeStore();
+    const { id, path } = await store.remember({ content: "durable fact", reason: "seed", session: "s1" });
+    await store.promote({ id, target_status: "working", reason: "confirmed", session: "s1" });
+
+    await store.setStatus(id, "canonical", "approved as durable belief", "s1");
+
+    expect(journal.getMemory(id)!.status).toBe("canonical");
+    expect(matter(readFileSync(join(vaultRoot, path), "utf8")).data.ledger.status).toBe("canonical");
+  });
+
   test("remember queues a conflict when a live (working) same-entity peer already conflicts on a fact", async () => {
     const { store, journal } = await makeStore();
     const a = await store.remember({
