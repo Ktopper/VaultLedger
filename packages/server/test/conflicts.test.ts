@@ -169,6 +169,73 @@ describe("GET/POST /conflicts", () => {
     expect(res.json()).toMatchObject({ error: { code: "NOT_FOUND" } });
   });
 
+  test("POST /conflicts/:id/resolve on an already-dismissed conflict returns 409, and the state is NOT flipped back", async () => {
+    vault = await makeTestVault();
+    const ctx = await openTestVault(vault);
+    closeCtx = () => ctx.close();
+    seedConflict(ctx);
+
+    app = buildBridge(ctx, TOKEN);
+    const dismissRes = await app.inject({
+      method: "POST",
+      url: "/conflicts/cf_1/dismiss",
+      headers: JSON_HEADERS,
+    });
+    expect(dismissRes.statusCode).toBe(200);
+
+    const resolveRes = await app.inject({
+      method: "POST",
+      url: "/conflicts/cf_1/resolve",
+      headers: JSON_HEADERS,
+    });
+    expect(resolveRes.statusCode).toBe(409);
+    expect(resolveRes.json()).toMatchObject({ error: { code: "ALREADY_CLOSED" } });
+
+    // The stored state must still be 'dismissed', not overwritten to 'resolved'.
+    expect(ctx.journal.getConflict("cf_1")!.state).toBe("dismissed");
+  });
+
+  test("POST /conflicts/:id/dismiss on an already-resolved conflict returns 409", async () => {
+    vault = await makeTestVault();
+    const ctx = await openTestVault(vault);
+    closeCtx = () => ctx.close();
+    seedConflict(ctx);
+
+    app = buildBridge(ctx, TOKEN);
+    const resolveRes = await app.inject({
+      method: "POST",
+      url: "/conflicts/cf_1/resolve",
+      headers: JSON_HEADERS,
+    });
+    expect(resolveRes.statusCode).toBe(200);
+
+    const dismissRes = await app.inject({
+      method: "POST",
+      url: "/conflicts/cf_1/dismiss",
+      headers: JSON_HEADERS,
+    });
+    expect(dismissRes.statusCode).toBe(409);
+    expect(dismissRes.json()).toMatchObject({ error: { code: "ALREADY_CLOSED" } });
+
+    expect(ctx.journal.getConflict("cf_1")!.state).toBe("resolved");
+  });
+
+  test("POST /conflicts/:id/resolve on a genuinely open conflict still succeeds (happy path unchanged)", async () => {
+    vault = await makeTestVault();
+    const ctx = await openTestVault(vault);
+    closeCtx = () => ctx.close();
+    seedConflict(ctx);
+
+    app = buildBridge(ctx, TOKEN);
+    const resolveRes = await app.inject({
+      method: "POST",
+      url: "/conflicts/cf_1/resolve",
+      headers: JSON_HEADERS,
+    });
+    expect(resolveRes.statusCode).toBe(200);
+    expect(resolveRes.json()).toMatchObject({ resolved: true });
+  });
+
   test("GET /conflicts with no auth returns 401", async () => {
     vault = await makeTestVault();
     const ctx = await openTestVault(vault);

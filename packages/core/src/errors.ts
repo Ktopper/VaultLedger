@@ -17,6 +17,13 @@ export const RejectionCode = {
   // working->canonical via approval). None of the existing codes describe
   // "this state change isn't allowed", so it gets its own.
   INVALID_TRANSITION: "INVALID_TRANSITION",
+  // v0.3a addition (conflicts queue resolve/dismiss): the conflict-side
+  // analog of ALREADY_REVERTED above -- the target conflict is not `open`
+  // (already resolved or dismissed by an earlier call), so the
+  // resolve/dismiss must be rejected rather than silently flipping its state
+  // a second time (an audit-integrity hole: two operators could each believe
+  // THEY were the one who closed it).
+  ALREADY_CLOSED: "ALREADY_CLOSED",
 } as const;
 
 export type RejectionCode = (typeof RejectionCode)[keyof typeof RejectionCode];
@@ -32,6 +39,7 @@ const RETRIABLE: Record<RejectionCode, boolean> = {
   REVERT_CONFLICT: false,
   ALREADY_REVERTED: false,
   INVALID_TRANSITION: false,
+  ALREADY_CLOSED: false,
 };
 
 export interface Rejection {

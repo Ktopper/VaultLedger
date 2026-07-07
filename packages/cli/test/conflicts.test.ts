@@ -149,6 +149,42 @@ describe("conflictsCommand", () => {
     expect(messages.join("\n")).not.toContain("dismissed cf_nope");
   });
 
+  test("resolve on an already-dismissed conflict errors (ALREADY_CLOSED) instead of silently overwriting, and does not crash", async () => {
+    vault = await makeInitializedVault();
+    await seedConflict(vault);
+
+    await conflictsCommand(vault.vaultDir, { ...vault.deps, action: "dismiss", id: "cf_1", out: () => {} });
+
+    const messages: string[] = [];
+    const err = await conflictsCommand(vault.vaultDir, {
+      ...vault.deps,
+      action: "resolve",
+      id: "cf_1",
+      out: (s) => messages.push(s),
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(BrokerError);
+    expect((err as BrokerError).code).toBe("ALREADY_CLOSED");
+    // Never printed a false "resolved cf_1" confirmation.
+    expect(messages.join("\n")).not.toContain("resolved cf_1");
+
+    // The stored state must still be 'dismissed' -- not flipped to 'resolved'.
+    const ctx = await loadContext(vault.vaultDir, vault.deps);
+    expect(ctx.journal.getConflict("cf_1")!.state).toBe("dismissed");
+    ctx.db.close();
+  });
+
+  test("dismiss on an already-resolved conflict errors (ALREADY_CLOSED)", async () => {
+    vault = await makeInitializedVault();
+    await seedConflict(vault);
+
+    await conflictsCommand(vault.vaultDir, { ...vault.deps, action: "resolve", id: "cf_1", out: () => {} });
+
+    await expect(
+      conflictsCommand(vault.vaultDir, { ...vault.deps, action: "dismiss", id: "cf_1", out: () => {} }),
+    ).rejects.toMatchObject({ code: "ALREADY_CLOSED" });
+  });
+
   test("--rescan re-detects a real contradiction, idempotently (still 1, not 2)", async () => {
     vault = await makeInitializedVault();
     await seedContradictingMemories(vault);

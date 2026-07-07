@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import { openJournal } from "../../src/journal/db.js";
 import { Journal, type ConflictRow, type MemoryRow } from "../../src/journal/journal.js";
 import { Conflicts } from "../../src/conflicts/queue.js";
+import { BrokerError } from "../../src/errors.js";
 
 function memRow(overrides: Partial<MemoryRow> = {}): MemoryRow {
   return {
@@ -129,5 +130,80 @@ describe("Conflicts", () => {
     const j = makeJournal();
     const conflicts = new Conflicts(j);
     expect(conflicts.get("nope")).toBeNull();
+  });
+
+  test("resolve on an already-dismissed conflict is rejected (typed error), not silently overwritten", () => {
+    const j = makeJournal();
+    j.insertMemory(memRow({ id: "mem_a", status: "canonical" }));
+    j.insertMemory(memRow({ id: "mem_b", status: "working" }));
+    j.insertConflict(conflictRow({ id: "cf_1" }));
+
+    const conflicts = new Conflicts(j);
+    conflicts.dismiss("cf_1", "2026-07-05T00:00:00.000Z");
+
+    expect(() => conflicts.resolve("cf_1", "2026-07-06T00:00:00.000Z")).toThrow(BrokerError);
+    try {
+      conflicts.resolve("cf_1", "2026-07-06T00:00:00.000Z");
+      throw new Error("expected resolve to throw");
+    } catch (e) {
+      expect(e).toBeInstanceOf(BrokerError);
+      expect((e as BrokerError).code).toBe("ALREADY_CLOSED");
+    }
+
+    // The stored state must still be 'dismissed' -- the rejected resolve()
+    // call must NOT have silently flipped it.
+    const enriched = conflicts.get("cf_1")!;
+    expect(enriched.row.state).toBe("dismissed");
+    expect(enriched.row.resolved_at).toBe("2026-07-05T00:00:00.000Z");
+  });
+
+  test("dismiss on an already-resolved conflict is rejected (typed error), not silently overwritten", () => {
+    const j = makeJournal();
+    j.insertMemory(memRow({ id: "mem_a", status: "canonical" }));
+    j.insertMemory(memRow({ id: "mem_b", status: "working" }));
+    j.insertConflict(conflictRow({ id: "cf_1" }));
+
+    const conflicts = new Conflicts(j);
+    conflicts.resolve("cf_1", "2026-07-05T00:00:00.000Z");
+
+    expect(() => conflicts.dismiss("cf_1", "2026-07-06T00:00:00.000Z")).toThrow(BrokerError);
+
+    const enriched = conflicts.get("cf_1")!;
+    expect(enriched.row.state).toBe("resolved");
+    expect(enriched.row.resolved_at).toBe("2026-07-05T00:00:00.000Z");
+  });
+
+  test("resolve on an unknown id signals NOT_FOUND, consistent with get() returning null", () => {
+    const j = makeJournal();
+    const conflicts = new Conflicts(j);
+    expect(() => conflicts.resolve("cf_nope", "2026-07-05T00:00:00.000Z")).toThrow(BrokerError);
+    try {
+      conflicts.resolve("cf_nope", "2026-07-05T00:00:00.000Z");
+    } catch (e) {
+      expect((e as BrokerError).code).toBe("NOT_FOUND");
+    }
+  });
+
+  test("dismiss on an unknown id signals NOT_FOUND", () => {
+    const j = makeJournal();
+    const conflicts = new Conflicts(j);
+    try {
+      conflicts.dismiss("cf_nope", "2026-07-05T00:00:00.000Z");
+      throw new Error("expected dismiss to throw");
+    } catch (e) {
+      expect(e).toBeInstanceOf(BrokerError);
+      expect((e as BrokerError).code).toBe("NOT_FOUND");
+    }
+  });
+
+  test("resolving a genuinely open conflict still works (happy path unchanged)", () => {
+    const j = makeJournal();
+    j.insertMemory(memRow({ id: "mem_a", status: "canonical" }));
+    j.insertMemory(memRow({ id: "mem_b", status: "working" }));
+    j.insertConflict(conflictRow({ id: "cf_1" }));
+
+    const conflicts = new Conflicts(j);
+    expect(() => conflicts.resolve("cf_1", "2026-07-05T00:00:00.000Z")).not.toThrow();
+    expect(conflicts.get("cf_1")!.row.state).toBe("resolved");
   });
 });
