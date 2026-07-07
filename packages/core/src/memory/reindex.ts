@@ -33,6 +33,20 @@ export interface ReindexResult {
    * earlier-walked note. The FIRST occurrence wins; later duplicates are not
    * upserted (they'd silently clobber the winner) and are recorded here. */
   conflicts: string[];
+  /**
+   * Vault-relative paths of notes whose file declares `ledger.status:
+   * canonical` while the PRE-EXISTING journal row for that same id was some
+   * other (non-canonical) status -- i.e. an elevation to canonical that
+   * happened out-of-band, outside the broker's approval-gated promote/
+   * setStatus path (design: belt-and-braces recovery tripwire).
+   *
+   * This is a FLAG, never a refusal: reindex always adopts the file's
+   * status regardless (the journal is disposable and MUST fully rebuild
+   * from the vault, per design). A fresh full rebuild (no prior row for
+   * this id) is never flagged here -- there is nothing to compare against,
+   * so flagging would be pure noise on every legitimate canonical note.
+   */
+  elevatedToCanonical: string[];
 }
 
 interface ParsedMemoryNote {
@@ -106,9 +120,19 @@ function parseMemoryNote(vaultRoot: string, absPath: string): ParsedMemoryNote |
   };
 }
 
-/** Upsert a parsed memory row (+ tags) into the journal. */
-function upsertMemory(journal: Journal, note: ParsedMemoryNote): void {
+/**
+ * Upsert a parsed memory row (+ tags) into the journal. Returns true iff this
+ * upsert is an out-of-band elevation to canonical: a journal row already
+ * existed (this is an INCREMENTAL reindex, not a fresh rebuild) with some
+ * other status, and the file now declares canonical. Only that one direction
+ * is flagged -- a fresh insert (no prior row) or a row that was already
+ * canonical are both left alone (see ReindexResult.elevatedToCanonical).
+ */
+function upsertMemory(journal: Journal, note: ParsedMemoryNote): boolean {
   const existing = journal.getMemory(note.id);
+  const elevatedToCanonical =
+    existing !== null && existing.status !== "canonical" && note.patch.status === "canonical";
+
   if (existing) {
     journal.updateMemory(note.id, note.patch);
   } else {
@@ -122,6 +146,8 @@ function upsertMemory(journal: Journal, note: ParsedMemoryNote): void {
   if (note.tags.length > 0 && journal.getTags(note.id).length === 0) {
     journal.addTags(note.id, note.tags);
   }
+
+  return elevatedToCanonical;
 }
 
 /**
@@ -142,6 +168,7 @@ export async function reindex(opts: ReindexOptions): Promise<ReindexResult> {
   let memories = 0;
   const skipped: string[] = [];
   const conflicts: string[] = [];
+  const elevatedToCanonical: string[] = [];
   const seenIds = new Set<string>();
   for (const dir of dirs) {
     for (const absPath of walkMarkdownFiles(join(vaultRoot, dir))) {
@@ -164,7 +191,8 @@ export async function reindex(opts: ReindexOptions): Promise<ReindexResult> {
         continue;
       }
       seenIds.add(note.id);
-      upsertMemory(journal, note);
+      const elevated = upsertMemory(journal, note);
+      if (elevated) elevatedToCanonical.push(relPath);
       memories += 1;
     }
   }
@@ -204,7 +232,7 @@ export async function reindex(opts: ReindexOptions): Promise<ReindexResult> {
     }
   }
 
-  return { memories, transactions, skipped, conflicts };
+  return { memories, transactions, skipped, conflicts, elevatedToCanonical };
 }
 
 export interface EnsureJournalOptions {
