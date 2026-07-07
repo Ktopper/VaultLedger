@@ -199,15 +199,21 @@ export function buildTools(ctx: ServerContext): ToolDef[] {
     },
     {
       name: "memory_forget",
-      description: "Tombstone a memory: archive its file and mark it forgotten.",
+      description:
+        "Tombstone a memory: archive its file and mark it forgotten. Forgetting a canonical " +
+        "memory is held for human approval (mirrors memory_promote's canonical gate) instead of " +
+        "applying immediately.",
       inputSchema: ForgetInput,
       handler: (rawArgs) =>
         guarded(async () => {
           const parsed = ForgetInput.safeParse(rawArgs);
           if (!parsed.success) return invalidArgs(parsed.error.message);
           const { id, reason } = parsed.data;
-          await ctx.store.forget({ id, reason, session: ctx.session });
-          return { id, forgotten: true };
+          const result = await ctx.store.forget({ id, reason, session: ctx.session });
+          if ("queued" in result) {
+            return { queued: true, approvalId: result.approvalId };
+          }
+          return { id: result.id, forgotten: true };
         }),
     },
     {

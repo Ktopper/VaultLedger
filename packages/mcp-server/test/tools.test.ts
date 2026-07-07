@@ -249,6 +249,24 @@ describe("buildTools", () => {
     expect(result.forgotten).toBe(true);
   });
 
+  test("memory_forget on a CANONICAL memory returns a queued approvalId instead of tombstoning", async () => {
+    const { tools } = await setup();
+    const remember = tools.get("memory_remember")!;
+    const created = await remember.handler({ content: "canonical fact", reason: "seed" });
+    await ctx.store.setStatus(created.id, "canonical", "approved as durable belief", "s1");
+
+    const forget = tools.get("memory_forget")!;
+    const result = await forget.handler({ id: created.id, reason: "dodge contradiction check" });
+
+    expect(result.error).toBeUndefined();
+    expect(result.queued).toBe(true);
+    expect(typeof result.approvalId).toBe("string");
+    expect(result.forgotten).toBeUndefined();
+
+    // The memory must remain canonical and on disk (no tombstone applied).
+    expect(ctx.journal.getMemory(created.id)!.status).toBe("canonical");
+  });
+
   test("memory_remember with a missing reason returns a structured validation error, not a throw", async () => {
     const { tools } = await setup();
     const remember = tools.get("memory_remember")!;

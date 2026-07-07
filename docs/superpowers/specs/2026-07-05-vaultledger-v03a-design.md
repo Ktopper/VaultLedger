@@ -216,6 +216,22 @@ un-hides it again the moment that memory is live again (e.g. undoing the
 forget) — no permanent-hide failure mode, and no redundant state to keep in
 sync with `Conflicts.list`'s own logic.
 
+**Forgetting a `canonical` belief requires approval.** An unapproved
+`memory_forget` on a canonical memory would otherwise be an approval-free way
+to make it disappear (and drop out of the contradiction matcher's comparison
+set) — the same evasion class already closed for `supersedes` (§3.1). So
+`MemoryStore.forget` gates exactly like `promote`'s working→canonical
+transition: a forget on a `canonical` memory enqueues a `held_operation:
+{op:"forget", id, reason, session}` approval (zone `canonical-forget`) and
+returns `{queued:true, approvalId}` **without** touching the file or the
+journal row — the belief stays canonical and live until a human approves.
+`Approvals.approve` dispatches a held `forget` via
+`MemoryStore.forget(input, {approved:true})`, which bypasses the gate and runs
+the normal tombstone (frontmatter flip + archive move + journal update).
+Rejecting simply leaves the belief canonical and un-archived. Scratch/working
+forgets (and the TTL sweep, which only ever targets `scratch`) are unaffected
+and still apply immediately.
+
 ### 4.4 `Conflicts` API
 
 `list(state?)`, `get(id)`, `resolve(id)`, `dismiss(id)`. Resolution just **closes
@@ -316,13 +332,10 @@ detection across the agent zone on demand (respecting the all-states dedup).
   audit`** (spec §8).
 
 **v0.3b patch backlog (post-v0.3a-merge review — none blocking, low severity):**
-- **Governance: gate/approve `forget` of a live `canonical` belief.** Today an
-  agent can silently `memory_forget` a canonical memory (no approval, no
-  `supersedes`) → it drops out of the comparison set entirely, a broader evasion
-  of "canonical is never silently contradicted" than the supersedes hole already
-  closed. Forgetting canonical should require approval (mirror the working→
-  canonical promotion gate), or at least raise a review item. (Belongs with the
-  promotion-rule / lifecycle work.)
+- ~~**Governance: gate/approve `forget` of a live `canonical` belief.**~~ SHIPPED
+  (see §4.3): `MemoryStore.forget` now queues an approval instead of applying
+  when the target is `canonical`, mirroring the working→canonical promotion
+  gate exactly.
 - **`extract` fact-line precision:** `FACT_LINE_RE` treats any `word: rest` prose
   line as a fact — a bare URL (`https: //…`) parses as key `https` → spurious
   conflicts. Stoplist generic keys and skip `//`-leading values.

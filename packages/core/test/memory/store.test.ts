@@ -240,8 +240,9 @@ describe("MemoryStore", () => {
     const { id, path } = await store.remember({ content: "to be forgotten", reason: "seed", session: "s1" });
     expect(existsSync(join(vaultRoot, path))).toBe(true);
 
-    await store.forget({ id, reason: "no longer relevant", session: "s1" });
+    const result = await store.forget({ id, reason: "no longer relevant", session: "s1" });
 
+    expect(result).toEqual({ forgotten: true, id });
     expect(existsSync(join(vaultRoot, path))).toBe(false);
     const archivePath = `Agent/Archive/${id}.md`;
     expect(existsSync(join(vaultRoot, archivePath))).toBe(true);
@@ -266,6 +267,51 @@ describe("MemoryStore", () => {
     const archivePath = `Agent/Archive/${id}.md`;
     const archived = matter(readFileSync(join(vaultRoot, archivePath), "utf8"));
     expect(archived.data.ledger.status).toBe("forgotten");
+  });
+
+  test("forget on a CANONICAL memory queues an approval instead of archiving immediately (evasion gate)", async () => {
+    const { store, journal, vaultRoot } = await makeStore();
+    const { id, path } = await store.remember({ content: "durable fact", reason: "seed", session: "s1" });
+    await store.setStatus(id, "canonical", "approved as durable belief", "s1");
+    expect(journal.getMemory(id)!.status).toBe("canonical");
+
+    const result = await store.forget({ id, reason: "dodge contradiction check", session: "s1" });
+
+    expect(result).toHaveProperty("queued", true);
+    const approvalId = (result as { queued: true; approvalId: string }).approvalId;
+    expect(typeof approvalId).toBe("string");
+
+    // The belief must stay canonical and on disk — no archive, no tombstone.
+    expect(journal.getMemory(id)!.status).toBe("canonical");
+    expect(existsSync(join(vaultRoot, path))).toBe(true);
+    expect(existsSync(join(vaultRoot, `Agent/Archive/${id}.md`))).toBe(false);
+
+    const approval = journal.getApproval(approvalId);
+    expect(approval).not.toBeNull();
+    expect(approval!.state).toBe("pending");
+    expect(approval!.zone).toBe("canonical-forget");
+    expect(JSON.parse(approval!.held_operation)).toEqual({
+      op: "forget",
+      id,
+      reason: "dodge contradiction check",
+      session: "s1",
+    });
+  });
+
+  test("forget on a canonical memory with { approved: true } bypasses the gate and applies immediately", async () => {
+    const { store, journal, vaultRoot } = await makeStore();
+    const { id, path } = await store.remember({ content: "durable fact 2", reason: "seed", session: "s1" });
+    await store.setStatus(id, "canonical", "approved as durable belief", "s1");
+
+    const result = await store.forget(
+      { id, reason: "approved forget", session: "s1" },
+      { approved: true },
+    );
+
+    expect(result).toEqual({ forgotten: true, id });
+    expect(existsSync(join(vaultRoot, path))).toBe(false);
+    expect(existsSync(join(vaultRoot, `Agent/Archive/${id}.md`))).toBe(true);
+    expect(journal.getMemory(id)!.status).toBe("forgotten");
   });
 
   test("revise links its transaction to the memory id", async () => {
