@@ -38,6 +38,9 @@ const BROKER_ERROR_STATUS: Record<RejectionCode, number> = {
   // Governance refusal (ledger-block tamper guard), same family as
   // FORBIDDEN_ZONE / APPROVAL_REQUIRED.
   LEDGER_GUARD: 403,
+  // A malformed expected_hash is a caller input error, not a state
+  // conflict -- 400, same family as PATCH_TOO_LARGE/SYNTAX_BREAK.
+  MALFORMED_HASH: 400,
 };
 
 const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);

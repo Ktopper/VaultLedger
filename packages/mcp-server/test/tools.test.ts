@@ -181,7 +181,11 @@ describe("buildTools", () => {
       path: "Notes/trusted.md",
       patch,
       reason: "propose an update",
-      expected_hash: "irrelevant-for-propose_edit-queueing",
+      // Must be well-formed (sha256:<64 hex>) since the broker now validates
+      // expected_hash format at enqueue time (MALFORMED_HASH); its value is
+      // otherwise irrelevant here since propose_edit only queues -- the
+      // held hash is only compared for staleness later, at approve-time.
+      expected_hash: `sha256:${"0".repeat(64)}`,
     });
 
     expect(result.error).toBeUndefined();

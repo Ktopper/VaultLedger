@@ -324,6 +324,89 @@ describe("Broker", () => {
   });
 
   // -------------------------------------------------------------------
+  // expected_hash format guard (MALFORMED_HASH)
+  // -------------------------------------------------------------------
+
+  test("revise with a bare hex expected_hash (missing sha256: prefix) throws MALFORMED_HASH and writes nothing", async () => {
+    const { broker, journal, vaultRoot, git } = await makeBroker();
+    const original = "line1\nline2\nline3\n";
+    await createAgentFile(broker, "Agent/Memory/malformed.md", original);
+    const headBefore = await git.fileAtHead("Agent/Memory/malformed.md");
+
+    const updated = "line1\nline2\nline3\nline4\n";
+    const patchText = createPatch("malformed.md", original, updated);
+    const bareHex = hashBytes(Buffer.from(original, "utf8")).slice("sha256:".length);
+
+    let thrown: unknown;
+    try {
+      await broker.apply({
+        op: "revise",
+        path: "Agent/Memory/malformed.md",
+        expected_hash: bareHex,
+        patch: patchText,
+        reason: "r",
+        session: "s1",
+      });
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(BrokerError);
+    expect((thrown as BrokerError).code).toBe("MALFORMED_HASH");
+
+    // Nothing written to the file, nothing committed, nothing recorded.
+    expect(readFileSync(join(vaultRoot, "Agent/Memory/malformed.md"), "utf8")).toBe(original);
+    expect(await git.fileAtHead("Agent/Memory/malformed.md")).toBe(headBefore);
+    expect(journal.listTransactions({}).some((t) => t.op === "revise")).toBe(false);
+  });
+
+  test("revise with a well-formed lowercase sha256 expected_hash applies normally", async () => {
+    const { broker, vaultRoot } = await makeBroker();
+    const original = "line1\nline2\nline3\n";
+    await createAgentFile(broker, "Agent/Memory/lower.md", original);
+
+    const updated = "line1\nline2\nline3\nline4\n";
+    const patchText = createPatch("lower.md", original, updated);
+    const expectedHash = hashBytes(Buffer.from(original, "utf8"));
+    expect(expectedHash).toBe(expectedHash.toLowerCase());
+
+    const result = await broker.apply({
+      op: "revise",
+      path: "Agent/Memory/lower.md",
+      expected_hash: expectedHash,
+      patch: patchText,
+      reason: "r",
+      session: "s1",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(readFileSync(join(vaultRoot, "Agent/Memory/lower.md"), "utf8")).toBe(updated);
+  });
+
+  test("revise with an UPPERCASE-hex expected_hash of the correct digest is accepted (case-normalized), not rejected", async () => {
+    const { broker, vaultRoot } = await makeBroker();
+    const original = "line1\nline2\nline3\n";
+    await createAgentFile(broker, "Agent/Memory/upper.md", original);
+
+    const updated = "line1\nline2\nline3\nline4\n";
+    const patchText = createPatch("upper.md", original, updated);
+    const correctHash = hashBytes(Buffer.from(original, "utf8"));
+    const uppercased = "sha256:" + correctHash.slice("sha256:".length).toUpperCase();
+
+    const result = await broker.apply({
+      op: "revise",
+      path: "Agent/Memory/upper.md",
+      expected_hash: uppercased,
+      patch: patchText,
+      reason: "r",
+      session: "s1",
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok || "queued" in result) throw new Error("expected an applied result");
+    expect(readFileSync(join(vaultRoot, "Agent/Memory/upper.md"), "utf8")).toBe(updated);
+  });
+
+  // -------------------------------------------------------------------
   // propose_edit
   // -------------------------------------------------------------------
 
@@ -383,6 +466,32 @@ describe("Broker", () => {
     }
     expect(thrown).toBeInstanceOf(BrokerError);
     expect((thrown as BrokerError).code).toBe("FORBIDDEN_ZONE");
+  });
+
+  test("propose_edit with a bare hex expected_hash (missing sha256: prefix) throws MALFORMED_HASH and queues nothing", async () => {
+    const { broker, journal, vaultRoot } = await makeBroker();
+    const original = "trusted content\n";
+    writeFileSync(join(vaultRoot, "note-malformed.md"), original, "utf8");
+
+    const patchText = createPatch("note-malformed.md", original, "trusted content\nmore\n");
+    const bareHex = hashBytes(Buffer.from(original, "utf8")).slice("sha256:".length);
+
+    let thrown: unknown;
+    try {
+      await broker.apply({
+        op: "propose_edit",
+        path: "note-malformed.md",
+        expected_hash: bareHex,
+        patch: patchText,
+        reason: "r",
+        session: "s1",
+      });
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(BrokerError);
+    expect((thrown as BrokerError).code).toBe("MALFORMED_HASH");
+    expect(journal.listApprovals().length).toBe(0);
   });
 
   // -------------------------------------------------------------------
