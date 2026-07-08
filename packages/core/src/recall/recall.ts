@@ -17,7 +17,11 @@ export interface RecallResult {
   tags: string[];
 }
 
-const EXCLUDED_BY_DEFAULT = new Set(["forgotten", "reverted"]);
+// v0.3b: "retired" joins forgotten/reverted here — it's a terminal,
+// non-live status (see schemas/provenance.ts's MemoryStatus comment), so a
+// bare recall should not surface it by default any more than a forgotten or
+// reverted memory.
+const EXCLUDED_BY_DEFAULT = new Set(["forgotten", "reverted", "retired"]);
 
 /**
  * Journal-indexed recall (design §recall). Queries memories via
@@ -25,10 +29,11 @@ const EXCLUDED_BY_DEFAULT = new Set(["forgotten", "reverted"]);
  * last_referenced on) every memory returned — recall counts as a reference,
  * which staleness/promotion rules key off of.
  *
- * When the caller does not explicitly filter on `status`, forgotten and
- * reverted memories are excluded by default (they're tombstoned, not
- * something an agent should stumble back into via a bare recall). An
- * explicit `status: "forgotten"` (or "reverted") filter is honored as-is.
+ * When the caller does not explicitly filter on `status`, forgotten,
+ * reverted, and retired memories are excluded by default (they're
+ * tombstoned, not something an agent should stumble back into via a bare
+ * recall). An explicit `status: "forgotten"` (or "reverted"/"retired")
+ * filter is honored as-is.
  */
 export function recall(
   journal: Journal,

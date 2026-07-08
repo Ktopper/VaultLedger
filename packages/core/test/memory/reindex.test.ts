@@ -476,4 +476,70 @@ describe("reindex", () => {
     await reindex({ vaultRoot, git, journal, now, genId });
     expect(journal.getMemory("mem_legacy2")!.entity).toBeNull();
   });
+
+  // -------------------------------------------------------------------
+  // v0.3b: `memory_relations` rebuild from `ledger.derivation.sources`.
+  // -------------------------------------------------------------------
+
+  /** Write a distillation note carrying `ledger.derivation.sources` directly
+   * to disk and commit it, mirroring seedMemoryNote but with the v0.3b
+   * derivation block added. */
+  async function seedDistillationNote(
+    git: LedgerGit,
+    vaultRoot: string,
+    opts: { id: string; sources: string[]; created: string },
+  ): Promise<void> {
+    const relPath = `Agent/Memory/${opts.id}.md`;
+    const noteBody = matter.stringify("Distilled summary.", {
+      ledger: {
+        id: opts.id,
+        status: "canonical",
+        created: opts.created,
+        source: "s1",
+        reason: "distill",
+        confidence: "medium",
+        supersedes: null,
+        expires: null,
+        derivation: { kind: "distilled", sources: opts.sources },
+      },
+    });
+    mkdirSync(join(vaultRoot, "Agent/Memory"), { recursive: true });
+    writeFileSync(join(vaultRoot, relPath), noteBody, "utf8");
+    await git.commitFile(
+      relPath,
+      formatMessage({ op: "create", basename: `${opts.id}.md`, memoryId: opts.id, session: "s1" }),
+    );
+  }
+
+  test("reindex into a FRESH empty journal rebuilds memory_relations edges purely from ledger.derivation.sources", async () => {
+    const { journal, git, vaultRoot, now, genId } = await makeHarness();
+
+    await seedDistillationNote(git, vaultRoot, {
+      id: "mem_distilled",
+      sources: ["mem_a", "mem_b"],
+      created: now(),
+    });
+
+    const result = await reindex({ vaultRoot, git, journal, now, genId });
+    expect(result.memories).toBe(1);
+
+    const edges = journal.getRelationsForMemory("mem_distilled");
+    expect(edges.map((e) => e.source_id).sort()).toEqual(["mem_a", "mem_b"]);
+    expect(edges.every((e) => e.kind === "distilled")).toBe(true);
+  });
+
+  test("reindex is idempotent across re-runs: a second pass does not duplicate memory_relations edges", async () => {
+    const { journal, git, vaultRoot, now, genId } = await makeHarness();
+
+    await seedDistillationNote(git, vaultRoot, {
+      id: "mem_distilled2",
+      sources: ["mem_x"],
+      created: now(),
+    });
+
+    await reindex({ vaultRoot, git, journal, now, genId });
+    await reindex({ vaultRoot, git, journal, now, genId });
+
+    expect(journal.getRelationsForMemory("mem_distilled2")).toHaveLength(1);
+  });
 });

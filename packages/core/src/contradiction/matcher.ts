@@ -1,6 +1,13 @@
 import type { Journal, MemoryRow } from "../journal/journal.js";
 import { foldEntity } from "./extract.js";
 
+// Allow-list, not a deny-list: only canonical/working memories are ever
+// compared for contradictions. This means "retired" (v0.3b terminal status,
+// schemas/provenance.ts) is EXCLUDED automatically -- it's simply not one of
+// the two statuses listed here, the same way scratch/forgotten/reverted
+// already were. Do not "fix" this into an explicit deny-list; the allow-list
+// form is what makes a future non-live status excluded by default instead of
+// requiring every call site to remember to add it.
 const LIVE_STATUSES = new Set(["canonical", "working"]);
 
 export interface EntityMatcher {

@@ -63,6 +63,14 @@ CREATE TABLE IF NOT EXISTS conflicts (
   value_hash TEXT NOT NULL DEFAULT '',
   resolved_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS memory_relations (
+  memory_id TEXT NOT NULL,
+  source_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  PRIMARY KEY (memory_id, source_id, kind)
+);
+CREATE INDEX IF NOT EXISTS ix_memory_relations_source ON memory_relations(source_id);
 `;
 
 /**
@@ -103,6 +111,7 @@ export function openJournal(dbPath: string): Database.Database {
   migrateConflictsValueHash(db);
   migrateTransactionsTable(db);
   createTransactionsApprovalIndex(db);
+  migrateMemoryRelations(db);
   return db;
 }
 
@@ -294,4 +303,33 @@ function migrateConflictsValueHash(db: Database.Database): void {
   db.exec(
     `CREATE UNIQUE INDEX IF NOT EXISTS ux_conflicts_pair_kind_fact_value ON conflicts(pair_lo, pair_hi, kind, fact_key, value_hash)`,
   );
+}
+
+// v0.3b: `memory_relations` records distillation->source edges (a
+// distillation memory cites the memories it was distilled from), rebuildable
+// from the vault's `ledger.derivation.sources` frontmatter the same way
+// `memories`/`memory_tags` are (see memory/reindex.ts). A brand-new journal
+// already gets the table + index directly from SCHEMA_SQL's CREATE TABLE/
+// INDEX IF NOT EXISTS; this migration exists purely to UPGRADE a
+// pre-existing (pre-v0.3b) journal that predates the table entirely.
+// Idempotent: guarded on `sqlite_master`/CREATE ... IF NOT EXISTS, so
+// re-running against an already-migrated (or fresh) db is a no-op, matching
+// this file's other migrations.
+function migrateMemoryRelations(db: Database.Database): void {
+  const tables = new Set(
+    (db.prepare(`SELECT name FROM sqlite_master WHERE type='table'`).all() as Array<{ name: string }>).map(
+      (t) => t.name,
+    ),
+  );
+  if (!tables.has("memory_relations")) {
+    db.exec(`
+      CREATE TABLE memory_relations (
+        memory_id TEXT NOT NULL,
+        source_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        PRIMARY KEY (memory_id, source_id, kind)
+      );
+    `);
+  }
+  db.exec(`CREATE INDEX IF NOT EXISTS ix_memory_relations_source ON memory_relations(source_id);`);
 }

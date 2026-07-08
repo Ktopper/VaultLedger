@@ -92,6 +92,24 @@ describe("recall", () => {
     expect(results.map((r) => r.id).sort()).toEqual(["working"]);
   });
 
+  test("default recall excludes retired memories (v0.3b)", () => {
+    const journal = makeJournal();
+    seed(journal, baseRow({ id: "working", status: "working" }));
+    seed(journal, baseRow({ id: "retired", status: "retired" }));
+
+    const results = recall(journal, {}, () => "2026-01-02T00:00:00.000Z");
+    expect(results.map((r) => r.id).sort()).toEqual(["working"]);
+  });
+
+  test("explicit status filter for retired is honored (not force-excluded)", () => {
+    const journal = makeJournal();
+    seed(journal, baseRow({ id: "retired", status: "retired" }));
+    seed(journal, baseRow({ id: "working", status: "working" }));
+
+    const results = recall(journal, { status: "retired" }, () => "2026-01-02T00:00:00.000Z");
+    expect(results.map((r) => r.id)).toEqual(["retired"]);
+  });
+
   test("explicit status filter for forgotten/reverted is honored (not force-excluded)", () => {
     const journal = makeJournal();
     seed(journal, baseRow({ id: "forgotten", status: "forgotten" }));

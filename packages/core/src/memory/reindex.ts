@@ -53,6 +53,10 @@ interface ParsedMemoryNote {
   id: string;
   entity: string | null;
   tags: string[];
+  /** Source memory ids this note was distilled from (from
+   * `ledger.derivation.sources`), or [] if the note carries no derivation
+   * block — most notes. */
+  derivationSources: string[];
   patch: Partial<Omit<MemoryRow, "id">>;
 }
 
@@ -103,10 +107,13 @@ function parseMemoryNote(vaultRoot: string, absPath: string): ParsedMemoryNote |
   const rawTags = (parsed.data as Record<string, unknown>).tags;
   const tags = Array.isArray(rawTags) ? rawTags.map((t) => String(t)) : [];
 
+  const derivationSources = provenance.derivation?.sources ?? [];
+
   return {
     id: provenance.id,
     entity,
     tags,
+    derivationSources,
     patch: {
       path: relPath,
       entity,
@@ -157,6 +164,20 @@ function upsertMemory(journal: Journal, note: ParsedMemoryNote): boolean {
   // duplicates memory_tags rows (Journal has no removeTags primitive).
   if (note.tags.length > 0 && journal.getTags(note.id).length === 0) {
     journal.addTags(note.id, note.tags);
+  }
+
+  // Rebuild this memory's memory_relations edges from the file's
+  // `ledger.derivation.sources` every pass: clear-then-insert (unlike tags,
+  // Journal DOES have deleteRelationsForMemory) so the edge set always
+  // matches the file exactly -- including a source list that shrinks or
+  // changes between reindex runs -- while insertRelation's own
+  // ON CONFLICT DO NOTHING keeps a single pass over an unchanged source list
+  // from ever producing a duplicate row.
+  if (note.derivationSources.length > 0) {
+    journal.deleteRelationsForMemory(note.id);
+    for (const sourceId of note.derivationSources) {
+      journal.insertRelation({ memory_id: note.id, source_id: sourceId, kind: "distilled" });
+    }
   }
 
   return elevatedToCanonical;
