@@ -242,6 +242,60 @@ describe("Approvals", () => {
     expect(journal.getApproval(approvalId)!.state).toBe("rejected");
   });
 
+  test("approve() dispatches a held canonical-revise op: patches the file and marks the approval approved", async () => {
+    const { approvals, store, journal, vaultRoot } = await makeHarness();
+
+    const { id: memId, path } = await store.remember({
+      content: "well established fact 3",
+      reason: "seed",
+      session: "s1",
+    });
+    await store.setStatus(memId, "canonical", "approved as durable belief", "s1");
+
+    const before = readFileSync(join(vaultRoot, path), "utf8");
+    const after = before.replace("well established fact 3", "well established fact 3, revised");
+    const patchText = createPatch(path, before, after);
+    const queued = await store.revise({ id: memId, patch: patchText, reason: "tighten wording", session: "s1" });
+    expect(queued).toHaveProperty("queued", true);
+    const approvalId = (queued as { queued: true; approvalId: string }).approvalId;
+    expect(journal.getApproval(approvalId)!.zone).toBe("canonical-revise");
+
+    const result = await approvals.approve(approvalId);
+
+    expect(result).toEqual({ applied: true });
+    expect(readFileSync(join(vaultRoot, path), "utf8")).toBe(after);
+    expect(journal.getApproval(approvalId)!.state).toBe("approved");
+    expect(journal.getMemory(memId)!.status).toBe("canonical");
+  });
+
+  test("reject() on a held canonical-revise leaves the file unchanged and the approval rejected", async () => {
+    const { approvals, store, journal, vaultRoot } = await makeHarness();
+
+    const { id: memId, path } = await store.remember({
+      content: "well established fact 4",
+      reason: "seed",
+      session: "s1",
+    });
+    await store.setStatus(memId, "canonical", "approved as durable belief", "s1");
+
+    const before = readFileSync(join(vaultRoot, path), "utf8");
+    const after = before.replace("well established fact 4", "well established fact 4, revised");
+    const patchText = createPatch(path, before, after);
+    const queued = await store.revise({ id: memId, patch: patchText, reason: "tighten wording", session: "s1" });
+    expect(queued).toHaveProperty("queued", true);
+    const approvalId = (queued as { queued: true; approvalId: string }).approvalId;
+
+    approvals.reject(approvalId);
+
+    expect(readFileSync(join(vaultRoot, path), "utf8")).toBe(before);
+    expect(journal.getApproval(approvalId)!.state).toBe("rejected");
+
+    // Idempotency / crash-gap safety: re-approving an already-resolved
+    // approval must not double-apply the patch -- it throws NOT_FOUND
+    // (loadPending), mirroring the generic already-resolved guard.
+    await expect(approvals.approve(approvalId)).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
   test("approve() on an unknown id throws NOT_FOUND", async () => {
     const { approvals } = await makeHarness();
     await expect(approvals.approve("apr_does_not_exist")).rejects.toMatchObject({

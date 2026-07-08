@@ -169,6 +169,46 @@ describe("buildTools", () => {
     expect(error.retriable).toBe(false);
   });
 
+  test("memory_revise on a CANONICAL memory returns a queued approvalId instead of applying, on a WORKING memory it applies (audit: no agent-reachable path revises a canonical without approval)", async () => {
+    const { tools } = await setup();
+    const remember = tools.get("memory_remember")!;
+    const revise = tools.get("memory_revise")!;
+
+    // CANONICAL: memory_revise (the only agent-reachable content-edit tool)
+    // must queue, not apply.
+    const canonical = await remember.handler({ content: "canonical fact", reason: "seed" });
+    await ctx.store.setStatus(canonical.id, "canonical", "approved as durable belief", "s1");
+    const abs = join(vault.vaultDir, canonical.path as string);
+    const before = readFileSync(abs, "utf8");
+    const after = before.replace("canonical fact", "canonical fact, revised");
+    const patch = createPatch(canonical.path as string, before, after);
+
+    const queuedResult = await revise.handler({ id: canonical.id, patch, reason: "tighten wording" });
+
+    expect(queuedResult.error).toBeUndefined();
+    expect(queuedResult.queued).toBe(true);
+    expect(typeof queuedResult.approvalId).toBe("string");
+    expect(queuedResult.revised).toBeUndefined();
+    expect(readFileSync(abs, "utf8")).toBe(before);
+    expect(ctx.journal.getMemory(canonical.id as string)!.status).toBe("canonical");
+
+    // WORKING: applies immediately, same as before the gate.
+    const working = await remember.handler({ content: "working fact", reason: "seed" });
+    const promote = tools.get("memory_promote")!;
+    await promote.handler({ id: working.id, target_status: "working", reason: "confirmed" });
+    const workingAbs = join(vault.vaultDir, working.path as string);
+    const workingBefore = readFileSync(workingAbs, "utf8");
+    const workingAfter = workingBefore + "\nan appended line";
+    const workingPatch = createPatch(working.path as string, workingBefore, workingAfter);
+
+    const appliedResult = await revise.handler({ id: working.id, patch: workingPatch, reason: "append" });
+
+    expect(appliedResult.error).toBeUndefined();
+    expect(appliedResult.revised).toBe(true);
+    expect(appliedResult.queued).toBeUndefined();
+    expect(readFileSync(workingAbs, "utf8")).toBe(workingAfter);
+  });
+
   test("vault_propose_edit on a trusted note queues an approval", async () => {
     const { tools } = await setup();
     const abs = join(vault.vaultDir, "Notes", "trusted.md");

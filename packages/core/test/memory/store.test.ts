@@ -14,6 +14,7 @@ import { MemoryStore } from "../../src/memory/store.js";
 import { recall } from "../../src/recall/recall.js";
 import { undoTransaction } from "../../src/broker/undo.js";
 import { Conflicts } from "../../src/conflicts/queue.js";
+import { Approvals } from "../../src/approvals/queue.js";
 import type { PermissionsManifest } from "../../src/schemas/manifest.js";
 
 const MANIFEST: PermissionsManifest = {
@@ -55,6 +56,7 @@ describe("MemoryStore", () => {
 
   async function makeStore(): Promise<{
     store: MemoryStore;
+    broker: Broker;
     journal: Journal;
     vaultRoot: string;
     git: LedgerGit;
@@ -70,7 +72,7 @@ describe("MemoryStore", () => {
     const { now, genId } = makeClock();
     const broker = new Broker({ vaultRoot, git, journal, manifest: MANIFEST, now, genId });
     const store = new MemoryStore({ broker, journal, now, genId, vaultRoot });
-    return { store, journal, vaultRoot, git, now, genId };
+    return { store, broker, journal, vaultRoot, git, now, genId };
   }
 
   test("remember creates a note under Agent/Memory with ledger frontmatter and a journal row", async () => {
@@ -446,6 +448,110 @@ describe("MemoryStore", () => {
 
     expect(journal.getMemory(id)!.status).toBe("canonical");
     expect(matter(readFileSync(join(vaultRoot, path), "utf8")).data.ledger.status).toBe("canonical");
+  });
+
+  // -------------------------------------------------------------------
+  // canonical-revise approval gate (v0.3a): mirrors the promote/forget
+  // gates -- a content revise of a CANONICAL belief must not land without
+  // human approval, closing the "invert the body across 2-3 unapproved
+  // revises" evasion the ledger-guard alone doesn't catch.
+  // -------------------------------------------------------------------
+
+  test("revise on a CANONICAL memory queues an approval instead of applying immediately (evasion gate)", async () => {
+    const { store, journal, vaultRoot } = await makeStore();
+    const { id, path } = await store.remember({ content: "durable fact", reason: "seed", session: "s1" });
+    await store.setStatus(id, "canonical", "approved as durable belief", "s1");
+    expect(journal.getMemory(id)!.status).toBe("canonical");
+
+    const before = readFileSync(join(vaultRoot, path), "utf8");
+    const after = before.replace("durable fact", "durable fact, revised");
+    const patchText = createPatch(path, before, after);
+
+    const result = await store.revise({ id, patch: patchText, reason: "tighten wording", session: "s1" });
+
+    expect(result).toHaveProperty("queued", true);
+    const approvalId = (result as { queued: true; approvalId: string }).approvalId;
+    expect(typeof approvalId).toBe("string");
+
+    // The FILE must be UNCHANGED -- no content mutation without approval.
+    expect(readFileSync(join(vaultRoot, path), "utf8")).toBe(before);
+    expect(journal.getMemory(id)!.status).toBe("canonical");
+
+    const approval = journal.getApproval(approvalId);
+    expect(approval).not.toBeNull();
+    expect(approval!.state).toBe("pending");
+    expect(approval!.zone).toBe("canonical-revise");
+    const held = JSON.parse(approval!.held_operation) as Record<string, unknown>;
+    expect(held.op).toBe("revise");
+    expect(held.path).toBe(path);
+    expect(held.patch).toBe(patchText);
+    expect(held.reason).toBe("tighten wording");
+    expect(held.session).toBe("s1");
+  });
+
+  test("a held canonical-revise, once approved, lands the patch and marks the approval approved", async () => {
+    const { store, broker, journal, vaultRoot, now } = await makeStore();
+    const approvals = new Approvals({ broker, store, journal, now });
+    const { id, path } = await store.remember({ content: "durable fact 2", reason: "seed", session: "s1" });
+    await store.setStatus(id, "canonical", "approved as durable belief", "s1");
+
+    const before = readFileSync(join(vaultRoot, path), "utf8");
+    const after = before.replace("durable fact 2", "durable fact 2, revised");
+    const patchText = createPatch(path, before, after);
+    const queued = await store.revise({ id, patch: patchText, reason: "tighten wording", session: "s1" });
+    if (!("queued" in queued)) throw new Error("expected a queued result");
+
+    const result = await approvals.approve(queued.approvalId);
+
+    expect(result).toEqual({ applied: true });
+    expect(readFileSync(join(vaultRoot, path), "utf8")).toBe(after);
+    expect(journal.getApproval(queued.approvalId)!.state).toBe("approved");
+    // Still canonical -- a content revise never touches status.
+    expect(journal.getMemory(id)!.status).toBe("canonical");
+  });
+
+  test("a held canonical-revise, when rejected, leaves the file unchanged and the approval rejected", async () => {
+    const { store, broker, journal, vaultRoot, now } = await makeStore();
+    const approvals = new Approvals({ broker, store, journal, now });
+    const { id, path } = await store.remember({ content: "durable fact 3", reason: "seed", session: "s1" });
+    await store.setStatus(id, "canonical", "approved as durable belief", "s1");
+
+    const before = readFileSync(join(vaultRoot, path), "utf8");
+    const after = before.replace("durable fact 3", "durable fact 3, revised");
+    const patchText = createPatch(path, before, after);
+    const queued = await store.revise({ id, patch: patchText, reason: "tighten wording", session: "s1" });
+    if (!("queued" in queued)) throw new Error("expected a queued result");
+
+    approvals.reject(queued.approvalId);
+
+    expect(readFileSync(join(vaultRoot, path), "utf8")).toBe(before);
+    expect(journal.getApproval(queued.approvalId)!.state).toBe("rejected");
+  });
+
+  test("revise of a WORKING memory still applies immediately (no queue)", async () => {
+    const { store, journal, vaultRoot } = await makeStore();
+    const { id, path } = await store.remember({ content: "wv1", reason: "seed", session: "s1" });
+    await store.promote({ id, target_status: "working", reason: "confirmed", session: "s1" });
+
+    const before = readFileSync(join(vaultRoot, path), "utf8");
+    const patchText = createPatch(path, before, before + "\nwv2");
+    const result = await store.revise({ id, patch: patchText, reason: "add wv2", session: "s1" });
+
+    expect(result).toEqual({ revised: true, id });
+    expect(readFileSync(join(vaultRoot, path), "utf8")).toContain("wv2");
+    expect(journal.getMemory(id)!.status).toBe("working");
+  });
+
+  test("revise of a SCRATCH memory still applies immediately (no queue)", async () => {
+    const { store, vaultRoot } = await makeStore();
+    const { id, path } = await store.remember({ content: "sv1", reason: "seed", session: "s1" });
+
+    const before = readFileSync(join(vaultRoot, path), "utf8");
+    const patchText = createPatch(path, before, before + "\nsv2");
+    const result = await store.revise({ id, patch: patchText, reason: "add sv2", session: "s1" });
+
+    expect(result).toEqual({ revised: true, id });
+    expect(readFileSync(join(vaultRoot, path), "utf8")).toContain("sv2");
   });
 
   test("remember queues a conflict when a live (working) same-entity peer already conflicts on a fact", async () => {

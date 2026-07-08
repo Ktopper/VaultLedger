@@ -61,6 +61,24 @@ export interface ReviseInput {
   session: string;
 }
 
+export interface ReviseOptions {
+  /** Bypass the canonical-revise approval gate (set by Approvals.approve's
+   * dispatchApply when applying a previously-held revise via
+   * broker.apply(op, {approved:true}) -- see the EXECUTION CONTRACT note on
+   * `revise()` below). Harmless on scratch/working memories, which never hit
+   * the gate anyway. */
+  approved?: boolean;
+}
+
+/**
+ * Discriminated union (mirrors `ForgetResult`): a scratch/working revise (or
+ * an approved canonical one) lands immediately and returns
+ * `{ revised: true, id }`; an unapproved canonical revise is held for
+ * approval and returns `{ queued: true, approvalId }` instead of patching
+ * anything.
+ */
+export type ReviseResult = { revised: true; id: string } | { queued: true; approvalId: string };
+
 export interface PromoteInput {
   id: string;
   target_status: MemoryStatusValue;
@@ -225,8 +243,36 @@ export class MemoryStore {
    * bumping the in-file `ledger:` provenance block (e.g. a new `created` or
    * `supersedes`) is the caller's responsibility via the patch itself in
    * v0.1 — the store does not parse/rewrite frontmatter on revise.
+   *
+   * CANONICAL GATE (v0.3a, mirrors `promote`/`forget`): a content revise of
+   * a CANONICAL belief is held for human approval instead of applying
+   * immediately. Rationale — the ledger-guard (governedProvenanceChanged)
+   * already blocks an unapproved revise from touching the `ledger:` block or
+   * top-level `entity`, but says nothing about the note BODY: an agent could
+   * still invert a canonical belief's content across 2-3 unapproved revises
+   * (the ~50% patch-size cap is iterable). Gating canonical content-revises
+   * closes that hole. Scratch/working stay immediate — those are provisional
+   * beliefs; gating them would put approvals on the agent's normal
+   * course-correction loop, the fatigue the zone model is built to avoid.
+   *
+   * LOAD-BEARING CONSEQUENCE: an APPROVED canonical-revise dispatches via
+   * `broker.apply(op, {approved:true})` (see Approvals.approve's `revise`
+   * case), which — by design — BYPASSES the ledger-guard too. That means the
+   * approval diff is the human's ONE chance to catch a status/entity change
+   * smuggled into what looks like a content-only revise. The approval
+   * renderer (`renderApprovalDiff`) showing the FULL diff is what makes this
+   * acceptable — that diff must NEVER be summarized or truncated in a way
+   * that could hide a smuggled provenance change.
+   *
+   * EXECUTION CONTRACT: the held op below is a plain `{op:"revise",...}` —
+   * unlike `promote`/`forget`, `revise` IS a path-based broker op, so
+   * `Approvals.approve()` does NOT need a new case for it: the existing
+   * `case "revise": return this.dispatchApply(id, op)` already re-dispatches
+   * the held op straight to `Broker.apply(op, {approved:true})`, which both
+   * applies the patch and (intentionally) bypasses the ledger-guard per the
+   * note above.
    */
-  async revise(input: ReviseInput): Promise<void> {
+  async revise(input: ReviseInput, opts?: ReviseOptions): Promise<ReviseResult> {
     const mem = this.journal.getMemory(input.id);
     if (!mem) {
       throw new BrokerError("NOT_FOUND", `no memory with id ${input.id}`);
@@ -234,15 +280,41 @@ export class MemoryStore {
 
     const expectedHash = hashFile(join(this.vaultRoot, mem.path));
 
-    const result = await this.broker.apply({
-      op: "revise",
-      path: mem.path,
-      expected_hash: expectedHash,
-      patch: input.patch,
-      entity: mem.entity ?? undefined,
-      reason: input.reason,
-      session: input.session,
-    });
+    if (mem.status === "canonical" && !opts?.approved) {
+      const approvalId = this.genId("apr");
+      this.journal.insertApproval({
+        id: approvalId,
+        held_operation: JSON.stringify({
+          op: "revise",
+          path: mem.path,
+          expected_hash: expectedHash,
+          patch: input.patch,
+          entity: mem.entity ?? undefined,
+          reason: input.reason,
+          session: input.session,
+        }),
+        zone: "canonical-revise",
+        reason: input.reason,
+        session: input.session,
+        state: "pending",
+        created_at: this.now(),
+        resolved_at: null,
+      });
+      return { queued: true, approvalId };
+    }
+
+    const result = await this.broker.apply(
+      {
+        op: "revise",
+        path: mem.path,
+        expected_hash: expectedHash,
+        patch: input.patch,
+        entity: mem.entity ?? undefined,
+        reason: input.reason,
+        session: input.session,
+      },
+      opts?.approved ? { approved: true } : undefined,
+    );
     // A direct revise into an agent-zone note always lands immediately.
     if (!("queued" in result) && result.txnId !== undefined) {
       this.journal.setTransactionMemoryId(result.txnId, input.id);
@@ -257,6 +329,8 @@ export class MemoryStore {
       { journal: this.journal, vaultRoot: this.vaultRoot, now: this.now, genId: this.genId },
       input.id,
     );
+
+    return { revised: true, id: input.id };
   }
 
   /**
