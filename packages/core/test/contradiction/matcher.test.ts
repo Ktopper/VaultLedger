@@ -107,6 +107,16 @@ describe("DefaultEntityMatcher.comparisonSet", () => {
     expect(matcher.comparisonSet(b, j).map((m) => m.id)).not.toContain("mem_a");
   });
 
+  test("retired memories are excluded from the comparison set (v0.3b terminal status)", () => {
+    const j = makeJournal();
+    j.insertMemory(memRow({ id: "mem_1", status: "canonical" }));
+    j.insertMemory(memRow({ id: "mem_2", status: "retired" }));
+
+    const mem = j.getMemory("mem_1")!;
+    const result = matcher.comparisonSet(mem, j);
+    expect(result.map((m) => m.id)).not.toContain("mem_2");
+  });
+
   test("different-entity memories are excluded; null-entity mem returns []", () => {
     const j = makeJournal();
     j.insertMemory(memRow({ id: "mem_1", entity: "Nova", status: "canonical" }));

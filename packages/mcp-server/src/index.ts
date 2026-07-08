@@ -21,9 +21,11 @@ export function listToolNames(): string[] {
   return [
     "memory_recall",
     "memory_remember",
+    "memory_distill",
     "memory_revise",
     "memory_promote",
     "memory_forget",
+    "memory_retire",
     "vault_propose_edit",
     "ledger_status",
   ];
@@ -46,7 +48,7 @@ function toCallToolResult(result: Record<string, unknown>): CallToolResult {
 }
 
 /**
- * Wire the 7 tools from `buildTools(ctx)` onto a real MCP `Server`: a
+ * Wire the 9 tools from `buildTools(ctx)` onto a real MCP `Server`: a
  * ListTools handler that reports each tool's name/description/JSON-schema
  * (converted from its zod inputSchema via zod-to-json-schema), and a
  * CallTool handler that dispatches to the matching tool's handler and

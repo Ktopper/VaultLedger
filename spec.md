@@ -133,7 +133,9 @@ vaultledger/
 - **v0.2 (the demo that sells):** Obsidian plugin — approval queue, diff view, rollback, provenance hover.
 - **v0.3 (lifecycle + audit — absorbs Undertow concepts):** `memory_distill` + `memory_retire` + source-relations table; promotion rules; contradiction queue; source-linked staleness (distillation flagged when a source is retired/revised); memory-health report surfaced in plugin queues and `ledger memory audit`. Split into two cycles:
   - **v0.3a (this cycle):** contradiction queue + three v0.2-backlog hardening items — see `docs/design/specs/2026-07-05-vaultledger-v03a-design.md`. The contradiction matcher is built lineage-aware so it directly feeds v0.3b's source-linked staleness.
-  - **v0.3b (Undertow merge, build-prompts Prompt 10.5):** `memory_distill`/`memory_retire`, the `memory_relations` table, source-linked staleness, optional numeric confidence, promotion rules, and the memory-health report / `ledger memory audit`.
+  - **v0.3b (Undertow merge, build-prompts Prompt 10.5)** — split into two sub-cycles:
+    - **v0.3b-1 (SHIPPED):** the two lifecycle ops + data model — `memory_distill` (+ `memory_relations` table, rebuildable), `memory_retire` (gated status→retired with `superseded_by` validation), `retired` status, `derivation`/`retired_reason`/`superseded_by`/`score` provenance, recall exclusion, confidence-as-evidence. See `docs/design/specs/2026-07-08-vaultledger-v03b1-lifecycle-ops-design.md`.
+    - **v0.3b-2 (next):** source-linked staleness (a `stale-source` conflict kind + kind-aware liveness filter) + `ledger memory audit` (state-based scan). Forward-pins P1/P2/P3 in the b-1 design doc.
 - **v1.0:** polish, packaged installers, docs, second-brain/Claudian integration guides.
 - **Later:** embeddings-assisted conflict detection, replay/regret analysis (which memories fed which answers, and which fed errors), team tier (shared vault, multi-agent write arbitration), audit export.
 

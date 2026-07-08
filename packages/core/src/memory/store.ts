@@ -16,6 +16,21 @@ type MemoryStatusValue = z.infer<typeof MemoryStatus>;
 const DEFAULT_AGENT_DIR = "Agent/Memory";
 const ARCHIVE_DIR = "Agent/Archive";
 
+/**
+ * The lineage-citable status allowlist, shared by `distill` (validating its
+ * `sources`) and `retire` (validating its `superseded_by`). A memory is
+ * citable iff its status is in here: `forgotten` (tombstoned to
+ * Agent/Archive) and `reverted` (an undone create — its FILE is DELETED from
+ * the vault, only the journal row survives) are BOTH excluded because a
+ * lineage pointer must never reference content that no longer exists in the
+ * vault. `retired` stays allowed — retiring is a metadata flip that leaves
+ * the file in place, so a live-or-retired target is a valid citation. Kept as
+ * ONE constant so the two validators can never drift apart (they did once:
+ * retire's original one-status denylist accepted `reverted`, a dangling
+ * pointer to deleted content).
+ */
+const CITABLE_SOURCE_STATUSES = ["scratch", "working", "canonical", "retired"] as const;
+
 export interface MemoryStoreOptions {
   broker: Broker;
   journal: Journal;
@@ -45,9 +60,46 @@ export interface RememberInput {
    * find it in the same-entity set (harmless).
    */
   supersedes?: string;
+  /**
+   * Optional numeric evidence (e.g. a confidence/relevance score from
+   * whatever produced this memory) recorded verbatim into the file's
+   * `ledger.score`. Guarded like every other `ledger:` field
+   * (governedProvenanceChanged rejects an unapproved revise that adds or
+   * changes it — see broker/lint.ts) but otherwise INERT: no promotion,
+   * gate, or transition in this file reads `score`. It is evidence for a
+   * human or a future policy to consult, never a live gate input — see the
+   * mirrored field on `DistillInput` for the sibling write path.
+   */
+  score?: number;
 }
 
 export interface RememberResult {
+  id: string;
+  path: string;
+  /** The create transaction's id, linked to this memory (for undo/audit). */
+  txnId: string;
+}
+
+export interface DistillInput {
+  content: string;
+  /** Ids of the memories this distillation is derived from. Every id must
+   * name an EXISTING memory whose status is not `forgotten` (a `retired`
+   * source IS allowed — retiring a memory means "superseded, don't cite it
+   * as current truth", not "erased", and distillation is exactly the
+   * mechanism that supersedes it). Must be non-empty: a distillation with no
+   * sources is indistinguishable from a plain `remember` and would create an
+   * uncited "derived" note, defeating the point of the derivation record. */
+  sources: string[];
+  reason: string;
+  session: string;
+  entity?: string;
+  confidence?: ConfidenceValue;
+  score?: number;
+}
+
+/** Mirrors `RememberResult` exactly — a distillation IS a memory note, just
+ * one with a `derivation` block and relation edges alongside it. */
+export interface DistillResult {
   id: string;
   path: string;
   /** The create transaction's id, linked to this memory (for undo/audit). */
@@ -112,6 +164,40 @@ export interface ForgetOptions {
  * archiving anything.
  */
 export type ForgetResult = { forgotten: true; id: string } | { queued: true; approvalId: string };
+
+export interface RetireInput {
+  id: string;
+  reason: string;
+  /**
+   * Id of the memory that supersedes this one going forward. OPTIONAL —
+   * a retire with no successor is still a valid "no longer current, no
+   * replacement yet" state. When provided it must reference an EXISTING
+   * memory whose status is CITABLE (not `forgotten`, not `reverted` — both
+   * mean the content is gone from the vault; a `retired` or live target is
+   * fine, since you can be superseded by a historical belief). Validated
+   * BEFORE any write or enqueue (an unvalidated pointer is a forgeable
+   * lineage claim, same family as `distill`'s source validation, and shares
+   * its `CITABLE_SOURCE_STATUSES` allowlist).
+   */
+  superseded_by?: string;
+  session: string;
+}
+
+export interface RetireOptions {
+  /** Bypass the canonical-retire approval gate (set by Approvals.approve when
+   * applying a previously-held retire). Harmless on working memories, which
+   * never hit the gate anyway. */
+  approved?: boolean;
+}
+
+/**
+ * Discriminated union (mirrors `ForgetResult` exactly): a working retire (or
+ * an approved canonical one) lands immediately and returns
+ * `{ retired: true, id }`; an unapproved canonical retire is held for
+ * approval and returns `{ queued: true, approvalId }` instead of patching
+ * anything.
+ */
+export type RetireResult = { retired: true; id: string } | { queued: true; approvalId: string };
 
 /**
  * Memory lifecycle on top of the Broker (design §memory lifecycle). Every
@@ -180,6 +266,7 @@ export class MemoryStore {
         confidence: input.confidence ?? "medium",
         supersedes,
         expires: null,
+        ...(input.score !== undefined ? { score: input.score } : {}),
       },
     };
     if (typeof input.entity === "string") {
@@ -229,6 +316,148 @@ export class MemoryStore {
     // AFTER the write is fully committed (broker + journal), never before —
     // it reads the just-written file back off disk. Lock-free and
     // self-swallowing; see checkContradictions' own doc comment.
+    checkContradictions(
+      { journal: this.journal, vaultRoot: this.vaultRoot, now: this.now, genId: this.genId },
+      id,
+    );
+
+    return { id, path, txnId };
+  }
+
+  /**
+   * Create a DISTILLATION: a memory note derived from other memories,
+   * mirroring `remember` (same leading-frontmatter strip, same top-level
+   * entity/tags handling, same `broker.apply({op:"create", ...})` create
+   * path) but with two additions: (1) every cited source is validated BEFORE
+   * any write, and (2) the note's `ledger:` block carries a `derivation`
+   * record and a `memory_relations` edge is inserted per source.
+   *
+   * `distill` is NOT a raw broker op — like `promote`/`forget`, `broker.apply`
+   * rejects it outright (op.op === "distill" hits the same reject arm); this
+   * store method is what resolves it into the underlying `create`.
+   */
+  async distill(input: DistillInput): Promise<DistillResult> {
+    // Dedupe source ids up front (order-preserving) so the FILE's
+    // `derivation.sources` array and the memory_relations edge set can never
+    // desync: insertRelation is ON CONFLICT DO NOTHING (one edge per unique
+    // source), so an un-deduped `[a, a]` would write a 2-element frontmatter
+    // array but only 1 edge. Dedupe once here and use `sources` everywhere
+    // below.
+    const sources = [...new Set(input.sources)];
+
+    // Validate sources BEFORE any write (design: a bad citation must never
+    // produce a half-written note or a dangling memory_relations row).
+    // Empty sources is rejected too: a distillation with nothing to cite is
+    // just a remember wearing a derivation label.
+    if (sources.length === 0) {
+      throw new BrokerError(
+        "INVALID_SOURCE",
+        "a distillation must cite at least one source",
+        false,
+      );
+    }
+    // A source is citable iff its status is in the shared
+    // CITABLE_SOURCE_STATUSES allowlist (see its doc comment): both
+    // `forgotten` and `reverted` are excluded because a distillation must not
+    // cite content that no longer exists in the vault. `retired` stays
+    // allowed: distillation is exactly the mechanism that supersedes a
+    // retired belief, so citing its own retired inputs is the expected shape.
+    for (const sourceId of sources) {
+      const source = this.journal.getMemory(sourceId);
+      if (!source) {
+        throw new BrokerError(
+          "INVALID_SOURCE",
+          `distill source not found: ${sourceId}`,
+          false,
+        );
+      }
+      if (!CITABLE_SOURCE_STATUSES.includes(source.status as (typeof CITABLE_SOURCE_STATUSES)[number])) {
+        throw new BrokerError(
+          "INVALID_SOURCE",
+          `distill source '${sourceId}' has non-citable status '${source.status}' ` +
+            `(citable: ${CITABLE_SOURCE_STATUSES.join(", ")})`,
+          false,
+        );
+      }
+    }
+
+    const id = this.genId("mem");
+    const path = `${this.agentDir}/${id}.md`;
+    const created = this.now();
+
+    // Neutralize a smuggled leading frontmatter block — see the matching
+    // comment in `remember` for the full rationale (matter.stringify would
+    // otherwise merge a `---...---` block at the START of `content` into the
+    // emitted frontmatter, letting body text forge provenance).
+    let body: string;
+    try {
+      body = matter(input.content).content;
+    } catch {
+      body = input.content.startsWith("---") ? `\n${input.content}` : input.content;
+    }
+
+    const frontmatter: Record<string, unknown> = {
+      ledger: {
+        id,
+        status: "scratch",
+        created,
+        source: input.session,
+        reason: input.reason,
+        confidence: input.confidence ?? "medium",
+        supersedes: null,
+        expires: null,
+        derivation: { kind: "distilled", sources },
+        ...(input.score !== undefined ? { score: input.score } : {}),
+      },
+    };
+    if (typeof input.entity === "string") {
+      frontmatter.entity = input.entity;
+    }
+    const noteBody = matter.stringify(body, frontmatter);
+
+    const result = await this.broker.apply({
+      op: "create",
+      path,
+      content: noteBody,
+      entity: input.entity,
+      reason: input.reason,
+      session: input.session,
+    });
+    // create always lands immediately (never queued), so a txnId is present.
+    if ("queued" in result || result.txnId === undefined) {
+      throw new BrokerError("NOT_FOUND", `create did not record a transaction for ${path}`);
+    }
+    const txnId = result.txnId;
+
+    const row: MemoryRow = {
+      id,
+      path,
+      entity: input.entity ?? null,
+      status: "scratch",
+      confidence: input.confidence ?? "medium",
+      created,
+      source: input.session,
+      supersedes: null,
+      expires: null,
+      last_referenced: null,
+    };
+    this.journal.insertMemory(row);
+    this.journal.setTransactionMemoryId(txnId, id);
+
+    // CRASH GAP (same shape as the v0.1 commit->journal gap documented on
+    // `remember`): the note is committed to disk/git by `broker.apply` above
+    // BEFORE these relation rows are inserted. A crash between the create
+    // commit and this loop leaves the note on disk (WITH its `derivation`
+    // block already naming its sources) but zero `memory_relations` rows.
+    // This self-heals: reindex rebuilds a memory's relations from its file's
+    // `ledger.derivation.sources` (v0.3b reindex change), so the edges
+    // reappear on the next reindex rather than staying permanently dangling.
+    for (const sourceId of sources) {
+      this.journal.insertRelation({ memory_id: id, source_id: sourceId, kind: "distilled" });
+    }
+
+    // Post-commit, non-blocking contradiction check (design v0.3a §5) — see
+    // the matching call in `remember` for rationale.
     checkContradictions(
       { journal: this.journal, vaultRoot: this.vaultRoot, now: this.now, genId: this.genId },
       id,
@@ -486,6 +715,108 @@ export class MemoryStore {
   }
 
   /**
+   * Mark a memory `retired` — "no longer current knowledge, but still
+   * history" (design v0.3b lifecycle-ops) — via a governed metadata patch
+   * into the note's `ledger:` block. Mirrors `forget` EXACTLY: same
+   * idempotency guard, same canonical-approval gate, same
+   * queued-vs-applied `RetireResult` union. The only additions are (1) a
+   * transition table that REJECTS scratch/forgotten/reverted rather than
+   * silently no-opping (retire is only meaningful for current-knowledge
+   * states) and (2) `superseded_by` validation.
+   *
+   * NEVER appends prose to the body — this writes `ledger.status`,
+   * `ledger.retired_reason`, and (optionally) `ledger.superseded_by` only,
+   * via `flipFrontmatterStatus`'s minimal unified diff, same as every other
+   * durable status transition in this file.
+   */
+  async retire(input: RetireInput, opts?: RetireOptions): Promise<RetireResult> {
+    const mem = this.journal.getMemory(input.id);
+    if (!mem) {
+      throw new BrokerError("NOT_FOUND", `no memory with id ${input.id}`);
+    }
+
+    // Idempotent re-apply (mirrors forget's already-forgotten guard): the
+    // ONLY no-op transition. This matters for the same crash-gap reason
+    // forget's guard does — a human re-approving a canonical-retire after a
+    // crash between apply and setApprovalState must not wedge here.
+    if (mem.status === "retired") {
+      return { retired: true, id: input.id };
+    }
+
+    // Transition table (mirrors forget + promote): retire only applies to
+    // current-knowledge states. scratch/forgotten/reverted are NOT silent
+    // no-ops — an agent calling retire on one of those is a caller error
+    // that must surface, not disappear.
+    if (mem.status === "scratch" || mem.status === "forgotten" || mem.status === "reverted") {
+      throw new BrokerError(
+        "INVALID_TRANSITION",
+        `cannot retire a memory with status '${mem.status}'; retire only applies to ` +
+          `current-knowledge states (working/canonical)`,
+      );
+    }
+
+    // superseded_by validation BEFORE applying AND before enqueue — a bad
+    // pointer must never even enter the approval queue (same "dangling
+    // citation" family as distill's source validation: an unvalidated
+    // superseded_by is a forgeable lineage pointer). Uses the SAME
+    // CITABLE_SOURCE_STATUSES allowlist distill does, so both reject
+    // `forgotten` AND `reverted` (content gone from the vault) while allowing
+    // a live OR retired target (you can be superseded by a historical
+    // belief).
+    if (input.superseded_by !== undefined) {
+      const target = this.journal.getMemory(input.superseded_by);
+      if (
+        !target ||
+        !CITABLE_SOURCE_STATUSES.includes(target.status as (typeof CITABLE_SOURCE_STATUSES)[number])
+      ) {
+        throw new BrokerError(
+          "INVALID_SOURCE",
+          `retire superseded_by '${input.superseded_by}' must reference an existing, ` +
+            `citable memory (not forgotten, not reverted)`,
+          false,
+        );
+      }
+    }
+
+    if (mem.status === "canonical" && !opts?.approved) {
+      // EXECUTION CONTRACT FOR Approvals.approve(): the held op below is an
+      // op:"retire" (schemas/operation.ts RetireOp shape), which
+      // Broker.apply() rejects by design (it operates on a memory id, not a
+      // path — see broker.ts). approve() MUST DISPATCH on the held op — a
+      // held `retire` is executed by calling `store.retire(..., {approved:
+      // true})` directly, NOT via broker.apply. Mirrors the `forget` held op
+      // exactly.
+      const approvalId = this.genId("apr");
+      this.journal.insertApproval({
+        id: approvalId,
+        held_operation: JSON.stringify({
+          op: "retire",
+          id: input.id,
+          reason: input.reason,
+          ...(input.superseded_by !== undefined ? { superseded_by: input.superseded_by } : {}),
+          session: input.session,
+        }),
+        zone: "canonical-retire",
+        reason: input.reason,
+        session: input.session,
+        state: "pending",
+        created_at: this.now(),
+        resolved_at: null,
+      });
+      return { queued: true, approvalId };
+    }
+
+    const extra: Record<string, unknown> = { retired_reason: input.reason };
+    if (input.superseded_by !== undefined) {
+      extra.superseded_by = input.superseded_by;
+    }
+    await this.flipFrontmatterStatus(mem, "retired", input.reason, input.session, extra);
+    this.journal.updateMemory(input.id, { status: "retired" });
+
+    return { retired: true, id: input.id };
+  }
+
+  /**
    * Durable status transition (design §6.0): write `ledger.status = newStatus`
    * into the note's FILE frontmatter through the broker (a real revise commit),
    * then mirror the change onto the journal row. The file — not the journal —
@@ -509,18 +840,23 @@ export class MemoryStore {
   }
 
   /**
-   * Rewrite only the `ledger.status` field of a note's frontmatter and route
-   * the resulting minimal unified diff through the broker as an (approved)
+   * Rewrite the `ledger.status` field (and, optionally, any additional
+   * ledger-block fields passed via `extra` — e.g. `retire`'s
+   * `retired_reason`/`superseded_by`) of a note's frontmatter and route the
+   * resulting minimal unified diff through the broker as an (approved)
    * revise. Reads the current on-disk bytes so the patch's expected_hash and
    * context match exactly. Does not touch the journal — callers decide what
    * journal bookkeeping to pair with the file change (setStatus mirrors the
-   * status; forget updates status + path together).
+   * status; forget updates status + path together; retire mirrors forget).
+   * `extra` is metadata ONLY (ledger-block fields) — this never touches the
+   * note body, so no caller can use it to append prose.
    */
   private async flipFrontmatterStatus(
     mem: MemoryRow,
     newStatus: MemoryStatusValue,
     reason: string,
     session: string,
+    extra?: Record<string, unknown>,
   ): Promise<void> {
     const abs = join(this.vaultRoot, mem.path);
     const before = readFileSync(abs, "utf8");
@@ -531,7 +867,7 @@ export class MemoryStore {
         : {};
     const after = matter.stringify(parsed.content, {
       ...parsed.data,
-      ledger: { ...currentLedger, status: newStatus },
+      ledger: { ...currentLedger, status: newStatus, ...(extra ?? {}) },
     });
     // Idempotent: nothing to commit if the status is already what we want.
     if (after === before) return;

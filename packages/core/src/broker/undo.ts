@@ -135,6 +135,18 @@ async function runUndoTransaction(
     if (txn.memory_id && derivedMemoryStatus !== undefined) {
       journal.setMemoryStatus(txn.memory_id, derivedMemoryStatus);
     }
+    // Undo compensation for a reverted distillation CREATE (v0.3b): when the
+    // note is gone (derivedMemoryStatus === "reverted", i.e. this txn WAS the
+    // memory's originating create), drop any memory_relations rows it holds
+    // as a distillation citing its sources — otherwise the edges dangle,
+    // pointing at a memory that no longer lives in recall. Harmless no-op
+    // for a non-distill memory (deleteRelationsForMemory deletes zero rows
+    // when none were ever inserted). Scoped to the "reverted" case only (not
+    // every memory-linked txn): a revise/promote undo leaves the memory live
+    // and its citations still valid, so their relations must NOT be touched.
+    if (txn.memory_id && derivedMemoryStatus === "reverted") {
+      journal.deleteRelationsForMemory(txn.memory_id);
+    }
     journal.recordTransaction(revertRow);
     // Conflict liveness is NOT proactively touched here (see design §4.3):
     // undoing THIS transaction doesn't necessarily mean the memory is dead or

@@ -41,6 +41,10 @@ const BROKER_ERROR_STATUS: Record<RejectionCode, number> = {
   // A malformed expected_hash is a caller input error, not a state
   // conflict -- 400, same family as PATCH_TOO_LARGE/SYNTAX_BREAK.
   MALFORMED_HASH: 400,
+  // A distillation citing a bad source (missing/forgotten/empty) is a
+  // caller input error about the request's shape, not a state conflict --
+  // same family as INVALID_TRANSITION.
+  INVALID_SOURCE: 422,
 };
 
 const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);

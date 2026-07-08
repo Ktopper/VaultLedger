@@ -73,6 +73,17 @@ export interface ConflictRow {
   resolved_at: string | null;
 }
 
+export interface MemoryRelationRow {
+  /** The distillation memory that cites `source_id`. */
+  memory_id: string;
+  /** The source memory `memory_id` was distilled from. */
+  source_id: string;
+  /** Relation kind — "distilled" is the only kind v0.3b writes; the column
+   * is free text (like other kind columns in this file) so a later relation
+   * kind doesn't require a schema migration. */
+  kind: string;
+}
+
 export interface ListTransactionsFilters {
   limit?: number;
   entity?: string;
@@ -462,5 +473,52 @@ export class Journal {
     this.db
       .prepare(`UPDATE conflicts SET state = @state, resolved_at = @resolvedAt WHERE id = @id`)
       .run({ id, state, resolvedAt: resolvedAtIso ?? null });
+  }
+
+  // ---------------------------------------------------------------------
+  // Memory relations (v0.3b distillation edges)
+  // ---------------------------------------------------------------------
+
+  /**
+   * Insert a distillation->source edge. Idempotent: `ON CONFLICT DO NOTHING`
+   * against the (memory_id, source_id, kind) primary key means re-running
+   * reindex (or re-writing the same note) never duplicates an edge.
+   */
+  insertRelation(row: MemoryRelationRow): void {
+    this.db
+      .prepare(
+        `INSERT INTO memory_relations (memory_id, source_id, kind)
+         VALUES (@memory_id, @source_id, @kind)
+         ON CONFLICT(memory_id, source_id, kind) DO NOTHING`,
+      )
+      .run(row);
+  }
+
+  /**
+   * Remove every edge for a given distillation memory. Used to rebuild a
+   * memory's relation set from scratch (reindex) and by undo (v0.3b, later)
+   * to unwind a distillation's citations.
+   */
+  deleteRelationsForMemory(memory_id: string): void {
+    this.db.prepare(`DELETE FROM memory_relations WHERE memory_id = @memory_id`).run({ memory_id });
+  }
+
+  /** Every source a given distillation memory cites. */
+  getRelationsForMemory(memory_id: string): MemoryRelationRow[] {
+    return this.db
+      .prepare<{ memory_id: string }, MemoryRelationRow>(
+        `SELECT * FROM memory_relations WHERE memory_id = @memory_id`,
+      )
+      .all({ memory_id });
+  }
+
+  /** Every distillation edge citing a given source (indexed lookup via
+   * ix_memory_relations_source). */
+  getDistillationsCitingSource(source_id: string): MemoryRelationRow[] {
+    return this.db
+      .prepare<{ source_id: string }, MemoryRelationRow>(
+        `SELECT * FROM memory_relations WHERE source_id = @source_id`,
+      )
+      .all({ source_id });
   }
 }

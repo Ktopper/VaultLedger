@@ -242,6 +242,52 @@ describe("Approvals", () => {
     expect(journal.getApproval(approvalId)!.state).toBe("rejected");
   });
 
+  test("approve() dispatches a held retire op to store.retire({approved:true}), retiring a canonical memory", async () => {
+    const { approvals, store, journal, vaultRoot } = await makeHarness();
+
+    const { id: memId, path } = await store.remember({
+      content: "well established fact to retire",
+      reason: "seed",
+      session: "s1",
+    });
+    await store.setStatus(memId, "canonical", "approved as durable belief", "s1");
+
+    const queued = await store.retire({ id: memId, reason: "no longer current", session: "s1" });
+    expect(queued).toHaveProperty("queued", true);
+    const approvalId = (queued as { queued: true; approvalId: string }).approvalId;
+
+    const result = await approvals.approve(approvalId);
+    expect(result).toEqual({ applied: true });
+
+    expect(journal.getMemory(memId)!.status).toBe("retired");
+    const onDisk = matter(readFileSync(join(vaultRoot, path), "utf8"));
+    expect(onDisk.data.ledger.status).toBe("retired");
+    expect(onDisk.data.ledger.retired_reason).toBe("no longer current");
+    expect(journal.getApproval(approvalId)!.state).toBe("approved");
+  });
+
+  test("reject() on a held retire leaves the memory canonical and unretired", async () => {
+    const { approvals, store, journal, vaultRoot } = await makeHarness();
+
+    const { id: memId, path } = await store.remember({
+      content: "well established fact to keep",
+      reason: "seed",
+      session: "s1",
+    });
+    await store.setStatus(memId, "canonical", "approved as durable belief", "s1");
+    const before = readFileSync(join(vaultRoot, path), "utf8");
+
+    const queued = await store.retire({ id: memId, reason: "no longer current", session: "s1" });
+    expect(queued).toHaveProperty("queued", true);
+    const approvalId = (queued as { queued: true; approvalId: string }).approvalId;
+
+    approvals.reject(approvalId);
+
+    expect(journal.getMemory(memId)!.status).toBe("canonical");
+    expect(readFileSync(join(vaultRoot, path), "utf8")).toBe(before);
+    expect(journal.getApproval(approvalId)!.state).toBe("rejected");
+  });
+
   test("approve() dispatches a held canonical-revise op: patches the file and marks the approval approved", async () => {
     const { approvals, store, journal, vaultRoot } = await makeHarness();
 

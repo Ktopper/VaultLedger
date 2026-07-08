@@ -50,4 +50,10 @@ describe("BrokerError", () => {
     const err = new BrokerError("INVALID_TRANSITION", "unsupported status transition");
     expect(err.retriable).toBe(false);
   });
+
+  test("INVALID_SOURCE exists in the rejection code set and defaults to non-retriable", () => {
+    expect(RejectionCode.INVALID_SOURCE).toBe("INVALID_SOURCE");
+    const err = new BrokerError("INVALID_SOURCE", "cited source not found");
+    expect(err.retriable).toBe(false);
+  });
 });

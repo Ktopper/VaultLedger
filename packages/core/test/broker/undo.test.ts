@@ -579,4 +579,50 @@ describe("undo", () => {
     expect(journal.getMemory(id)!.status).toBe("scratch");
     expect(recall(journal, {}, now).map((r) => r.id)).toContain(id);
   });
+
+  test("undoing a distill's CREATE transaction removes its memory_relations edges (no dangling edges)", async () => {
+    const { store, journal, git, now, genId } = await makeMemoryHarness();
+
+    const a = await store.remember({
+      content: "Alice prefers dark mode.",
+      entity: "alice",
+      reason: "seed",
+      session: "s1",
+    });
+    const b = await store.remember({
+      content: "Alice prefers a compact layout.",
+      entity: "alice",
+      reason: "seed",
+      session: "s1",
+    });
+
+    const distilled = await store.distill({
+      content: "Alice prefers dark mode and a compact layout.",
+      sources: [a.id, b.id],
+      reason: "summarize",
+      session: "s1",
+    });
+    expect(journal.getRelationsForMemory(distilled.id)).toHaveLength(2);
+
+    await undoTransaction({ git, journal, now, genId }, distilled.txnId);
+
+    expect(journal.getRelationsForMemory(distilled.id)).toHaveLength(0);
+    expect(journal.getMemory(distilled.id)!.status).toBe("reverted");
+  });
+
+  test("undoing a plain (non-distill) memory's CREATE transaction is a harmless no-op for relations", async () => {
+    const { store, journal, git, now, genId } = await makeMemoryHarness();
+
+    const { id, txnId } = await store.remember({
+      content: "ephemeral fact",
+      entity: "bob",
+      reason: "seed",
+      session: "s1",
+    });
+    expect(journal.getRelationsForMemory(id)).toHaveLength(0);
+
+    await undoTransaction({ git, journal, now, genId }, txnId);
+
+    expect(journal.getRelationsForMemory(id)).toHaveLength(0);
+  });
 });
