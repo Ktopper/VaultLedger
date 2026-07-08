@@ -60,10 +60,17 @@ lint, commit, journal) applies.
   `forgotten`. **Retired sources ARE citable** (retired = history, still real; only
   `forgotten` = suppressed). An invalid/missing/forgotten source → a typed
   rejection (`INVALID_SOURCE`, retriable:false) before anything is written — no
-  partial note, no relations.
+  partial note, no relations. (`INVALID_SOURCE` gets a `BROKER_ERROR_STATUS`
+  entry → **422** for the bridge, alongside `INVALID_TRANSITION`.)
 - On success: write the note (mirrors `remember`, incl. the leading-frontmatter
   strip + top-level entity/tags persistence), THEN insert one `memory_relations`
   row per source (`memory_id` = new id, `source_id`, `kind:"distilled"`).
+- **Crash gap (documented, self-healing):** the note is committed BEFORE the
+  `memory_relations` rows are inserted — the same shape as v0.1's documented
+  commit→journal gap. A crash between them leaves the note on disk with its
+  `derivation` block but no relation rows; it **self-heals** because `reindex`
+  rebuilds relations from `derivation.sources`. Documented, not defended against,
+  exactly as v0.1 did.
 - **Undo compensation:** undoing the distill's create transaction removes the
   memory's `memory_relations` rows (they're rebuildable from the file, which the
   revert deletes, but the journal index is cleaned proactively too).
@@ -150,13 +157,18 @@ unaffected. **Test:** an unapproved `memory_revise` that adds/changes
 ## Forward-pins for b-2 (design now, build in b-2 — no migration, no collision)
 
 ### P1 — stale-source is a new conflict KIND in the existing `conflicts` table
-`kind = "stale-source"`, `memory_a` = distillation, `memory_b` = source,
-`pair_lo/pair_hi` = sorted(distillation, source), `value_hash` = the source's
-content hash at the retire/revise event, `fact_key` = a constant (e.g.
-`"source"`). Reuses the just-shipped 5-column unique key
-`(pair_lo, pair_hi, kind, fact_key, value_hash)` → WU-2 dedup for free (each new
-source revision that triggers → a new row; re-flagging the same revision →
-deduped). **No schema change in b-2.**
+`kind = "stale-source"`, the pair = {distillation, source}. **Keep the shipped
+`memory_a == pair_lo == id-sorted-low` convention (from the 5146b44 detail-ordering
+fix) UNIVERSAL** — do NOT make `memory_a` semantically "the distillation," or it
+forks that convention and every "A vs B" renderer/consumer (CLI, plugin) would
+have to branch on kind. Instead the distillation/source **roles are determined by
+LOOKUP**: the distillation is the side that appears as a
+`memory_relations.memory_id` (equivalently, carries a `derivation` block) — one
+indexed query. `value_hash` = the SOURCE's content hash at the retire/revise
+event; `fact_key` = a constant (e.g. `"source"`). Reuses the just-shipped 5-column
+unique key `(pair_lo, pair_hi, kind, fact_key, value_hash)` → WU-2 dedup for free
+(each new source revision that triggers → a new row; re-flagging the same revision
+→ deduped). **No schema change in b-2.**
 
 ### P2 — the both-sides-live filter MUST become kind-aware (the one thing that must be fixed in design)
 `Conflicts.list("open")` + `GET /conflicts` currently drop any row where EITHER
@@ -166,10 +178,16 @@ the current filter every staleness flag b-2 creates would be **invisible the
 moment it's born**, silently, with tests passing (a liveness filter "can't miss a
 code path"). **Pin:** liveness becomes kind-aware —
 - `value-conflict` / `negation-conflict`: BOTH sides must be live (unchanged).
-- `stale-source`: only the **distillation** side (`memory_a`) must be live; a
-  retired/revised source is the point. A `forgotten`/`reverted` distillation moots
-  the flag.
-One paragraph here; one code change + test in b-2.
+- `stale-source`: only the **distillation** side must be live — and the
+  distillation is identified by **LOOKUP** (per P1's role-by-lookup rule), NOT by
+  `memory_a`/`pair_lo` position. Source and distillation ids sort in random order,
+  so checking `memory_a` would check the WRONG side for ~half of rows — silent,
+  intermittent, and it passes any test that doesn't control id ordering. A
+  `forgotten`/`reverted` distillation moots the flag; the source being retired is
+  the point.
+**b-2 test (required):** create stale-source rows with BOTH id orderings
+(`source-id < distillation-id` AND `source-id > distillation-id`) and assert the
+filter keeps both. One paragraph here; one code change + the both-orderings test in b-2.
 
 ### P3 — `ledger memory audit` is a state-based scan under the event-driven flags
 Event-driven detection (P1) misses the **already-retired-at-distill** case: if an
@@ -181,6 +199,13 @@ UNDER the inline event flags. The scan catches the already-retired case AND
 doubles as the recovery path after a journal rebuild.
 
 ---
+
+## Open b-2 question (record now, decide in b-2 — not solved here)
+"Flag on every source **revise**" (P1/P3) will be noisy for working sources an
+agent is actively course-correcting — every byte-level revise would re-flag all
+citing distillations. b-2 may want to flag only when a revise changes the
+**extracted facts** (the contradiction engine's canonicalized facts), not any
+byte. Recorded as a deliberate b-2 decision, so it's a choice and not a surprise.
 
 ## Process
 b-1 is built via subagent-driven-development with the two-stage review, TDD per
