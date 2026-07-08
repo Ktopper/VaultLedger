@@ -542,4 +542,27 @@ describe("reindex", () => {
 
     expect(journal.getRelationsForMemory("mem_distilled2")).toHaveLength(1);
   });
+
+  test("reindex clears stale memory_relations edges for a note whose file no longer declares a derivation block", async () => {
+    const { journal, git, vaultRoot, now, genId } = await makeHarness();
+
+    // A plain memory note (no derivation block) on disk...
+    await seedMemoryNote(git, vaultRoot, {
+      id: "mem_plain",
+      status: "canonical",
+      entity: "alice",
+      tags: [],
+      created: now(),
+      body: "A plain belief with no derivation.",
+    });
+    // ...but a stale relation row survives in the journal (e.g. it once was a
+    // distillation whose derivation block was later removed).
+    journal.insertRelation({ memory_id: "mem_plain", source_id: "mem_ghost", kind: "distilled" });
+    expect(journal.getRelationsForMemory("mem_plain")).toHaveLength(1);
+
+    await reindex({ vaultRoot, git, journal, now, genId });
+
+    // The edge set must now exactly track the file: no derivation → no edges.
+    expect(journal.getRelationsForMemory("mem_plain")).toHaveLength(0);
+  });
 });

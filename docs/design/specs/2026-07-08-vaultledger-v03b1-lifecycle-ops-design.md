@@ -56,11 +56,14 @@ A **create** op into the agent zone whose `ledger:` block carries the
 `derivation` block. Discriminated-union op variant; full broker pipeline (zone,
 lint, commit, journal) applies.
 
-- **Source validation:** every `source` id must exist in the journal AND not be
-  `forgotten`. **Retired sources ARE citable** (retired = history, still real; only
-  `forgotten` = suppressed). An invalid/missing/forgotten source → a typed
-  rejection (`INVALID_SOURCE`, retriable:false) before anything is written — no
-  partial note, no relations. (`INVALID_SOURCE` gets a `BROKER_ERROR_STATUS`
+- **Source validation:** every `source` id must exist AND its status must be in
+  the LIVE-ish allowlist **`{scratch, working, canonical, retired}`** — i.e. NOT
+  `forgotten` and NOT `reverted`. **Retired sources ARE citable** (retired = a
+  metadata flip; the file is still in place). `forgotten` (tombstoned to Archive)
+  and `reverted` (file DELETED by git revert — even more gone) are both rejected:
+  a distillation must never cite a source whose content no longer exists in the
+  vault. An invalid/missing/dead source → a typed rejection (`INVALID_SOURCE`,
+  retriable:false) before anything is written — no partial note, no relations. (`INVALID_SOURCE` gets a `BROKER_ERROR_STATUS`
   entry → **422** for the bridge, alongside `INVALID_TRANSITION`.)
 - On success: write the note (mirrors `remember`, incl. the leading-frontmatter
   strip + top-level entity/tags persistence), THEN insert one `memory_relations`

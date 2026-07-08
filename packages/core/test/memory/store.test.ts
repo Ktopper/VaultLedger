@@ -867,6 +867,69 @@ describe("MemoryStore", () => {
       expect(relations[0]!.source_id).toBe(a.id);
     });
 
+    test("rejects with INVALID_SOURCE when a cited source is reverted (its file was deleted by undo)", async () => {
+      const { store, journal, git, vaultRoot, now, genId } = await makeStore();
+      const a = await store.remember({
+        content: "Alice prefers dark mode.",
+        entity: "alice",
+        reason: "seed",
+        session: "s1",
+      });
+      // Undo the create so the source becomes `reverted` — git revert DELETES
+      // its file from the vault, but the journal row survives with
+      // status="reverted", so getMemory still returns it.
+      await undoTransaction({ git, journal, now, genId }, a.txnId);
+      expect(journal.getMemory(a.id)!.status).toBe("reverted");
+
+      const before = journal.listTransactions({});
+      await expect(
+        store.distill({
+          content: "A distillation citing a source whose file is gone.",
+          sources: [a.id],
+          reason: "summarize",
+          session: "s1",
+        }),
+      ).rejects.toMatchObject({ code: "INVALID_SOURCE", retriable: false });
+
+      // Nothing written.
+      expect(journal.listTransactions({})).toHaveLength(before.length);
+      const { readdirSync } = await import("node:fs");
+      const memDir = join(vaultRoot, "Agent/Memory");
+      // The reverted source's file is gone; no new note either.
+      expect(existsSync(memDir) ? readdirSync(memDir) : []).toHaveLength(0);
+    });
+
+    test("dedupes repeated source ids in the derivation block and the relation edges", async () => {
+      const { store, journal, vaultRoot } = await makeStore();
+      const a = await store.remember({
+        content: "Alice prefers dark mode.",
+        entity: "alice",
+        reason: "seed",
+        session: "s1",
+      });
+      const b = await store.remember({
+        content: "Alice prefers a compact layout.",
+        entity: "alice",
+        reason: "seed",
+        session: "s1",
+      });
+
+      const result = await store.distill({
+        content: "Alice prefers dark mode and a compact layout.",
+        sources: [a.id, a.id, b.id],
+        reason: "summarize",
+        session: "s1",
+      });
+
+      const parsed = matter(readFileSync(join(vaultRoot, result.path), "utf8"));
+      expect(
+        (parsed.data.ledger as { derivation: { sources: string[] } }).derivation.sources,
+      ).toEqual([a.id, b.id]);
+      const relations = journal.getRelationsForMemory(result.id);
+      expect(relations).toHaveLength(2);
+      expect(relations.map((r) => r.source_id).sort()).toEqual([a.id, b.id].sort());
+    });
+
     test("rejects with INVALID_SOURCE when sources is empty", async () => {
       const { store } = await makeStore();
       await expect(

@@ -173,11 +173,17 @@ function upsertMemory(journal: Journal, note: ParsedMemoryNote): boolean {
   // changes between reindex runs -- while insertRelation's own
   // ON CONFLICT DO NOTHING keeps a single pass over an unchanged source list
   // from ever producing a duplicate row.
-  if (note.derivationSources.length > 0) {
-    journal.deleteRelationsForMemory(note.id);
-    for (const sourceId of note.derivationSources) {
-      journal.insertRelation({ memory_id: note.id, source_id: sourceId, kind: "distilled" });
-    }
+  //
+  // UNCONDITIONAL clear (not guarded by `derivationSources.length > 0`): a
+  // note whose derivation block was removed/emptied since the last pass must
+  // shed its now-stale edges too. 0 sources -> just the clear (removes any
+  // leftover edges); N sources -> clear + N inserts. For a non-distillation
+  // memory that never had edges the clear is a harmless zero-row delete, so
+  // the edge set always tracks the file exactly. Dedupe defensively so a
+  // hand-edited/forged file with `[a, a]` still yields one edge per source.
+  journal.deleteRelationsForMemory(note.id);
+  for (const sourceId of new Set(note.derivationSources)) {
+    journal.insertRelation({ memory_id: note.id, source_id: sourceId, kind: "distilled" });
   }
 
   return elevatedToCanonical;

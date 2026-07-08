@@ -276,18 +276,37 @@ export class MemoryStore {
    * store method is what resolves it into the underlying `create`.
    */
   async distill(input: DistillInput): Promise<DistillResult> {
+    // Dedupe source ids up front (order-preserving) so the FILE's
+    // `derivation.sources` array and the memory_relations edge set can never
+    // desync: insertRelation is ON CONFLICT DO NOTHING (one edge per unique
+    // source), so an un-deduped `[a, a]` would write a 2-element frontmatter
+    // array but only 1 edge. Dedupe once here and use `sources` everywhere
+    // below.
+    const sources = [...new Set(input.sources)];
+
     // Validate sources BEFORE any write (design: a bad citation must never
     // produce a half-written note or a dangling memory_relations row).
     // Empty sources is rejected too: a distillation with nothing to cite is
     // just a remember wearing a derivation label.
-    if (input.sources.length === 0) {
+    if (sources.length === 0) {
       throw new BrokerError(
         "INVALID_SOURCE",
         "a distillation must cite at least one source",
         false,
       );
     }
-    for (const sourceId of input.sources) {
+    // A source is citable iff its status is in this live-ish allowlist. Both
+    // `forgotten` and `reverted` are excluded because a distillation must not
+    // cite content that no longer exists in the vault: `forgotten` tombstones
+    // the note to Agent/Archive, and `reverted` (an undone create) DELETES
+    // the note from the vault entirely — its journal row survives with
+    // status="reverted", so getMemory still returns it, but its file is gone.
+    // `retired` stays allowed: retiring is a metadata flip that leaves the
+    // file in place, and distillation is exactly the mechanism that
+    // supersedes a retired belief, so citing its own retired inputs is the
+    // expected shape.
+    const CITABLE_STATUSES = ["scratch", "working", "canonical", "retired"];
+    for (const sourceId of sources) {
       const source = this.journal.getMemory(sourceId);
       if (!source) {
         throw new BrokerError(
@@ -296,17 +315,14 @@ export class MemoryStore {
           false,
         );
       }
-      if (source.status === "forgotten") {
+      if (!CITABLE_STATUSES.includes(source.status)) {
         throw new BrokerError(
           "INVALID_SOURCE",
-          `distill source is forgotten and cannot be cited: ${sourceId}`,
+          `distill source '${sourceId}' has non-citable status '${source.status}' ` +
+            `(citable: ${CITABLE_STATUSES.join(", ")})`,
           false,
         );
       }
-      // `retired` sources ARE allowed: retiring a memory means "superseded,
-      // don't treat as current truth", not "erased" — distillation is
-      // exactly the mechanism that supersedes it, so a distillation citing
-      // its own retired inputs is the expected shape, not an error.
     }
 
     const id = this.genId("mem");
@@ -334,7 +350,7 @@ export class MemoryStore {
         confidence: input.confidence ?? "medium",
         supersedes: null,
         expires: null,
-        derivation: { kind: "distilled", sources: input.sources },
+        derivation: { kind: "distilled", sources },
         ...(input.score !== undefined ? { score: input.score } : {}),
       },
     };
@@ -380,7 +396,7 @@ export class MemoryStore {
     // This self-heals: reindex rebuilds a memory's relations from its file's
     // `ledger.derivation.sources` (v0.3b reindex change), so the edges
     // reappear on the next reindex rather than staying permanently dangling.
-    for (const sourceId of input.sources) {
+    for (const sourceId of sources) {
       this.journal.insertRelation({ memory_id: id, source_id: sourceId, kind: "distilled" });
     }
 
