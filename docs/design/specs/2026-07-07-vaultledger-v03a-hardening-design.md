@@ -92,12 +92,22 @@ contradiction is its own row):
   - Defining both now prevents the negation path from either crashing the NOT
     NULL invariant or silently getting a constant hash (which would reintroduce
     dismiss-forever for negations only).
-- **Migration:** add the column, **backfill every existing row** with a non-null
-  hash (hash the stored `detail` string verbatim — robust even if re-parsing the
-  original values is fragile), THEN build the new unique index (drop the old one).
-  Order matters: backfill before the NOT NULL/unique constraint so no row is left
-  NULL. Idempotent (`IF NOT EXISTS` / guarded), consistent with existing
-  migrations in `journal/db.ts`.
+- **Migration (chosen mechanism — pin it, don't discover it mid-write):** SQLite
+  `ALTER TABLE ADD COLUMN` **cannot** add a `NOT NULL` column to a non-empty table
+  without a default. Use the lighter of the two viable paths:
+  1. `ALTER TABLE conflicts ADD COLUMN value_hash TEXT NOT NULL DEFAULT ''`
+  2. `UPDATE` every existing row, overwriting the `''` sentinel with the real
+     backfilled hash (from the stored `detail` string verbatim — robust even if
+     re-parsing the original values is fragile)
+  3. `DROP` the old unique index, `CREATE` the new
+     `UNIQUE(pair_lo, pair_hi, kind, fact_key, value_hash)`
+  Order matters: backfill (step 2) before the new unique index (step 3) so no row
+  collides wrongly. **Failure direction is safe by construction:** if a row somehow
+  retained `''`, identical empty hashes *over-dedup* (collide into one row) rather
+  than spawn duplicates — the opposite of the NULL footgun. (The alternative —
+  full table rebuild: create-new / copy / drop / rename — is cleaner but heavier;
+  the `ADD COLUMN DEFAULT ''` path is chosen deliberately here.) Idempotent /
+  guarded, consistent with existing migrations in `journal/db.ts`.
 - Effect: a new contradiction with DIFFERENT values on the same pair+fact →
   different `value_hash` → a **new open row** (not swallowed); re-detecting the
   SAME values → same hash → dedup as before (no duplicates).
@@ -125,15 +135,20 @@ real, separately-dismissable contradiction — not a leak.
 stale) — a confusing, delayed, non-actionable failure for the agent.
 
 **Design:** validate the `expected_hash` format when the op enters the queue /
-is applied — reject a malformed hash immediately with a typed, actionable
-`BrokerError` (e.g. `STALE_HASH` or a dedicated `MALFORMED_HASH` — pick per the
-existing error taxonomy; a distinct code is clearer) at the point the op is
-accepted (propose_edit enqueue AND direct revise), so the agent gets the
-rejection at call time, not approval time. The canonical format is
-`sha256:<64 hex>` — validate the prefix + hex length.
+is applied — reject a malformed hash immediately with a **dedicated
+`MALFORMED_HASH`** `BrokerError` (NOT overloaded onto `STALE_HASH`: "you
+formatted this wrong, fix and retry" and "the file changed underneath you" demand
+different agent reactions) at the point the op is accepted (propose_edit enqueue
+AND direct revise), so the agent gets the rejection at call time, not approval
+time. The canonical format is `sha256:<64 hex>` — validate the prefix + hex
+length. **Normalize hex case:** accept either case at validation and normalize to
+lowercase before compare/store, so a client that uppercases hex
+(`sha256:ABC…`) isn't rejected for a hash that is actually correct.
 
 **Required tests:** propose_edit / revise with a bare hex (no `sha256:`) → typed
-rejection at enqueue/apply time, nothing queued; a well-formed hash still works.
+`MALFORMED_HASH` at enqueue/apply time, nothing queued; a well-formed lowercase
+hash works; an uppercase-hex `sha256:ABC…` is accepted and matches (normalized),
+not rejected.
 
 ---
 
@@ -148,6 +163,13 @@ the original content exceeds a small absolute-byte floor (e.g. **512 bytes**).
 Below the floor, a large-ratio change on a tiny note is allowed (the ratio is
 meaningless at that size). Keep the ratio guard unchanged above the floor. Named
 constant; documented rationale.
+
+**Consistency note (in the code rationale, since a reviewer will ask):** below the
+floor a *working* note can be fully rewritten unapproved. That is consistent with
+the model — working is provisional; WU-1 gates *canonical* revises regardless of
+patch size; and the ledger-guard protects provenance (status/entity/supersedes) at
+*any* size. So the floor only relaxes the size heuristic on tiny provisional
+bodies, never a governance control.
 
 **Required tests:** a one-line edit to a sub-floor tiny note SUCCEEDS (RED before:
 `PATCH_TOO_LARGE`); an above-floor note with a >50% change still throws
@@ -164,19 +186,29 @@ file). Those notes silently drop from same-entity comparison sets after a full
 rebuild.
 
 **Design:** a one-shot maintenance command `ledger memory backfill-entity <vault>`
-(and the underlying core function): iterate journal memories; for each whose
-JOURNAL row has a non-null `entity` but whose FILE lacks a top-level `entity`,
-write the entity into the note's top-level frontmatter through the broker as an
-**approved** revise (entity is governed → `{approved:true}`, which also triggers
-the pre-image baseline for any still-untracked note). After the backfill, every
-memory is self-describing and survives a full rebuild. Idempotent (skip notes
-whose file already carries the entity). Report counts (backfilled / skipped /
-errors), non-fatal per note (one bad note doesn't abort the run).
+(and the underlying core function): iterate journal memories and branch on the
+file's top-level `entity` vs the journal row's `entity` — **three cases, not two**
+(the naive "skip if the file has an entity" conflates two very different things):
+- **file has NO entity, journal has one → BACKFILL:** write the entity into the
+  note's top-level frontmatter through the broker as an **approved** revise
+  (entity is governed → `{approved:true}`, which also triggers the pre-image
+  baseline for any still-untracked note).
+- **file entity EQUALS journal entity → SKIP** (already self-describing; idempotent).
+- **file entity DIFFERS from journal entity → MISMATCH:** do NOT silently skip and
+  do NOT silently overwrite — **report it and leave the file alone.** A divergence
+  here (drift, or forgery-era residue) is exactly what a human should look at, and
+  the backfill run is the one moment it's visible.
+
+After the backfill, every non-mismatched memory is self-describing and survives a
+full rebuild. Report counts **`backfilled / skipped / mismatched / errors`**,
+non-fatal per note (one bad note doesn't abort the run).
 
 **Required tests:** a legacy note (journal entity set, file has none) → after
 backfill the FILE carries the top-level entity and a subsequent full rebuild
-recovers it; a note already carrying entity is skipped (idempotent); a
-missing/corrupt note is recorded, not fatal.
+recovers it; a note whose file entity EQUALS the journal is skipped (idempotent);
+a note whose file entity DIFFERS from the journal is reported as `mismatched` and
+its FILE is left unchanged; a missing/corrupt note is recorded in `errors`, not
+fatal.
 
 ---
 
