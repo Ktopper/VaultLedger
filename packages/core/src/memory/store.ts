@@ -16,6 +16,21 @@ type MemoryStatusValue = z.infer<typeof MemoryStatus>;
 const DEFAULT_AGENT_DIR = "Agent/Memory";
 const ARCHIVE_DIR = "Agent/Archive";
 
+/**
+ * The lineage-citable status allowlist, shared by `distill` (validating its
+ * `sources`) and `retire` (validating its `superseded_by`). A memory is
+ * citable iff its status is in here: `forgotten` (tombstoned to
+ * Agent/Archive) and `reverted` (an undone create — its FILE is DELETED from
+ * the vault, only the journal row survives) are BOTH excluded because a
+ * lineage pointer must never reference content that no longer exists in the
+ * vault. `retired` stays allowed — retiring is a metadata flip that leaves
+ * the file in place, so a live-or-retired target is a valid citation. Kept as
+ * ONE constant so the two validators can never drift apart (they did once:
+ * retire's original one-status denylist accepted `reverted`, a dangling
+ * pointer to deleted content).
+ */
+const CITABLE_SOURCE_STATUSES = ["scratch", "working", "canonical", "retired"] as const;
+
 export interface MemoryStoreOptions {
   broker: Broker;
   journal: Journal;
@@ -146,10 +161,12 @@ export interface RetireInput {
    * Id of the memory that supersedes this one going forward. OPTIONAL —
    * a retire with no successor is still a valid "no longer current, no
    * replacement yet" state. When provided it must reference an EXISTING
-   * memory whose status is not `forgotten` (a `retired` target is fine — you
-   * can be superseded by an earlier historical belief); validated BEFORE any
-   * write or enqueue (an unvalidated pointer is a forgeable lineage claim,
-   * same family as `distill`'s source validation).
+   * memory whose status is CITABLE (not `forgotten`, not `reverted` — both
+   * mean the content is gone from the vault; a `retired` or live target is
+   * fine, since you can be superseded by a historical belief). Validated
+   * BEFORE any write or enqueue (an unvalidated pointer is a forgeable
+   * lineage claim, same family as `distill`'s source validation, and shares
+   * its `CITABLE_SOURCE_STATUSES` allowlist).
    */
   superseded_by?: string;
   session: string;
@@ -327,17 +344,12 @@ export class MemoryStore {
         false,
       );
     }
-    // A source is citable iff its status is in this live-ish allowlist. Both
+    // A source is citable iff its status is in the shared
+    // CITABLE_SOURCE_STATUSES allowlist (see its doc comment): both
     // `forgotten` and `reverted` are excluded because a distillation must not
-    // cite content that no longer exists in the vault: `forgotten` tombstones
-    // the note to Agent/Archive, and `reverted` (an undone create) DELETES
-    // the note from the vault entirely — its journal row survives with
-    // status="reverted", so getMemory still returns it, but its file is gone.
-    // `retired` stays allowed: retiring is a metadata flip that leaves the
-    // file in place, and distillation is exactly the mechanism that
-    // supersedes a retired belief, so citing its own retired inputs is the
-    // expected shape.
-    const CITABLE_STATUSES = ["scratch", "working", "canonical", "retired"];
+    // cite content that no longer exists in the vault. `retired` stays
+    // allowed: distillation is exactly the mechanism that supersedes a
+    // retired belief, so citing its own retired inputs is the expected shape.
     for (const sourceId of sources) {
       const source = this.journal.getMemory(sourceId);
       if (!source) {
@@ -347,11 +359,11 @@ export class MemoryStore {
           false,
         );
       }
-      if (!CITABLE_STATUSES.includes(source.status)) {
+      if (!CITABLE_SOURCE_STATUSES.includes(source.status as (typeof CITABLE_SOURCE_STATUSES)[number])) {
         throw new BrokerError(
           "INVALID_SOURCE",
           `distill source '${sourceId}' has non-citable status '${source.status}' ` +
-            `(citable: ${CITABLE_STATUSES.join(", ")})`,
+            `(citable: ${CITABLE_SOURCE_STATUSES.join(", ")})`,
           false,
         );
       }
@@ -734,16 +746,21 @@ export class MemoryStore {
     // superseded_by validation BEFORE applying AND before enqueue — a bad
     // pointer must never even enter the approval queue (same "dangling
     // citation" family as distill's source validation: an unvalidated
-    // superseded_by is a forgeable lineage pointer). A missing or forgotten
-    // target is rejected; a live OR retired target is fine (you can be
-    // superseded by a historical belief).
+    // superseded_by is a forgeable lineage pointer). Uses the SAME
+    // CITABLE_SOURCE_STATUSES allowlist distill does, so both reject
+    // `forgotten` AND `reverted` (content gone from the vault) while allowing
+    // a live OR retired target (you can be superseded by a historical
+    // belief).
     if (input.superseded_by !== undefined) {
       const target = this.journal.getMemory(input.superseded_by);
-      if (!target || target.status === "forgotten") {
+      if (
+        !target ||
+        !CITABLE_SOURCE_STATUSES.includes(target.status as (typeof CITABLE_SOURCE_STATUSES)[number])
+      ) {
         throw new BrokerError(
           "INVALID_SOURCE",
           `retire superseded_by '${input.superseded_by}' must reference an existing, ` +
-            `non-forgotten memory`,
+            `citable memory (not forgotten, not reverted)`,
           false,
         );
       }

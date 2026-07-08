@@ -1125,6 +1125,46 @@ describe("MemoryStore", () => {
       expect(journal.getMemory(id)!.status).toBe("canonical");
     });
 
+    test("superseded_by pointing at a reverted memory is rejected (dangling pointer to deleted content)", async () => {
+      const { store, journal, git, vaultRoot, now, genId } = await makeStore();
+      // Seed a reverted target the same way distill's reverted-source test does:
+      // remember -> undo its create. git revert DELETES the file; the journal
+      // row survives with status="reverted", so getMemory still returns it.
+      const gone = await store.remember({ content: "will be reverted", reason: "seed", session: "s1" });
+      await undoTransaction({ git, journal, now, genId }, gone.txnId);
+      expect(journal.getMemory(gone.id)!.status).toBe("reverted");
+
+      const { id, path } = await store.remember({ content: "working fact", reason: "seed", session: "s1" });
+      await store.promote({ id, target_status: "working", reason: "confirmed", session: "s1" });
+      const before = readFileSync(join(vaultRoot, path), "utf8");
+
+      await expect(
+        store.retire({ id, reason: "superseded", superseded_by: gone.id, session: "s1" }),
+      ).rejects.toMatchObject({ code: "INVALID_SOURCE", retriable: false });
+
+      // Nothing applied.
+      expect(readFileSync(join(vaultRoot, path), "utf8")).toBe(before);
+      expect(journal.getMemory(id)!.status).toBe("working");
+    });
+
+    test("superseded_by pointing at a reverted memory does not even queue when the retiree is canonical", async () => {
+      const { store, journal, git, now, genId } = await makeStore();
+      const gone = await store.remember({ content: "will be reverted", reason: "seed", session: "s1" });
+      await undoTransaction({ git, journal, now, genId }, gone.txnId);
+      expect(journal.getMemory(gone.id)!.status).toBe("reverted");
+
+      const { id } = await store.remember({ content: "canonical fact", reason: "seed", session: "s1" });
+      await store.setStatus(id, "canonical", "approved as durable belief", "s1");
+
+      await expect(
+        store.retire({ id, reason: "superseded", superseded_by: gone.id, session: "s1" }),
+      ).rejects.toMatchObject({ code: "INVALID_SOURCE", retriable: false });
+
+      // The bad pointer must not even enter the approval queue.
+      expect(journal.listApprovals("pending")).toHaveLength(0);
+      expect(journal.getMemory(id)!.status).toBe("canonical");
+    });
+
     test("superseded_by pointing at a live (working) memory is accepted and written into ledger.superseded_by", async () => {
       const { store, vaultRoot } = await makeStore();
       const newer = await store.remember({ content: "newer fact", reason: "seed", session: "s1" });
