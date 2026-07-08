@@ -399,6 +399,20 @@ detection across the agent zone on demand (respecting the all-states dedup).
   datetimes aren't covered by the datetime→unparseable guard. (c) matcher
   asymmetry in the canonical-exception (audit both directions of a transitive
   chain). (d) the `isn't` negation misses a curly apostrophe (`isn't`).
+  (e) `expected_hash` format isn't validated when a `propose_edit`/`revise` op
+  enters the queue — a bare hex digest (missing the `sha256:` prefix) queues
+  fine and only fails at approve time (goes stale). Validate the format at
+  enqueue so the agent gets an immediate, actionable rejection. (f) the 50%
+  PATCH_TOO_LARGE guard is over-tight on very short notes (a legit one-line edit
+  to a tiny file trips it) — add a small absolute-byte floor (e.g. only enforce
+  the ratio above ~500 bytes) so tiny notes stay editable. (Both surfaced by the
+  usability dogfood.)
+
+**Ops note (not code):** the working repo lives under an iCloud-synced path,
+which periodically sheds `name 2`/`name 3` duplicate dirs/files (the mechanism
+behind an earlier junk commit). `.gitignore` now covers both the `foo 2.ext` and
+the extensionless `foo 2` dir/file forms; the durable fix is to move the working
+clone out of the iCloud-synced Documents folder.
 
 **v1.1:** embedding/LLM-assisted contradiction + entity matching (drops into the
 `ContradictionDetector` / `EntityMatcher` interfaces).

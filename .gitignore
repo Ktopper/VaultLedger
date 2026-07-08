@@ -30,9 +30,13 @@ coverage/
 
 # macOS/iCloud "filename 2.ext" duplicate-on-conflict copies. This project dir
 # sits under an iCloud-synced Documents folder; a stray auto-commit swept a batch
-# of these into git once (reverted in c3f3a13). Keep them out for good.
+# of these into git once (reverted in c3f3a13). Keep them out for good — both the
+# file form ("foo 2.ext") and the EXTENSIONLESS dir/file form ("broker 2",
+# "approvals 3") iCloud also creates for directories.
 * [0-9].*
 * [0-9][0-9].*
+* [0-9]
+* [0-9][0-9]
 
 # Harness / local config
 .claude/
