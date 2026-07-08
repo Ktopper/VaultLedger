@@ -57,12 +57,12 @@ type ProposeEditOp = Extract<ProposedOperation, { op: "propose_edit" }>;
 /**
  * The single gate every vault write passes through (design §5). Every
  * rejection is a thrown BrokerError — callers that want a plain object call
- * `.toRejection()` themselves. `promote`/`forget`/`distill` are NOT handled
- * by `apply()`: those operate on a memory id (or, for `distill`, a set of
- * source memory ids), not a path, and are the memory store's job to resolve
- * into a path before calling `archive()` (forget) or a plain journal update
- * (promote) or a validated `create()` (distill). Calling `apply()` with any
- * of them throws.
+ * `.toRejection()` themselves. `promote`/`forget`/`distill`/`retire` are NOT
+ * handled by `apply()`: those operate on a memory id (or, for `distill`, a
+ * set of source memory ids), not a path, and are the memory store's job to
+ * resolve into a path before calling `archive()` (forget) or a plain journal
+ * update (promote) or a validated `create()` (distill) or an approved
+ * frontmatter `revise()` (retire). Calling `apply()` with any of them throws.
  */
 export class Broker {
   private readonly vaultRoot: string;
@@ -106,6 +106,7 @@ export class Broker {
         case "promote":
         case "forget":
         case "distill":
+        case "retire":
           throw new BrokerError(
             "NOT_FOUND",
             `op '${op.op}' operates on a memory id and must be resolved to a path by the ` +

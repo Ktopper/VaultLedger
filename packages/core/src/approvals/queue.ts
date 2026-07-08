@@ -43,6 +43,11 @@ export type ApproveResult = { applied: true } | { stale: true };
  *     It is applied via `MemoryStore.forget(input, {approved:true})`, which
  *     bypasses the gate and runs the real tombstone (frontmatter flip +
  *     archive move + journal update).
+ *   - `retire`: a canonical-belief retire (queued by `MemoryStore.retire`,
+ *     mirroring the `forget` gate exactly) is likewise not a path-based
+ *     broker op. It is applied via `MemoryStore.retire(input, {approved:true})`,
+ *     which bypasses the gate and runs the real metadata patch (frontmatter
+ *     status/retired_reason/superseded_by flip).
  *   - anything else: INVALID_TRANSITION (an unrecognized held op is a
  *     journal-integrity problem, not a normal rejection path).
  */
@@ -125,6 +130,24 @@ export class Approvals {
         const reason = typeof op.reason === "string" ? op.reason : "approved canonical forget";
         const session = typeof op.session === "string" ? op.session : "approval";
         await this.store.forget({ id: memoryId, reason, session }, { approved: true });
+        this.journal.setApprovalState(id, "approved", this.now());
+        return { applied: true };
+      }
+      case "retire": {
+        // A canonical-retire (queued by `MemoryStore.retire`, mirroring the
+        // `forget` gate exactly) is likewise not a path-based broker op. It
+        // is applied via MemoryStore.retire(..., {approved:true}), which
+        // bypasses the canonical gate and runs the real metadata patch
+        // (frontmatter status/retired_reason/superseded_by flip) — mirrors
+        // the `forget` case above.
+        const memoryId = op.id as string;
+        const reason = typeof op.reason === "string" ? op.reason : "approved canonical retire";
+        const session = typeof op.session === "string" ? op.session : "approval";
+        const supersededBy = typeof op.superseded_by === "string" ? op.superseded_by : undefined;
+        await this.store.retire(
+          { id: memoryId, reason, superseded_by: supersededBy, session },
+          { approved: true },
+        );
         this.journal.setApprovalState(id, "approved", this.now());
         return { applied: true };
       }

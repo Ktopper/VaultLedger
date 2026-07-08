@@ -116,6 +116,14 @@ const DistillInput = z
   })
   .strict();
 
+const RetireInput = z
+  .object({
+    id: z.string().min(1),
+    reason: z.string().min(1),
+    superseded_by: z.string().optional(),
+  })
+  .strict();
+
 const ProposeEditInput = z
   .object({
     path: z.string().min(1),
@@ -128,7 +136,7 @@ const ProposeEditInput = z
 const LedgerStatusInput = z.object({}).strict();
 
 /**
- * Build the 8 spec tools (design §7 + v0.3b memory_distill) as a thin
+ * Build the 9 spec tools (design §7 + v0.3b memory_distill/memory_retire) as a thin
  * adapter over `@vaultledger/core`.
  * Every handler validates its own args against its zod inputSchema and never
  * throws — invalid args and BrokerError rejections both come back as a
@@ -263,6 +271,26 @@ export function buildTools(ctx: ServerContext): ToolDef[] {
             return { queued: true, approvalId: result.approvalId };
           }
           return { id: result.id, forgotten: true };
+        }),
+    },
+    {
+      name: "memory_retire",
+      description:
+        "Mark a memory as no-longer-current: status -> retired, via a governed metadata patch " +
+        "(never prose). Optionally cite a superseded_by memory id (must exist and not be forgotten). " +
+        "Retiring a canonical memory is held for human approval (mirrors memory_forget's canonical gate) " +
+        "instead of applying immediately.",
+      inputSchema: RetireInput,
+      handler: (rawArgs) =>
+        guarded(async () => {
+          const parsed = RetireInput.safeParse(rawArgs);
+          if (!parsed.success) return invalidArgs(parsed.error.message);
+          const { id, reason, superseded_by } = parsed.data;
+          const result = await ctx.store.retire({ id, reason, superseded_by, session: ctx.session });
+          if ("queued" in result) {
+            return { queued: true, approvalId: result.approvalId };
+          }
+          return { id: result.id, retired: true };
         }),
     },
     {

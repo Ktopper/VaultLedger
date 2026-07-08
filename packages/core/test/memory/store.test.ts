@@ -986,4 +986,185 @@ describe("MemoryStore", () => {
       expect(row!.status).toBe("scratch");
     });
   });
+
+  describe("retire", () => {
+    test("working -> retire applies immediately: file status flips, retired_reason is written, journal row retired", async () => {
+      const { store, journal, vaultRoot } = await makeStore();
+      const { id, path } = await store.remember({ content: "aging fact", reason: "seed", session: "s1" });
+      await store.promote({ id, target_status: "working", reason: "confirmed", session: "s1" });
+
+      const result = await store.retire({ id, reason: "superseded by a newer note", session: "s1" });
+
+      expect(result).toEqual({ retired: true, id });
+      const onDisk = matter(readFileSync(join(vaultRoot, path), "utf8"));
+      expect(onDisk.data.ledger.status).toBe("retired");
+      expect(onDisk.data.ledger.retired_reason).toBe("superseded by a newer note");
+      // No prose appended: the note body must be unchanged.
+      expect(onDisk.content.trim()).toBe("aging fact");
+      expect(journal.getMemory(id)!.status).toBe("retired");
+    });
+
+    test("canonical -> retire (unapproved) queues an approval; file and journal are UNCHANGED", async () => {
+      const { store, journal, vaultRoot } = await makeStore();
+      const { id, path } = await store.remember({ content: "durable fact", reason: "seed", session: "s1" });
+      await store.setStatus(id, "canonical", "approved as durable belief", "s1");
+
+      const before = readFileSync(join(vaultRoot, path), "utf8");
+      const result = await store.retire({ id, reason: "no longer current", session: "s1" });
+
+      expect(result).toHaveProperty("queued", true);
+      const approvalId = (result as { queued: true; approvalId: string }).approvalId;
+      expect(typeof approvalId).toBe("string");
+
+      expect(readFileSync(join(vaultRoot, path), "utf8")).toBe(before);
+      expect(journal.getMemory(id)!.status).toBe("canonical");
+
+      const approval = journal.getApproval(approvalId);
+      expect(approval).not.toBeNull();
+      expect(approval!.state).toBe("pending");
+      expect(approval!.zone).toBe("canonical-retire");
+      expect(JSON.parse(approval!.held_operation)).toEqual({
+        op: "retire",
+        id,
+        reason: "no longer current",
+        session: "s1",
+      });
+    });
+
+    test("scratch -> retire is an unsupported transition", async () => {
+      const { store } = await makeStore();
+      const { id } = await store.remember({ content: "fresh fact", reason: "seed", session: "s1" });
+
+      let thrown: unknown;
+      try {
+        await store.retire({ id, reason: "too soon", session: "s1" });
+      } catch (e) {
+        thrown = e;
+      }
+      expect(thrown).toBeInstanceOf(BrokerError);
+      expect((thrown as BrokerError).code).toBe("INVALID_TRANSITION");
+    });
+
+    test("forgotten -> retire is an unsupported transition", async () => {
+      const { store } = await makeStore();
+      const { id } = await store.remember({ content: "gone fact", reason: "seed", session: "s1" });
+      await store.forget({ id, reason: "no longer relevant", session: "s1" });
+
+      let thrown: unknown;
+      try {
+        await store.retire({ id, reason: "too late", session: "s1" });
+      } catch (e) {
+        thrown = e;
+      }
+      expect(thrown).toBeInstanceOf(BrokerError);
+      expect((thrown as BrokerError).code).toBe("INVALID_TRANSITION");
+    });
+
+    test("reverted -> retire is an unsupported transition", async () => {
+      const { store, journal, git, now, genId } = await makeStore();
+      const { id, txnId } = await store.remember({ content: "undone fact", reason: "seed", session: "s1" });
+      await undoTransaction({ git, journal, now, genId }, txnId);
+      expect(journal.getMemory(id)!.status).toBe("reverted");
+
+      let thrown: unknown;
+      try {
+        await store.retire({ id, reason: "nonsense", session: "s1" });
+      } catch (e) {
+        thrown = e;
+      }
+      expect(thrown).toBeInstanceOf(BrokerError);
+      expect((thrown as BrokerError).code).toBe("INVALID_TRANSITION");
+    });
+
+    test("retired -> retire is the ONLY idempotent no-op (no error, no second commit)", async () => {
+      const { store, journal, vaultRoot } = await makeStore();
+      const { id, path } = await store.remember({ content: "already retired", reason: "seed", session: "s1" });
+      await store.promote({ id, target_status: "working", reason: "confirmed", session: "s1" });
+      await store.retire({ id, reason: "first retire", session: "s1" });
+
+      const before = readFileSync(join(vaultRoot, path), "utf8");
+      const txnsBefore = journal.listTransactions({}).length;
+
+      const again = await store.retire({ id, reason: "second retire attempt", session: "s1" });
+
+      expect(again).toEqual({ retired: true, id });
+      expect(readFileSync(join(vaultRoot, path), "utf8")).toBe(before);
+      expect(journal.listTransactions({})).toHaveLength(txnsBefore);
+      expect(journal.getMemory(id)!.status).toBe("retired");
+    });
+
+    test("superseded_by pointing at a missing memory id is rejected before applying or enqueueing", async () => {
+      const { store, journal, vaultRoot } = await makeStore();
+      const { id, path } = await store.remember({ content: "working fact", reason: "seed", session: "s1" });
+      await store.promote({ id, target_status: "working", reason: "confirmed", session: "s1" });
+      const before = readFileSync(join(vaultRoot, path), "utf8");
+
+      await expect(
+        store.retire({ id, reason: "superseded", superseded_by: "mem_does_not_exist", session: "s1" }),
+      ).rejects.toMatchObject({ code: "INVALID_SOURCE", retriable: false });
+
+      expect(readFileSync(join(vaultRoot, path), "utf8")).toBe(before);
+      expect(journal.getMemory(id)!.status).toBe("working");
+      expect(journal.listApprovals("pending")).toHaveLength(0);
+    });
+
+    test("superseded_by pointing at a forgotten memory is rejected (dangling lineage guard), including when the retiree is canonical (must not queue)", async () => {
+      const { store, journal } = await makeStore();
+      const other = await store.remember({ content: "gone", reason: "seed", session: "s1" });
+      await store.forget({ id: other.id, reason: "removed", session: "s1" });
+
+      const { id } = await store.remember({ content: "canonical fact", reason: "seed", session: "s1" });
+      await store.setStatus(id, "canonical", "approved as durable belief", "s1");
+
+      await expect(
+        store.retire({ id, reason: "superseded", superseded_by: other.id, session: "s1" }),
+      ).rejects.toMatchObject({ code: "INVALID_SOURCE", retriable: false });
+
+      // Must never even enter the approval queue with a dangling pointer.
+      expect(journal.listApprovals("pending")).toHaveLength(0);
+      expect(journal.getMemory(id)!.status).toBe("canonical");
+    });
+
+    test("superseded_by pointing at a live (working) memory is accepted and written into ledger.superseded_by", async () => {
+      const { store, vaultRoot } = await makeStore();
+      const newer = await store.remember({ content: "newer fact", reason: "seed", session: "s1" });
+      await store.promote({ id: newer.id, target_status: "working", reason: "confirmed", session: "s1" });
+
+      const { id, path } = await store.remember({ content: "older fact", reason: "seed", session: "s1" });
+      await store.promote({ id, target_status: "working", reason: "confirmed", session: "s1" });
+
+      const result = await store.retire({
+        id,
+        reason: "superseded by a newer note",
+        superseded_by: newer.id,
+        session: "s1",
+      });
+
+      expect(result).toEqual({ retired: true, id });
+      const onDisk = matter(readFileSync(join(vaultRoot, path), "utf8"));
+      expect(onDisk.data.ledger.status).toBe("retired");
+      expect(onDisk.data.ledger.superseded_by).toBe(newer.id);
+    });
+
+    test("superseded_by pointing at a retired memory is accepted (a historical belief can supersede)", async () => {
+      const { store, vaultRoot } = await makeStore();
+      const oldest = await store.remember({ content: "oldest fact", reason: "seed", session: "s1" });
+      await store.promote({ id: oldest.id, target_status: "working", reason: "confirmed", session: "s1" });
+      await store.retire({ id: oldest.id, reason: "first retirement", session: "s1" });
+
+      const { id, path } = await store.remember({ content: "middle fact", reason: "seed", session: "s1" });
+      await store.promote({ id, target_status: "working", reason: "confirmed", session: "s1" });
+
+      const result = await store.retire({
+        id,
+        reason: "also retired, superseded by the same historical thread",
+        superseded_by: oldest.id,
+        session: "s1",
+      });
+
+      expect(result).toEqual({ retired: true, id });
+      const onDisk = matter(readFileSync(join(vaultRoot, path), "utf8"));
+      expect(onDisk.data.ledger.superseded_by).toBe(oldest.id);
+    });
+  });
 });

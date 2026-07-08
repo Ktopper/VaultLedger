@@ -47,6 +47,21 @@ export const ForgetOp = z
   })
   .strict();
 
+// v0.3b: like promote/forget, `retire` operates on a memory id, not a path --
+// it is resolved by the memory store, which validates `superseded_by` (when
+// present) and issues the underlying (approved) `revise` that flips
+// `ledger.status`/`ledger.retired_reason`/`ledger.superseded_by`. This shape
+// only exists for typing/journal/MCP; `Broker.apply()` rejects it outright
+// (see broker.ts's promote/forget/distill reject arm).
+export const RetireOp = z
+  .object({
+    op: z.literal("retire"),
+    id: z.string().min(1),
+    superseded_by: z.string().optional(),
+    ...commonOpFields,
+  })
+  .strict();
+
 // v0.3b: like promote/forget, `distill` operates on memory ids (the sources
 // being cited), not a path -- it is resolved by the memory store, which
 // validates the sources and issues the underlying `create`. This shape only
@@ -71,5 +86,6 @@ export const ProposedOperation = z.discriminatedUnion("op", [
   PromoteOp,
   ForgetOp,
   DistillOp,
+  RetireOp,
 ]);
 export type ProposedOperation = z.infer<typeof ProposedOperation>;

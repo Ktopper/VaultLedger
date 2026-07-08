@@ -139,6 +139,38 @@ export interface ForgetOptions {
  */
 export type ForgetResult = { forgotten: true; id: string } | { queued: true; approvalId: string };
 
+export interface RetireInput {
+  id: string;
+  reason: string;
+  /**
+   * Id of the memory that supersedes this one going forward. OPTIONAL —
+   * a retire with no successor is still a valid "no longer current, no
+   * replacement yet" state. When provided it must reference an EXISTING
+   * memory whose status is not `forgotten` (a `retired` target is fine — you
+   * can be superseded by an earlier historical belief); validated BEFORE any
+   * write or enqueue (an unvalidated pointer is a forgeable lineage claim,
+   * same family as `distill`'s source validation).
+   */
+  superseded_by?: string;
+  session: string;
+}
+
+export interface RetireOptions {
+  /** Bypass the canonical-retire approval gate (set by Approvals.approve when
+   * applying a previously-held retire). Harmless on working memories, which
+   * never hit the gate anyway. */
+  approved?: boolean;
+}
+
+/**
+ * Discriminated union (mirrors `ForgetResult` exactly): a working retire (or
+ * an approved canonical one) lands immediately and returns
+ * `{ retired: true, id }`; an unapproved canonical retire is held for
+ * approval and returns `{ queued: true, approvalId }` instead of patching
+ * anything.
+ */
+export type RetireResult = { retired: true; id: string } | { queued: true; approvalId: string };
+
 /**
  * Memory lifecycle on top of the Broker (design §memory lifecycle). Every
  * mutation still routes through the broker (or `broker.archive`) so the
@@ -659,6 +691,103 @@ export class MemoryStore {
   }
 
   /**
+   * Mark a memory `retired` — "no longer current knowledge, but still
+   * history" (design v0.3b lifecycle-ops) — via a governed metadata patch
+   * into the note's `ledger:` block. Mirrors `forget` EXACTLY: same
+   * idempotency guard, same canonical-approval gate, same
+   * queued-vs-applied `RetireResult` union. The only additions are (1) a
+   * transition table that REJECTS scratch/forgotten/reverted rather than
+   * silently no-opping (retire is only meaningful for current-knowledge
+   * states) and (2) `superseded_by` validation.
+   *
+   * NEVER appends prose to the body — this writes `ledger.status`,
+   * `ledger.retired_reason`, and (optionally) `ledger.superseded_by` only,
+   * via `flipFrontmatterStatus`'s minimal unified diff, same as every other
+   * durable status transition in this file.
+   */
+  async retire(input: RetireInput, opts?: RetireOptions): Promise<RetireResult> {
+    const mem = this.journal.getMemory(input.id);
+    if (!mem) {
+      throw new BrokerError("NOT_FOUND", `no memory with id ${input.id}`);
+    }
+
+    // Idempotent re-apply (mirrors forget's already-forgotten guard): the
+    // ONLY no-op transition. This matters for the same crash-gap reason
+    // forget's guard does — a human re-approving a canonical-retire after a
+    // crash between apply and setApprovalState must not wedge here.
+    if (mem.status === "retired") {
+      return { retired: true, id: input.id };
+    }
+
+    // Transition table (mirrors forget + promote): retire only applies to
+    // current-knowledge states. scratch/forgotten/reverted are NOT silent
+    // no-ops — an agent calling retire on one of those is a caller error
+    // that must surface, not disappear.
+    if (mem.status === "scratch" || mem.status === "forgotten" || mem.status === "reverted") {
+      throw new BrokerError(
+        "INVALID_TRANSITION",
+        `cannot retire a memory with status '${mem.status}'; retire only applies to ` +
+          `current-knowledge states (working/canonical)`,
+      );
+    }
+
+    // superseded_by validation BEFORE applying AND before enqueue — a bad
+    // pointer must never even enter the approval queue (same "dangling
+    // citation" family as distill's source validation: an unvalidated
+    // superseded_by is a forgeable lineage pointer). A missing or forgotten
+    // target is rejected; a live OR retired target is fine (you can be
+    // superseded by a historical belief).
+    if (input.superseded_by !== undefined) {
+      const target = this.journal.getMemory(input.superseded_by);
+      if (!target || target.status === "forgotten") {
+        throw new BrokerError(
+          "INVALID_SOURCE",
+          `retire superseded_by '${input.superseded_by}' must reference an existing, ` +
+            `non-forgotten memory`,
+          false,
+        );
+      }
+    }
+
+    if (mem.status === "canonical" && !opts?.approved) {
+      // EXECUTION CONTRACT FOR Approvals.approve(): the held op below is an
+      // op:"retire" (schemas/operation.ts RetireOp shape), which
+      // Broker.apply() rejects by design (it operates on a memory id, not a
+      // path — see broker.ts). approve() MUST DISPATCH on the held op — a
+      // held `retire` is executed by calling `store.retire(..., {approved:
+      // true})` directly, NOT via broker.apply. Mirrors the `forget` held op
+      // exactly.
+      const approvalId = this.genId("apr");
+      this.journal.insertApproval({
+        id: approvalId,
+        held_operation: JSON.stringify({
+          op: "retire",
+          id: input.id,
+          reason: input.reason,
+          ...(input.superseded_by !== undefined ? { superseded_by: input.superseded_by } : {}),
+          session: input.session,
+        }),
+        zone: "canonical-retire",
+        reason: input.reason,
+        session: input.session,
+        state: "pending",
+        created_at: this.now(),
+        resolved_at: null,
+      });
+      return { queued: true, approvalId };
+    }
+
+    const extra: Record<string, unknown> = { retired_reason: input.reason };
+    if (input.superseded_by !== undefined) {
+      extra.superseded_by = input.superseded_by;
+    }
+    await this.flipFrontmatterStatus(mem, "retired", input.reason, input.session, extra);
+    this.journal.updateMemory(input.id, { status: "retired" });
+
+    return { retired: true, id: input.id };
+  }
+
+  /**
    * Durable status transition (design §6.0): write `ledger.status = newStatus`
    * into the note's FILE frontmatter through the broker (a real revise commit),
    * then mirror the change onto the journal row. The file — not the journal —
@@ -682,18 +811,23 @@ export class MemoryStore {
   }
 
   /**
-   * Rewrite only the `ledger.status` field of a note's frontmatter and route
-   * the resulting minimal unified diff through the broker as an (approved)
+   * Rewrite the `ledger.status` field (and, optionally, any additional
+   * ledger-block fields passed via `extra` — e.g. `retire`'s
+   * `retired_reason`/`superseded_by`) of a note's frontmatter and route the
+   * resulting minimal unified diff through the broker as an (approved)
    * revise. Reads the current on-disk bytes so the patch's expected_hash and
    * context match exactly. Does not touch the journal — callers decide what
    * journal bookkeeping to pair with the file change (setStatus mirrors the
-   * status; forget updates status + path together).
+   * status; forget updates status + path together; retire mirrors forget).
+   * `extra` is metadata ONLY (ledger-block fields) — this never touches the
+   * note body, so no caller can use it to append prose.
    */
   private async flipFrontmatterStatus(
     mem: MemoryRow,
     newStatus: MemoryStatusValue,
     reason: string,
     session: string,
+    extra?: Record<string, unknown>,
   ): Promise<void> {
     const abs = join(this.vaultRoot, mem.path);
     const before = readFileSync(abs, "utf8");
@@ -704,7 +838,7 @@ export class MemoryStore {
         : {};
     const after = matter.stringify(parsed.content, {
       ...parsed.data,
-      ledger: { ...currentLedger, status: newStatus },
+      ledger: { ...currentLedger, status: newStatus, ...(extra ?? {}) },
     });
     // Idempotent: nothing to commit if the status is already what we want.
     if (after === before) return;

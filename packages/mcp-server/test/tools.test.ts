@@ -39,7 +39,7 @@ async function setup(): Promise<{ tools: Map<string, ToolDef> }> {
 }
 
 describe("buildTools", () => {
-  test("registers exactly the 8 spec tools", async () => {
+  test("registers exactly the 9 spec tools", async () => {
     const { tools } = await setup();
     expect([...tools.keys()].sort()).toEqual(
       [
@@ -49,6 +49,7 @@ describe("buildTools", () => {
         "memory_promote",
         "memory_recall",
         "memory_remember",
+        "memory_retire",
         "memory_revise",
         "vault_propose_edit",
       ].sort(),
@@ -310,6 +311,46 @@ describe("buildTools", () => {
 
     // The memory must remain canonical and on disk (no tombstone applied).
     expect(ctx.journal.getMemory(created.id)!.status).toBe("canonical");
+  });
+
+  test("memory_retire on a WORKING memory retires it immediately", async () => {
+    const { tools } = await setup();
+    const remember = tools.get("memory_remember")!;
+    const created = await remember.handler({ content: "aging fact", reason: "seed" });
+    const promote = tools.get("memory_promote")!;
+    await promote.handler({ id: created.id, target_status: "working", reason: "confirmed" });
+
+    const retire = tools.get("memory_retire")!;
+    const result = await retire.handler({ id: created.id, reason: "no longer current" });
+
+    expect(result.error).toBeUndefined();
+    expect(result.id).toBe(created.id);
+    expect(result.retired).toBe(true);
+    expect(ctx.journal.getMemory(created.id as string)!.status).toBe("retired");
+
+    const abs = join(vault.vaultDir, created.path as string);
+    expect(readFileSync(abs, "utf8")).toContain("retired_reason: no longer current");
+  });
+
+  test("memory_retire on a CANONICAL memory returns a queued approvalId instead of retiring (audit: no agent-reachable path retires a canonical without approval)", async () => {
+    const { tools } = await setup();
+    const remember = tools.get("memory_remember")!;
+    const created = await remember.handler({ content: "canonical fact", reason: "seed" });
+    await ctx.store.setStatus(created.id, "canonical", "approved as durable belief", "s1");
+    const abs = join(vault.vaultDir, created.path as string);
+    const before = readFileSync(abs, "utf8");
+
+    const retire = tools.get("memory_retire")!;
+    const result = await retire.handler({ id: created.id, reason: "no longer current" });
+
+    expect(result.error).toBeUndefined();
+    expect(result.queued).toBe(true);
+    expect(typeof result.approvalId).toBe("string");
+    expect(result.retired).toBeUndefined();
+
+    // File unchanged, memory still canonical.
+    expect(readFileSync(abs, "utf8")).toBe(before);
+    expect(ctx.journal.getMemory(created.id as string)!.status).toBe("canonical");
   });
 
   test("memory_remember with a missing reason returns a structured validation error, not a throw", async () => {
