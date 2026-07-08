@@ -15,6 +15,7 @@ function conflictRow(overrides: Partial<ConflictRow> = {}): ConflictRow {
     pair_hi: "mem_b",
     kind: "value-conflict",
     fact_key: "deadline",
+    value_hash: "sha256:vh_1",
     entity: "nova",
     detail: 'deadline: "2026-08-15" vs "2026-09-01"',
     created_at: "2026-07-01T00:00:00.000Z",
@@ -57,7 +58,7 @@ describe("conflicts schema migration", () => {
     const indexes = (db3.prepare(`pragma index_list(conflicts)`).all() as Array<{ name: string }>).map(
       (i) => i.name,
     );
-    expect(indexes).toContain("ux_conflicts_pair_kind_fact");
+    expect(indexes).toContain("ux_conflicts_pair_kind_fact_value");
     db3.close();
   });
 
@@ -122,7 +123,7 @@ describe("conflicts schema migration", () => {
     const indexes = (upgraded.prepare(`pragma index_list(conflicts)`).all() as Array<{ name: string }>).map(
       (i) => i.name,
     );
-    expect(indexes).toContain("ux_conflicts_pair_kind_fact");
+    expect(indexes).toContain("ux_conflicts_pair_kind_fact_value");
     upgraded.close();
   });
 });

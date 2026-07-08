@@ -22,6 +22,7 @@ describe("HeuristicDetector", () => {
         kind: "value-conflict",
         factKey: "deadline",
         detail: 'deadline: "2026-08-15" vs "2026-09-01"',
+        values: ["2026-08-15", "2026-09-01"],
       },
     ]);
   });
@@ -51,8 +52,18 @@ describe("HeuristicDetector", () => {
     expect(conflicts).toHaveLength(2);
     expect(conflicts).toEqual(
       expect.arrayContaining([
-        { kind: "value-conflict", factKey: "deadline", detail: 'deadline: "2026-08-15" vs "2026-09-01"' },
-        { kind: "value-conflict", factKey: "status", detail: 'status: "shipping" vs "blocked"' },
+        {
+          kind: "value-conflict",
+          factKey: "deadline",
+          detail: 'deadline: "2026-08-15" vs "2026-09-01"',
+          values: ["2026-08-15", "2026-09-01"],
+        },
+        {
+          kind: "value-conflict",
+          factKey: "status",
+          detail: 'status: "shipping" vs "blocked"',
+          values: ["shipping", "blocked"],
+        },
       ]),
     );
   });
@@ -66,6 +77,7 @@ describe("HeuristicDetector", () => {
         kind: "negation-conflict",
         factKey: "the project::active",
         detail: '"the project is active" contradicted by negation',
+        values: ["the project::active", "the project::not active"],
       },
     ]);
   });
@@ -79,6 +91,7 @@ describe("HeuristicDetector", () => {
         kind: "negation-conflict",
         factKey: "the build::green",
         detail: '"the build is green" contradicted by negation',
+        values: ["the build::green", "the build::not green"],
       },
     ]);
   });

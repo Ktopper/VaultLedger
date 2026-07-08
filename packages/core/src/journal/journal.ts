@@ -57,6 +57,17 @@ export interface ConflictRow {
   fact_key: string | null;
   entity: string | null;
   detail: string | null;
+  /**
+   * Deterministic hash of the two conflicting values/statements (see
+   * `contradiction/valueHash.ts`'s `conflictValueHash`), folded into the
+   * `conflicts` table's unique dedup key alongside (pair_lo, pair_hi, kind,
+   * fact_key). MUST be non-null/non-empty on every insert -- SQLite treats
+   * NULL as DISTINCT in a UNIQUE index, so a null value_hash would never
+   * dedup against another null (every rescan would spawn a fresh duplicate
+   * row instead of colliding), permanently defeating the dedup this column
+   * exists to provide.
+   */
+  value_hash: string;
   created_at: string | null;
   state: string | null;
   resolved_at: string | null;
@@ -402,19 +413,26 @@ export class Journal {
 
   /**
    * Insert a detected conflict, de-duplicated on (pair_lo, pair_hi, kind,
-   * fact_key) — the same contradictory pair/fact re-detected on a later
-   * `checkContradictions` run (e.g. after an unrelated edit to either note)
-   * must not spawn a duplicate row, and — per the dismissed-not-resurrected
-   * guarantee — must NOT reopen/touch a row a human already dismissed or
-   * resolved. Returns whether a new row was actually inserted.
+   * fact_key, value_hash) — the same contradictory pair/fact/VALUE re-
+   * detected on a later `checkContradictions` run (e.g. after an unrelated
+   * edit to either note) must not spawn a duplicate row, and — per the
+   * dismissed-not-resurrected guarantee — must NOT reopen/touch a row a
+   * human already dismissed or resolved. `value_hash` (see
+   * `contradiction/valueHash.ts`) is part of the key specifically so that
+   * dismissing a conflict on a given pair+fact does NOT swallow a later
+   * contradiction on that same pair+fact with a DIFFERENT value -- the old
+   * 4-column key (pair_lo, pair_hi, kind, fact_key) omitted the values
+   * entirely, so a genuinely new contradiction collided with a dismissed row
+   * and was silently dropped. Returns whether a new row was actually
+   * inserted.
    */
   insertConflict(row: ConflictRow): boolean {
     const result = this.db
       .prepare(
         `INSERT INTO conflicts
-           (id, memory_a, memory_b, pair_lo, pair_hi, kind, fact_key, entity, detail, created_at, state, resolved_at)
-         VALUES (@id, @memory_a, @memory_b, @pair_lo, @pair_hi, @kind, @fact_key, @entity, @detail, @created_at, @state, @resolved_at)
-         ON CONFLICT(pair_lo, pair_hi, kind, fact_key) DO NOTHING`,
+           (id, memory_a, memory_b, pair_lo, pair_hi, kind, fact_key, value_hash, entity, detail, created_at, state, resolved_at)
+         VALUES (@id, @memory_a, @memory_b, @pair_lo, @pair_hi, @kind, @fact_key, @value_hash, @entity, @detail, @created_at, @state, @resolved_at)
+         ON CONFLICT(pair_lo, pair_hi, kind, fact_key, value_hash) DO NOTHING`,
       )
       .run(row);
     return result.changes > 0;

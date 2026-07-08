@@ -8,6 +8,20 @@ export interface DetectedConflict {
   kind: ConflictKind;
   factKey: string;
   detail: string;
+  /**
+   * The two conflicting sides, in the same (a, b) order as `detect`'s
+   * arguments (check.ts always calls detect(loText, hiText), so index 0
+   * lines up with pair_lo). For `value-conflict` this is the two
+   * canonicalized fact values (as display strings); for `negation-conflict`
+   * it's the two folded statements (subject+negation+object). Consumed by
+   * `contradiction/valueHash.ts`'s `conflictValueHash` to compute an
+   * order-normalized hash that gets folded into the conflicts table's unique
+   * dedup key — without it, a conflict dismissed once on a given pair+fact
+   * would silently swallow every later, differently-valued contradiction on
+   * that same pair+fact (ON CONFLICT DO NOTHING colliding on the old
+   * 4-column key).
+   */
+  values: [string, string];
 }
 
 export interface ContradictionDetector {
@@ -46,6 +60,14 @@ interface Statement {
   subject: string;
   negated: boolean;
   object: string;
+}
+
+// Folded (already-normalized) representation of one side of a
+// negation-conflict, used as a `conflictValueHash` input — distinct from
+// `detail`, which only ever names the POSITIVE side's subject/object and so
+// can't by itself distinguish which side was negated.
+function statementKey(s: Statement): string {
+  return `${s.subject}::${s.negated ? "not " : ""}${s.object}`;
 }
 
 function extractStatements(bodyText: string): Statement[] {
@@ -88,6 +110,7 @@ export class HeuristicDetector implements ContradictionDetector {
         kind: "value-conflict",
         factKey: key,
         detail: `${key}: "${displayValue(valueA)}" vs "${displayValue(valueB)}"`,
+        values: [displayValue(valueA), displayValue(valueB)],
       });
     }
 
@@ -109,6 +132,7 @@ export class HeuristicDetector implements ContradictionDetector {
           kind: "negation-conflict",
           factKey: `${positive.subject}::${positive.object}`,
           detail: `"${positive.subject} is ${positive.object}" contradicted by negation`,
+          values: [statementKey(sa), statementKey(sb)],
         });
       }
     }

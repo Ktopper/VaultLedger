@@ -258,6 +258,7 @@ describe("BridgeClient", () => {
         pair_hi: "mem_b",
         kind: "value-conflict",
         fact_key: "deadline",
+        value_hash: "sha256:vh_1",
         entity: "nova",
         detail: 'deadline: "2026-08-15" vs "2026-09-01"',
         created_at: clock.now(),

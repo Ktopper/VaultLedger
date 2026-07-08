@@ -5,6 +5,7 @@ import type { ContradictionDetector } from "./detector.js";
 import { HeuristicDetector } from "./detector.js";
 import type { EntityMatcher } from "./matcher.js";
 import { DefaultEntityMatcher } from "./matcher.js";
+import { conflictValueHash } from "./valueHash.js";
 
 export interface CheckContradictionsDeps {
   journal: Journal;
@@ -69,6 +70,7 @@ export function checkContradictions(deps: CheckContradictionsDeps, memId: string
           pair_hi: hi,
           kind: conflict.kind,
           fact_key: conflict.factKey,
+          value_hash: conflictValueHash(conflict.kind, conflict.values[0], conflict.values[1]),
           entity: mem.entity,
           detail: conflict.detail,
           created_at: now(),
