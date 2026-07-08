@@ -99,6 +99,23 @@ const ForgetInput = z
   })
   .strict();
 
+const DistillInput = z
+  .object({
+    content: z.string().min(1),
+    // Not `.min(1)` at the zod layer on purpose: an empty `sources` array is
+    // a semantic rejection (INVALID_SOURCE — "a distillation must cite at
+    // least one source"), not a shape violation, so it's left to
+    // `store.distill` to reject uniformly with everyone else's structured
+    // BrokerError result rather than surfacing as a generic INVALID_ARGS
+    // here.
+    sources: z.array(z.string().min(1)),
+    reason: z.string().min(1),
+    entity: z.string().optional(),
+    confidence: Confidence.optional(),
+    score: z.number().optional(),
+  })
+  .strict();
+
 const ProposeEditInput = z
   .object({
     path: z.string().min(1),
@@ -111,7 +128,8 @@ const ProposeEditInput = z
 const LedgerStatusInput = z.object({}).strict();
 
 /**
- * Build the 7 spec tools (design §7) as a thin adapter over `@vaultledger/core`.
+ * Build the 8 spec tools (design §7 + v0.3b memory_distill) as a thin
+ * adapter over `@vaultledger/core`.
  * Every handler validates its own args against its zod inputSchema and never
  * throws — invalid args and BrokerError rejections both come back as a
  * structured `{ error }` result, so the transport layer (stdio JSON-RPC) never
@@ -163,6 +181,31 @@ export function buildTools(ctx: ServerContext): ToolDef[] {
           const memTags = ctx.journal.getTags(result.id);
           const provenance = memRow ? { ...memRow, tags: memTags } : null;
           return { id: result.id, path: result.path, status: "scratch", provenance };
+        }),
+    },
+    {
+      name: "memory_distill",
+      description:
+        "Create a new scratch memory DERIVED from other memories, citing them as sources. Every " +
+        "cited source must exist and must not be forgotten (a retired source may still be cited); " +
+        "a missing/forgotten source or an empty source list surfaces as a structured INVALID_SOURCE " +
+        "result rather than a throw.",
+      inputSchema: DistillInput,
+      handler: (rawArgs) =>
+        guarded(async () => {
+          const parsed = DistillInput.safeParse(rawArgs);
+          if (!parsed.success) return invalidArgs(parsed.error.message);
+          const { content, sources, reason, entity, confidence, score } = parsed.data;
+          const result = await ctx.store.distill({
+            content,
+            sources,
+            reason,
+            entity,
+            confidence,
+            score,
+            session: ctx.session,
+          });
+          return { id: result.id, path: result.path, txnId: result.txnId };
         }),
     },
     {

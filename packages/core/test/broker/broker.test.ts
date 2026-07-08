@@ -1018,4 +1018,22 @@ describe("Broker", () => {
       "deep note\n",
     );
   });
+
+  test("a raw 'distill' op passed directly to broker.apply is rejected (store-resolved, mirrors promote/forget)", async () => {
+    const { broker } = await makeBroker();
+    let thrown: unknown;
+    try {
+      await broker.apply({
+        op: "distill",
+        content: "a distillation",
+        sources: ["mem_1", "mem_2"],
+        reason: "summarize",
+        session: "s1",
+      });
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(BrokerError);
+    expect((thrown as BrokerError).code).toBe("NOT_FOUND");
+  });
 });

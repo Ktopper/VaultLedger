@@ -107,6 +107,33 @@ describe("ProposedOperation", () => {
     expect(parsed.op).toBe("forget");
   });
 
+  test("distill op parses with content and sources", () => {
+    const input = {
+      op: "distill",
+      content: "a distilled summary",
+      sources: ["mem-001", "mem-002"],
+      reason: "summarize",
+      session: "sess-1",
+    };
+    const parsed = ProposedOperation.parse(input);
+    expect(parsed.op).toBe("distill");
+    if (parsed.op === "distill") {
+      expect(parsed.sources).toEqual(["mem-001", "mem-002"]);
+    }
+  });
+
+  test("distill op rejects an unknown extra key (strict)", () => {
+    const input = {
+      op: "distill",
+      content: "a distilled summary",
+      sources: ["mem-001"],
+      bogus: "nope",
+      reason: "summarize",
+      session: "sess-1",
+    };
+    expect(() => ProposedOperation.parse(input)).toThrow();
+  });
+
   test("all ops require non-empty reason and session", () => {
     const input = {
       op: "forget",

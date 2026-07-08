@@ -42,6 +42,16 @@ export const RejectionCode = {
   // fail at approve-time as a confusing stale-hash) gives the caller an
   // immediate, actionable error.
   MALFORMED_HASH: "MALFORMED_HASH",
+  // v0.3b addition (memory_distill source validation): a distillation cites
+  // a source id that either doesn't exist, is `forgotten`, or (empty
+  // `sources`) cites nothing at all. Distinct from NOT_FOUND -- NOT_FOUND is
+  // "the thing you asked to operate ON doesn't exist"; INVALID_SOURCE is "one
+  // of the things you're CITING is unusable as a citation" -- a distillation
+  // with a bad source is a caller input error, not a missing-target error.
+  // Checked BEFORE any write (store.distill validates every source up front),
+  // so a bad citation never produces a half-written note or dangling
+  // memory_relations row.
+  INVALID_SOURCE: "INVALID_SOURCE",
 } as const;
 
 export type RejectionCode = (typeof RejectionCode)[keyof typeof RejectionCode];
@@ -65,6 +75,10 @@ const RETRIABLE: Record<RejectionCode, boolean> = {
   // Retrying the identical malformed expected_hash string won't turn it into
   // a well-formed one -- the caller must fix its format and resubmit.
   MALFORMED_HASH: false,
+  // Retrying with the identical source list won't help -- the caller must
+  // fix the citation (drop the bad id, cite a live/retired one, or supply at
+  // least one source) and resubmit.
+  INVALID_SOURCE: false,
 };
 
 export interface Rejection {

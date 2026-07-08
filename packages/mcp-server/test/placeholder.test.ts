@@ -1,3 +1,3 @@
 import { expect, test } from "vitest";
 import { listToolNames } from "../src/index.js";
-test("mcp-server lists 7 tool names", () => { expect(listToolNames()).toHaveLength(7); });
+test("mcp-server lists 8 tool names", () => { expect(listToolNames()).toHaveLength(8); });

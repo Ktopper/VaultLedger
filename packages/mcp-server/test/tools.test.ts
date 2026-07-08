@@ -39,11 +39,12 @@ async function setup(): Promise<{ tools: Map<string, ToolDef> }> {
 }
 
 describe("buildTools", () => {
-  test("registers exactly the 7 spec tools", async () => {
+  test("registers exactly the 8 spec tools", async () => {
     const { tools } = await setup();
     expect([...tools.keys()].sort()).toEqual(
       [
         "ledger_status",
+        "memory_distill",
         "memory_forget",
         "memory_promote",
         "memory_recall",
@@ -321,6 +322,49 @@ describe("buildTools", () => {
     expect(result.error).toBeTruthy();
     const error = result.error as { code: string };
     expect(error.code).toBe("INVALID_ARGS");
+  });
+
+  test("memory_distill with valid sources returns the id and a derivation block on the note", async () => {
+    const { tools } = await setup();
+    const remember = tools.get("memory_remember")!;
+    const a = await remember.handler({ content: "Alice prefers dark mode.", reason: "seed" });
+    const b = await remember.handler({ content: "Alice prefers a compact layout.", reason: "seed" });
+
+    const distill = tools.get("memory_distill")!;
+    const result = await distill.handler({
+      content: "Alice prefers dark mode and a compact layout.",
+      sources: [a.id, b.id],
+      reason: "summarize alice's UI preferences",
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(typeof result.id).toBe("string");
+    expect(typeof result.path).toBe("string");
+
+    const abs = join(vault.vaultDir, result.path as string);
+    const raw = readFileSync(abs, "utf8");
+    expect(raw).toContain("derivation:");
+    expect(raw).toContain("distilled");
+
+    const relations = ctx.journal.getRelationsForMemory(result.id as string);
+    expect(relations).toHaveLength(2);
+  });
+
+  test("memory_distill with a missing source returns a structured INVALID_SOURCE result, not a throw", async () => {
+    const { tools } = await setup();
+    const distill = tools.get("memory_distill")!;
+
+    const result = await distill.handler({
+      content: "a distillation citing nothing real",
+      sources: ["mem_does_not_exist"],
+      reason: "summarize",
+    });
+
+    expect(result.id).toBeUndefined();
+    expect(result.error).toBeTruthy();
+    const error = result.error as { code: string; retriable: boolean };
+    expect(error.code).toBe("INVALID_SOURCE");
+    expect(error.retriable).toBe(false);
   });
 
   test("memory_recall rejects the now-removed `query` param (spec §9 filter set only)", async () => {

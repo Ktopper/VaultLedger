@@ -54,6 +54,32 @@ export interface RememberResult {
   txnId: string;
 }
 
+export interface DistillInput {
+  content: string;
+  /** Ids of the memories this distillation is derived from. Every id must
+   * name an EXISTING memory whose status is not `forgotten` (a `retired`
+   * source IS allowed — retiring a memory means "superseded, don't cite it
+   * as current truth", not "erased", and distillation is exactly the
+   * mechanism that supersedes it). Must be non-empty: a distillation with no
+   * sources is indistinguishable from a plain `remember` and would create an
+   * uncited "derived" note, defeating the point of the derivation record. */
+  sources: string[];
+  reason: string;
+  session: string;
+  entity?: string;
+  confidence?: ConfidenceValue;
+  score?: number;
+}
+
+/** Mirrors `RememberResult` exactly — a distillation IS a memory note, just
+ * one with a `derivation` block and relation edges alongside it. */
+export interface DistillResult {
+  id: string;
+  path: string;
+  /** The create transaction's id, linked to this memory (for undo/audit). */
+  txnId: string;
+}
+
 export interface ReviseInput {
   id: string;
   patch: string;
@@ -229,6 +255,137 @@ export class MemoryStore {
     // AFTER the write is fully committed (broker + journal), never before —
     // it reads the just-written file back off disk. Lock-free and
     // self-swallowing; see checkContradictions' own doc comment.
+    checkContradictions(
+      { journal: this.journal, vaultRoot: this.vaultRoot, now: this.now, genId: this.genId },
+      id,
+    );
+
+    return { id, path, txnId };
+  }
+
+  /**
+   * Create a DISTILLATION: a memory note derived from other memories,
+   * mirroring `remember` (same leading-frontmatter strip, same top-level
+   * entity/tags handling, same `broker.apply({op:"create", ...})` create
+   * path) but with two additions: (1) every cited source is validated BEFORE
+   * any write, and (2) the note's `ledger:` block carries a `derivation`
+   * record and a `memory_relations` edge is inserted per source.
+   *
+   * `distill` is NOT a raw broker op — like `promote`/`forget`, `broker.apply`
+   * rejects it outright (op.op === "distill" hits the same reject arm); this
+   * store method is what resolves it into the underlying `create`.
+   */
+  async distill(input: DistillInput): Promise<DistillResult> {
+    // Validate sources BEFORE any write (design: a bad citation must never
+    // produce a half-written note or a dangling memory_relations row).
+    // Empty sources is rejected too: a distillation with nothing to cite is
+    // just a remember wearing a derivation label.
+    if (input.sources.length === 0) {
+      throw new BrokerError(
+        "INVALID_SOURCE",
+        "a distillation must cite at least one source",
+        false,
+      );
+    }
+    for (const sourceId of input.sources) {
+      const source = this.journal.getMemory(sourceId);
+      if (!source) {
+        throw new BrokerError(
+          "INVALID_SOURCE",
+          `distill source not found: ${sourceId}`,
+          false,
+        );
+      }
+      if (source.status === "forgotten") {
+        throw new BrokerError(
+          "INVALID_SOURCE",
+          `distill source is forgotten and cannot be cited: ${sourceId}`,
+          false,
+        );
+      }
+      // `retired` sources ARE allowed: retiring a memory means "superseded,
+      // don't treat as current truth", not "erased" — distillation is
+      // exactly the mechanism that supersedes it, so a distillation citing
+      // its own retired inputs is the expected shape, not an error.
+    }
+
+    const id = this.genId("mem");
+    const path = `${this.agentDir}/${id}.md`;
+    const created = this.now();
+
+    // Neutralize a smuggled leading frontmatter block — see the matching
+    // comment in `remember` for the full rationale (matter.stringify would
+    // otherwise merge a `---...---` block at the START of `content` into the
+    // emitted frontmatter, letting body text forge provenance).
+    let body: string;
+    try {
+      body = matter(input.content).content;
+    } catch {
+      body = input.content.startsWith("---") ? `\n${input.content}` : input.content;
+    }
+
+    const frontmatter: Record<string, unknown> = {
+      ledger: {
+        id,
+        status: "scratch",
+        created,
+        source: input.session,
+        reason: input.reason,
+        confidence: input.confidence ?? "medium",
+        supersedes: null,
+        expires: null,
+        derivation: { kind: "distilled", sources: input.sources },
+        ...(input.score !== undefined ? { score: input.score } : {}),
+      },
+    };
+    if (typeof input.entity === "string") {
+      frontmatter.entity = input.entity;
+    }
+    const noteBody = matter.stringify(body, frontmatter);
+
+    const result = await this.broker.apply({
+      op: "create",
+      path,
+      content: noteBody,
+      entity: input.entity,
+      reason: input.reason,
+      session: input.session,
+    });
+    // create always lands immediately (never queued), so a txnId is present.
+    if ("queued" in result || result.txnId === undefined) {
+      throw new BrokerError("NOT_FOUND", `create did not record a transaction for ${path}`);
+    }
+    const txnId = result.txnId;
+
+    const row: MemoryRow = {
+      id,
+      path,
+      entity: input.entity ?? null,
+      status: "scratch",
+      confidence: input.confidence ?? "medium",
+      created,
+      source: input.session,
+      supersedes: null,
+      expires: null,
+      last_referenced: null,
+    };
+    this.journal.insertMemory(row);
+    this.journal.setTransactionMemoryId(txnId, id);
+
+    // CRASH GAP (same shape as the v0.1 commit->journal gap documented on
+    // `remember`): the note is committed to disk/git by `broker.apply` above
+    // BEFORE these relation rows are inserted. A crash between the create
+    // commit and this loop leaves the note on disk (WITH its `derivation`
+    // block already naming its sources) but zero `memory_relations` rows.
+    // This self-heals: reindex rebuilds a memory's relations from its file's
+    // `ledger.derivation.sources` (v0.3b reindex change), so the edges
+    // reappear on the next reindex rather than staying permanently dangling.
+    for (const sourceId of input.sources) {
+      this.journal.insertRelation({ memory_id: id, source_id: sourceId, kind: "distilled" });
+    }
+
+    // Post-commit, non-blocking contradiction check (design v0.3a §5) — see
+    // the matching call in `remember` for rationale.
     checkContradictions(
       { journal: this.journal, vaultRoot: this.vaultRoot, now: this.now, genId: this.genId },
       id,

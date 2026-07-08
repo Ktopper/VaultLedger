@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { MemoryStatus } from "./provenance.js";
+import { Confidence, MemoryStatus } from "./provenance.js";
 
 const commonOpFields = {
   reason: z.string().min(1),
@@ -47,11 +47,29 @@ export const ForgetOp = z
   })
   .strict();
 
+// v0.3b: like promote/forget, `distill` operates on memory ids (the sources
+// being cited), not a path -- it is resolved by the memory store, which
+// validates the sources and issues the underlying `create`. This shape only
+// exists for typing/journal/MCP; `Broker.apply()` rejects it outright (see
+// broker.ts's promote/forget reject arm).
+export const DistillOp = z
+  .object({
+    op: z.literal("distill"),
+    content: z.string(),
+    sources: z.array(z.string()),
+    entity: z.string().optional(),
+    confidence: Confidence.optional(),
+    score: z.number().optional(),
+    ...commonOpFields,
+  })
+  .strict();
+
 export const ProposedOperation = z.discriminatedUnion("op", [
   CreateOp,
   ReviseOp,
   ProposeEditOp,
   PromoteOp,
   ForgetOp,
+  DistillOp,
 ]);
 export type ProposedOperation = z.infer<typeof ProposedOperation>;

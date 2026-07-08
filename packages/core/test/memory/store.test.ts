@@ -795,4 +795,132 @@ describe("MemoryStore", () => {
     const conflicts = new Conflicts(journal);
     expect(conflicts.list("open")).toHaveLength(0);
   });
+
+  describe("distill", () => {
+    test("rejects with INVALID_SOURCE when a cited source id does not exist, and writes nothing", async () => {
+      const { store, journal, vaultRoot } = await makeStore();
+      const a = await store.remember({
+        content: "Alice prefers dark mode.",
+        entity: "alice",
+        reason: "seed",
+        session: "s1",
+      });
+
+      const before = journal.listTransactions({});
+      await expect(
+        store.distill({
+          content: "Alice's preferences summary.",
+          sources: [a.id, "mem_does_not_exist"],
+          reason: "summarize",
+          session: "s1",
+        }),
+      ).rejects.toMatchObject({ code: "INVALID_SOURCE", retriable: false });
+
+      // Nothing written: no new transaction, no new memory row, no relations.
+      expect(journal.listTransactions({})).toHaveLength(before.length);
+      const { readdirSync } = await import("node:fs");
+      const memDir = join(vaultRoot, "Agent/Memory");
+      // Only the seed memory's note should exist.
+      expect(readdirSync(memDir)).toHaveLength(1);
+    });
+
+    test("rejects with INVALID_SOURCE when a cited source is forgotten", async () => {
+      const { store } = await makeStore();
+      const a = await store.remember({
+        content: "Alice prefers dark mode.",
+        entity: "alice",
+        reason: "seed",
+        session: "s1",
+      });
+      await store.forget({ id: a.id, reason: "no longer relevant", session: "s1" });
+
+      await expect(
+        store.distill({
+          content: "Alice's preferences summary.",
+          sources: [a.id],
+          reason: "summarize",
+          session: "s1",
+        }),
+      ).rejects.toMatchObject({ code: "INVALID_SOURCE", retriable: false });
+    });
+
+    test("allows a retired source to be cited", async () => {
+      const { store, journal } = await makeStore();
+      const a = await store.remember({
+        content: "Alice prefers dark mode.",
+        entity: "alice",
+        reason: "seed",
+        session: "s1",
+      });
+      await store.setStatus(a.id, "retired", "superseded", "s1");
+
+      const result = await store.distill({
+        content: "Alice's preferences summary.",
+        sources: [a.id],
+        reason: "summarize",
+        session: "s1",
+      });
+
+      expect(typeof result.id).toBe("string");
+      const relations = journal.getRelationsForMemory(result.id);
+      expect(relations).toHaveLength(1);
+      expect(relations[0]!.source_id).toBe(a.id);
+    });
+
+    test("rejects with INVALID_SOURCE when sources is empty", async () => {
+      const { store } = await makeStore();
+      await expect(
+        store.distill({
+          content: "A distillation with nothing to cite.",
+          sources: [],
+          reason: "summarize",
+          session: "s1",
+        }),
+      ).rejects.toMatchObject({ code: "INVALID_SOURCE", retriable: false });
+    });
+
+    test("happy path: distill with 2 valid sources writes a derivation block and relation edges", async () => {
+      const { store, journal, vaultRoot } = await makeStore();
+      const a = await store.remember({
+        content: "Alice prefers dark mode.",
+        entity: "alice",
+        reason: "seed",
+        session: "s1",
+      });
+      const b = await store.remember({
+        content: "Alice prefers a compact layout.",
+        entity: "alice",
+        reason: "seed",
+        session: "s1",
+      });
+
+      const result = await store.distill({
+        content: "Alice prefers dark mode and a compact layout.",
+        sources: [a.id, b.id],
+        reason: "summarize alice's UI preferences",
+        session: "s1",
+      });
+
+      expect(typeof result.id).toBe("string");
+      expect(result.path).toBe(`Agent/Memory/${result.id}.md`);
+      expect(typeof result.txnId).toBe("string");
+
+      const raw = readFileSync(join(vaultRoot, result.path), "utf8");
+      const parsed = matter(raw);
+      expect(parsed.data.ledger).toMatchObject({
+        id: result.id,
+        status: "scratch",
+        derivation: { kind: "distilled", sources: [a.id, b.id] },
+      });
+
+      const relations = journal.getRelationsForMemory(result.id);
+      expect(relations).toHaveLength(2);
+      expect(relations.map((r) => r.source_id).sort()).toEqual([a.id, b.id].sort());
+      expect(relations.every((r) => r.kind === "distilled")).toBe(true);
+
+      const row = journal.getMemory(result.id);
+      expect(row).not.toBeNull();
+      expect(row!.status).toBe("scratch");
+    });
+  });
 });
