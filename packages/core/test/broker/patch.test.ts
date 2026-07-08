@@ -88,6 +88,40 @@ describe("applyPatch", () => {
     }
   });
 
+  test("a one-line edit to a sub-512-byte note that would trip the ratio guard succeeds (below the byte floor)", () => {
+    // "a\nb\nc\nd\n" is 8 bytes -- well under the 512-byte floor. A change to
+    // all four lines is a >50% ratio change that would trip PATCH_TOO_LARGE
+    // above the floor, but below the floor the ratio heuristic is meaningless
+    // (a tiny working note can be fully rewritten unapproved) so the edit
+    // must succeed.
+    const original = "a\nb\nc\nd\n";
+    expect(original.length).toBeLessThan(512);
+    const rewritten = "A\nB\nC\nd\n";
+    const patchText = createPatch("file.md", original, rewritten);
+
+    expect(applyPatch(original, patchText, 0.5)).toBe(rewritten);
+  });
+
+  test("an above-512-byte original with a >50% change still throws PATCH_TOO_LARGE (guard intact above the floor)", () => {
+    // 100 numbered lines is well past the 512-byte floor; rewriting 60 of
+    // them is a >50% line-ratio (and byte-ratio) change -- the guard must
+    // still fire above the floor.
+    const lines = Array.from({ length: 100 }, (_, i) => `line${i}`);
+    const original = lines.join("\n") + "\n";
+    expect(original.length).toBeGreaterThan(512);
+    const rewrittenLines = lines.map((l, i) => (i < 60 ? l.toUpperCase() : l));
+    const rewritten = rewrittenLines.join("\n") + "\n";
+    const patchText = createPatch("file.md", original, rewritten);
+
+    try {
+      applyPatch(original, patchText, 0.5);
+      throw new Error("expected applyPatch to throw");
+    } catch (e) {
+      expect(e).toBeInstanceOf(BrokerError);
+      expect((e as BrokerError).code).toBe("PATCH_TOO_LARGE");
+    }
+  });
+
   test("throws SYNTAX_BREAK (not a raw Error) for a single-file patch with a mismatched hunk count", () => {
     // jsdiff's parsePatch itself throws Error("Added line count did not match ...")
     // when a hunk header's +/- counts don't match the body. It must surface as a
