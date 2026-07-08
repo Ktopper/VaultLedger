@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import { hashBytes } from "../broker/hash.js";
+import { conflictValueHash } from "../contradiction/valueHash.js";
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS transactions (
@@ -216,12 +216,12 @@ function migrateConflictsTable(db: Database.Database): void {
 // LATER contradiction on the same pair+fact but a DIFFERENT value pair
 // collided on that same key and was silently dropped by `INSERT ... ON
 // CONFLICT DO NOTHING` (Journal.insertConflict) — the new, real
-// contradiction never surfaced. Folding a hash of the two conflicting
-// values/statements (`value_hash`, computed by
-// contradiction/valueHash.ts's conflictValueHash) into the key fixes this:
-// each distinct value pair now gets its own row, while re-detecting the
-// SAME value pair still collapses to one (both directions, via the
-// order-normalized hash).
+// contradiction never surfaced. Folding a hash of the conflict's `detail`
+// string (`value_hash`, computed by contradiction/valueHash.ts's
+// conflictValueHash) into the key fixes this: each distinct value/statement
+// produces a distinct `detail` and gets its own row, while re-detecting the
+// SAME contradiction still collapses to one (both directions — `detail` is
+// built in id-sorted order by check.ts).
 //
 // A brand-new journal already gets the `value_hash` column directly from
 // SCHEMA_SQL's CREATE TABLE (NOT NULL; no DEFAULT is required there since
@@ -234,13 +234,18 @@ function migrateConflictsTable(db: Database.Database): void {
 // supplying a DEFAULT — a structural restriction on ALTER, independent of
 // whether the table currently has rows — so the column is added as NOT NULL
 // DEFAULT '' and every existing row is then explicitly backfilled in JS
-// (SELECT id + detail, hash the detail with hashBytes, UPDATE) BEFORE the
-// new unique index is created. Hashing the stored `detail` string verbatim
-// (rather than re-parsing the original values back out of it) is robust
-// even though `detail`'s format differs between value-conflict and
-// negation-conflict rows — it only needs to be a stable, deterministic
-// function of "what this conflict is about", not reproduce check.ts's own
-// hash exactly.
+// (SELECT id + detail, hash the detail, UPDATE) BEFORE the new unique index
+// is created.
+//
+// CRITICAL — the backfill MATCHES the live hash BY CONSTRUCTION: both this
+// backfill AND the live check.ts insert path call the SAME
+// `conflictValueHash(detail)` helper on the SAME stored `detail` string, so
+// a migrated legacy row and a freshly re-detected identical conflict hash to
+// the SAME value. That is what makes a migrated DISMISSED conflict survive
+// its first re-detection (it dedups against the backfilled row on the
+// 5-column ON CONFLICT) instead of spawning a new OPEN row and resurrecting
+// the dismissal. If the two paths hashed different preimages, that invariant
+// would break — hence a single shared helper, not two inline hashes.
 //
 // NOT NULL is load-bearing: SQLite treats NULL as DISTINCT in a UNIQUE
 // index, so a NULL value_hash would never dedup against another NULL row
@@ -272,15 +277,19 @@ function migrateConflictsValueHash(db: Database.Database): void {
   if (stale.length > 0) {
     const update = db.prepare(`UPDATE conflicts SET value_hash = @value_hash WHERE id = @id`);
     for (const row of stale) {
-      const value_hash = hashBytes(Buffer.from(row.detail ?? "", "utf8"));
-      update.run({ id: row.id, value_hash });
+      // SAME helper the live check.ts path uses — see the CRITICAL note above.
+      update.run({ id: row.id, value_hash: conflictValueHash(row.detail) });
     }
   }
 
   // Replace the old 4-column unique key (the root cause of the
   // dismiss-forever bug) with the 5-column one. Must run AFTER the backfill
   // above so no '' placeholder can ever collide wrongly against the new
-  // index.
+  // index. The CREATE below is un-guarded by a pre-index dedupe pass (unlike
+  // transactions' dedupeDuplicateCommitShaRows): the OLD 4-column unique
+  // index guaranteed ≤1 row per (pair_lo, pair_hi, kind, fact_key), so
+  // adding value_hash as a 5th column can only make each surviving tuple
+  // MORE unique — the 5-tuples are trivially distinct and cannot collide.
   db.exec(`DROP INDEX IF EXISTS ux_conflicts_pair_kind_fact`);
   db.exec(
     `CREATE UNIQUE INDEX IF NOT EXISTS ux_conflicts_pair_kind_fact_value ON conflicts(pair_lo, pair_hi, kind, fact_key, value_hash)`,

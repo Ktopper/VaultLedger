@@ -90,7 +90,9 @@ describe("checkContradictions", () => {
     journal.insertMemory(memRow({ id: "mem_b", path: "mem_b.md", entity: "nova", status: "canonical" }));
 
     // Run the check from BOTH directions — the (pair_lo, pair_hi, kind,
-    // fact_key) unique key must collapse them to a single conflict row.
+    // fact_key, value_hash) unique key must collapse them to a single
+    // conflict row (detail is built in id-sorted order, so both directions
+    // hash to the same value_hash).
     checkContradictions({ journal, vaultRoot, now, genId }, "mem_b");
     checkContradictions({ journal, vaultRoot, now, genId }, "mem_a");
 
