@@ -2,6 +2,7 @@
 import { pathToFileURL } from "node:url";
 import { Command } from "commander";
 import { approveCommand } from "./commands/approve.js";
+import { backfillEntityCommand } from "./commands/backfillEntity.js";
 import { conflictsCommand } from "./commands/conflicts.js";
 import { initCommand } from "./commands/init.js";
 import { logCommand } from "./commands/log.js";
@@ -17,6 +18,7 @@ import { undoCommand } from "./commands/undo.js";
 // real `initCommand`/`undoCommand` rather than reaching into CLI internals)
 // import the exact same functions `buildProgram` wires up above.
 export { approveCommand, type ApproveOptions, type ApproveCommandResult } from "./commands/approve.js";
+export { backfillEntityCommand, type BackfillEntityOptions } from "./commands/backfillEntity.js";
 export { conflictsCommand, type ConflictsOptions } from "./commands/conflicts.js";
 export { initCommand, type InitOptions, type InitResult } from "./commands/init.js";
 export { logCommand, type LogFilters } from "./commands/log.js";
@@ -99,6 +101,29 @@ export function buildProgram(): Command {
     .action(async (vaultDir: string) => {
       try {
         await reindexCommand(vaultDir);
+      } catch (e) {
+        reportError(e);
+      }
+    });
+
+  const memory = program.command("memory").description("memory maintenance commands");
+
+  memory
+    .command("backfill-entity <vaultDir>")
+    .description(
+      "write each journal row's entity into its note's top-level frontmatter, so a full " +
+        "journal rebuild recovers it (one-shot maintenance for pre-fix legacy notes)",
+    )
+    .action(async (vaultDir: string) => {
+      try {
+        const result = await backfillEntityCommand(vaultDir);
+        // Mismatches are a report for a human to act on, not a run failure —
+        // only an outright processing error (missing/unreadable/corrupt
+        // note) fails the exit code, mirroring `undo`/`approve`'s
+        // result.ok-driven exitCode convention rather than throwing.
+        if (result.errors.length > 0) {
+          process.exitCode = 1;
+        }
       } catch (e) {
         reportError(e);
       }

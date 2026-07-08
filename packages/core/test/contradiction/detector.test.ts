@@ -51,8 +51,16 @@ describe("HeuristicDetector", () => {
     expect(conflicts).toHaveLength(2);
     expect(conflicts).toEqual(
       expect.arrayContaining([
-        { kind: "value-conflict", factKey: "deadline", detail: 'deadline: "2026-08-15" vs "2026-09-01"' },
-        { kind: "value-conflict", factKey: "status", detail: 'status: "shipping" vs "blocked"' },
+        {
+          kind: "value-conflict",
+          factKey: "deadline",
+          detail: 'deadline: "2026-08-15" vs "2026-09-01"',
+        },
+        {
+          kind: "value-conflict",
+          factKey: "status",
+          detail: 'status: "shipping" vs "blocked"',
+        },
       ]),
     );
   });

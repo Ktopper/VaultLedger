@@ -5,6 +5,7 @@ import type { ContradictionDetector } from "./detector.js";
 import { HeuristicDetector } from "./detector.js";
 import type { EntityMatcher } from "./matcher.js";
 import { DefaultEntityMatcher } from "./matcher.js";
+import { conflictValueHash } from "./valueHash.js";
 
 export interface CheckContradictionsDeps {
   journal: Journal;
@@ -61,6 +62,11 @@ export function checkContradictions(deps: CheckContradictionsDeps, memId: string
 
       const found = detector.detect({ text: loText }, { text: hiText });
       for (const conflict of found) {
+        // value_hash MUST be hash(the exact `detail` string stored on this
+        // row) — the same helper the migration backfill uses — so a migrated
+        // legacy row and this freshly re-detected conflict dedup by
+        // construction (see contradiction/valueHash.ts).
+        const detail = conflict.detail;
         journal.insertConflict({
           id: genId("cf"),
           memory_a: lo,
@@ -69,8 +75,9 @@ export function checkContradictions(deps: CheckContradictionsDeps, memId: string
           pair_hi: hi,
           kind: conflict.kind,
           fact_key: conflict.factKey,
+          value_hash: conflictValueHash(detail),
           entity: mem.entity,
-          detail: conflict.detail,
+          detail,
           created_at: now(),
           state: "open",
           resolved_at: null,

@@ -371,19 +371,20 @@ detection across the agent zone on demand (respecting the all-states dedup).
   a governed sibling of `ledger:`, not inside it — and renamed
   `governedProvenanceChanged`; `tags` stays excluded as metadata.)
 
-**v0.3b backlog (post-ledger-guard review — two MEDIUMs + LOW nits):**
-- **MEDIUM — content-revise of a canonical belief is ungated.** The ledger-guard
-  protects the `ledger:` block, but the BODY of a canonical belief can still be
-  inverted across 2–3 unapproved revises (the ~50% patch-size cap is iterable).
-  Same family, distinct hole. Fix: route a `revise` whose target is `canonical`
-  through the approval queue, mirroring the promote/forget gates.
-- **MEDIUM — dismiss-once, contradict-forever.** The conflict dedup key
-  (`UNIQUE(pair_lo,pair_hi,kind,fact_key)`) omits the conflicting VALUES, so one
-  dismissed conflict on a pair+fact permanently swallows every FUTURE
-  different-valued contradiction on that same pair+fact (`ON CONFLICT DO NOTHING`
-  never re-opens it). Nastier now that the canonical-exception trains users to
-  dismiss benign rows. Fix: fold a value-hash into `fact_key` (or the unique key),
-  OR re-open a dismissed row when the new `detail` differs.
+**v0.3a hardening batch — SHIPPED** (branch `fix/v0.3a-hardening`, 518 pass / 1 skip; see `docs/design/specs/2026-07-07-vaultledger-v03a-hardening-design.md`):
+- ~~**MEDIUM — content-revise of a canonical belief is ungated.**~~ SHIPPED:
+  `MemoryStore.revise` now gates a `canonical` target behind approval (zone
+  `canonical-revise`), mirroring the promote/forget gates 1:1; each revise is
+  individually gated so the iterable ~50% patch-cap attack is closed. Adversarial
+  review found no agent-reachable bypass (propose_edit always queues;
+  demote-then-revise blocked by `INVALID_TRANSITION`).
+- ~~**MEDIUM — dismiss-once, contradict-forever.**~~ SHIPPED: added a
+  `value_hash TEXT NOT NULL` column folded into the conflict unique key
+  `(pair_lo, pair_hi, kind, fact_key, value_hash)`. ONE hashing helper
+  `conflictValueHash(detail)` computes it for BOTH the live insert and the
+  migration backfill, so a migrated legacy row and a re-detected identical
+  conflict hash equally — a dismissed conflict survives re-detection, but a
+  genuinely different-valued one gets its own open row.
 - ~~**`entity` is not persisted to the note file (journal-only), so a plain
   `reindex` nulls it for agent-created memories** — detection off vault-wide on
   routine recovery, no adversary.~~ SHIPPED (branch `fix/v0.3a-entity-durability`):
@@ -392,21 +393,21 @@ detection across the agent zone on demand (respecting the all-states dedup).
   braces: an INCREMENTAL reindex preserves a journal-only entity when a legacy
   note's file lacks one, rather than nulling it. RESIDUAL (LOW): a FULL rebuild
   from an empty journal still can't recover a *pre-fix* legacy note's entity —
-  those notes need re-remembering or a one-time entity backfill (write each
-  journal row's entity into its note file via the broker). Small follow-up.
+  those notes need re-remembering or a one-time entity backfill. ~~Small
+  follow-up.~~ SHIPPED (hardening WU-5): `ledger memory backfill-entity <vault>`
+  writes each journal row's entity into its note file via an approved revise —
+  3-way branch (backfill / skip-if-equal / report-mismatch-and-leave-alone),
+  non-fatal per note; after it runs, a full rebuild recovers every entity.
 - **LOW nits:** (a) URL stoplist drops legit `file:`/`tel:` body-fact keys by key
   NAME alone — shape-check the value (`scheme://…`) instead. (b) slash-style
   datetimes aren't covered by the datetime→unparseable guard. (c) matcher
   asymmetry in the canonical-exception (audit both directions of a transitive
   chain). (d) the `isn't` negation misses a curly apostrophe (`isn't`).
-  (e) `expected_hash` format isn't validated when a `propose_edit`/`revise` op
-  enters the queue — a bare hex digest (missing the `sha256:` prefix) queues
-  fine and only fails at approve time (goes stale). Validate the format at
-  enqueue so the agent gets an immediate, actionable rejection. (f) the 50%
-  PATCH_TOO_LARGE guard is over-tight on very short notes (a legit one-line edit
-  to a tiny file trips it) — add a small absolute-byte floor (e.g. only enforce
-  the ratio above ~500 bytes) so tiny notes stay editable. (Both surfaced by the
-  usability dogfood.)
+  ~~(e) `expected_hash` format isn't validated at enqueue.~~ SHIPPED (WU-3):
+  a malformed hash is rejected at enqueue/apply with a dedicated `MALFORMED_HASH`
+  (→ bridge 400), hex-case-normalized. ~~(f) the 50% PATCH_TOO_LARGE guard is
+  over-tight on very short notes.~~ SHIPPED (WU-4): the ratio guard only applies
+  above a 512-byte floor. (a)–(d) remain open (precision nits).
 
 **Ops note (not code):** the working repo lives under an iCloud-synced path,
 which periodically sheds `name 2`/`name 3` duplicate dirs/files (the mechanism

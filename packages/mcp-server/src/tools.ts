@@ -167,15 +167,21 @@ export function buildTools(ctx: ServerContext): ToolDef[] {
     },
     {
       name: "memory_revise",
-      description: "Patch an existing memory note's content with a unified diff.",
+      description:
+        "Patch an existing memory note's content with a unified diff. Revising a CANONICAL " +
+        "memory's content is held for human approval (mirrors memory_promote/memory_forget's " +
+        "canonical gate) instead of applying immediately.",
       inputSchema: ReviseInput,
       handler: (rawArgs) =>
         guarded(async () => {
           const parsed = ReviseInput.safeParse(rawArgs);
           if (!parsed.success) return invalidArgs(parsed.error.message);
           const { id, patch, reason } = parsed.data;
-          await ctx.store.revise({ id, patch, reason, session: ctx.session });
-          return { id, revised: true };
+          const result = await ctx.store.revise({ id, patch, reason, session: ctx.session });
+          if ("queued" in result) {
+            return { queued: true, approvalId: result.approvalId };
+          }
+          return { id: result.id, revised: true };
         }),
     },
     {

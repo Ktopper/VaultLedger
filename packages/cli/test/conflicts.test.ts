@@ -37,6 +37,7 @@ function conflictRow(overrides: Partial<ConflictRow> = {}): ConflictRow {
     pair_hi: "mem_b",
     kind: "value-conflict",
     fact_key: "deadline",
+    value_hash: "sha256:vh_1",
     entity: "nova",
     detail: 'deadline: "2026-08-15" vs "2026-09-01"',
     created_at: "2026-07-01T00:00:01.000Z",

@@ -20,6 +20,7 @@ export * from "./memory/store.js";
 export * from "./approvals/queue.js";
 export * from "./memory/ttl.js";
 export * from "./memory/reindex.js";
+export * from "./memory/backfillEntity.js";
 export * from "./scan/scanner.js";
 export * from "./concurrency/lock.js";
 export * from "./host/openVault.js";

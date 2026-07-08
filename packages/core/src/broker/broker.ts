@@ -5,7 +5,7 @@ import type { PermissionsManifest } from "../schemas/manifest.js";
 import type { ProposedOperation } from "../schemas/operation.js";
 import type { ApprovalRow, Journal, TransactionRow } from "../journal/journal.js";
 import { resolveZone } from "../zones.js";
-import { hashBytes, hashFile } from "./hash.js";
+import { assertHashFormat, hashBytes, hashFile } from "./hash.js";
 import { applyPatch } from "./patch.js";
 import { assertStructurePreserved, governedProvenanceChanged } from "./lint.js";
 import { assertContainedAndReadable } from "./containment.js";
@@ -288,6 +288,14 @@ export class Broker {
       throw new BrokerError("FORBIDDEN_ZONE", `cannot revise in zone '${zone}': ${op.path}`);
     }
 
+    // Format guard (MALFORMED_HASH) before existsSync/hash compare: reject a
+    // malformed expected_hash (e.g. a bare hex digest missing the `sha256:`
+    // prefix) immediately rather than letting it fall through to a
+    // confusing, delayed STALE_HASH. Normalize to lowercase so an
+    // uppercase-but-correct hash still matches the lowercase-computed digest
+    // below.
+    const expectedHash = assertHashFormat(op.expected_hash);
+
     if (!existsSync(abs)) {
       throw new BrokerError("NOT_FOUND", `target not found: ${op.path}`);
     }
@@ -296,10 +304,10 @@ export class Broker {
     // and the writeFileSync below. Acceptable for v0.1 (single-writer broker);
     // a future version may hold a lock or re-check under the git commit.
     const computed = hashFile(abs);
-    if (computed !== op.expected_hash) {
+    if (computed !== expectedHash) {
       throw new BrokerError(
         "STALE_HASH",
-        `expected hash ${op.expected_hash}, found ${computed} for ${op.path}`,
+        `expected hash ${expectedHash}, found ${computed} for ${op.path}`,
       );
     }
 
@@ -383,10 +391,21 @@ export class Broker {
       );
     }
 
+    // Format guard (MALFORMED_HASH) before it enqueues: a malformed
+    // expected_hash (e.g. a bare hex digest missing the `sha256:` prefix)
+    // must never enter the approval queue, where it would only surface as a
+    // confusing STALE_HASH at approve-time. Normalize to lowercase and store
+    // that normalized value in the held op so an uppercase-but-correct hash
+    // still matches at approve-time. Checked after the zone/containment
+    // guards above so a forbidden/escaping path still surfaces its own
+    // FORBIDDEN_ZONE, matching applyRevise's ordering.
+    const expectedHash = assertHashFormat(op.expected_hash);
+    const normalizedOp: ProposeEditOp = { ...op, expected_hash: expectedHash };
+
     const approvalId = this.genId("apr");
     const row: ApprovalRow = {
       id: approvalId,
-      held_operation: JSON.stringify(op),
+      held_operation: JSON.stringify(normalizedOp),
       zone,
       reason: op.reason,
       session: op.session,

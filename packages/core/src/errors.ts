@@ -32,6 +32,16 @@ export const RejectionCode = {
   // by rewriting entity would each bypass the human approval gate, so none of
   // the existing codes fit and this gets its own.
   LEDGER_GUARD: "LEDGER_GUARD",
+  // v0.3a addition (enqueue/apply-time input guard): a revise/propose_edit
+  // op's `expected_hash` that does not match the canonical `sha256:<64 hex>`
+  // format (e.g. a bare hex digest missing the `sha256:` prefix). Distinct
+  // from STALE_HASH on purpose: STALE_HASH means "the file changed underneath
+  // you, recompute and retry"; MALFORMED_HASH means "you formatted this
+  // wrong" -- retrying the identical value can never fix it. Rejecting at
+  // call time (rather than letting a malformed hash enter the queue and only
+  // fail at approve-time as a confusing stale-hash) gives the caller an
+  // immediate, actionable error.
+  MALFORMED_HASH: "MALFORMED_HASH",
 } as const;
 
 export type RejectionCode = (typeof RejectionCode)[keyof typeof RejectionCode];
@@ -52,6 +62,9 @@ const RETRIABLE: Record<RejectionCode, boolean> = {
   // is still unapproved to change; the caller must go through
   // promote/forget/setStatus (or get human approval) instead.
   LEDGER_GUARD: false,
+  // Retrying the identical malformed expected_hash string won't turn it into
+  // a well-formed one -- the caller must fix its format and resubmit.
+  MALFORMED_HASH: false,
 };
 
 export interface Rejection {
