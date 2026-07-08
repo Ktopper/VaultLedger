@@ -60,6 +60,17 @@ export interface RememberInput {
    * find it in the same-entity set (harmless).
    */
   supersedes?: string;
+  /**
+   * Optional numeric evidence (e.g. a confidence/relevance score from
+   * whatever produced this memory) recorded verbatim into the file's
+   * `ledger.score`. Guarded like every other `ledger:` field
+   * (governedProvenanceChanged rejects an unapproved revise that adds or
+   * changes it — see broker/lint.ts) but otherwise INERT: no promotion,
+   * gate, or transition in this file reads `score`. It is evidence for a
+   * human or a future policy to consult, never a live gate input — see the
+   * mirrored field on `DistillInput` for the sibling write path.
+   */
+  score?: number;
 }
 
 export interface RememberResult {
@@ -255,6 +266,7 @@ export class MemoryStore {
         confidence: input.confidence ?? "medium",
         supersedes,
         expires: null,
+        ...(input.score !== undefined ? { score: input.score } : {}),
       },
     };
     if (typeof input.entity === "string") {

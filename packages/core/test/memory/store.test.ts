@@ -554,6 +554,101 @@ describe("MemoryStore", () => {
     expect(readFileSync(join(vaultRoot, path), "utf8")).toContain("sv2");
   });
 
+  // -------------------------------------------------------------------
+  // score (v0.3b): optional guarded evidence, stored in ledger.score,
+  // never read by any gate/transition. See governedProvenanceChanged
+  // coverage in broker.test.ts for the "can't be forged either" half.
+  // -------------------------------------------------------------------
+
+  test("remember with a score writes ledger.score; remember without one omits the key entirely", async () => {
+    const { store, vaultRoot } = await makeStore();
+
+    const scored = await store.remember({
+      content: "Alice prefers dark mode.",
+      reason: "seed",
+      session: "s1",
+      score: 0.82,
+    });
+    const scoredParsed = matter(readFileSync(join(vaultRoot, scored.path), "utf8"));
+    expect((scoredParsed.data.ledger as Record<string, unknown>).score).toBe(0.82);
+
+    const unscored = await store.remember({
+      content: "Alice prefers a compact layout.",
+      reason: "seed",
+      session: "s1",
+    });
+    const unscoredParsed = matter(readFileSync(join(vaultRoot, unscored.path), "utf8"));
+    expect(unscoredParsed.data.ledger as Record<string, unknown>).not.toHaveProperty("score");
+  });
+
+  test("score never gates: scratch->working still requires an explicit promote() call regardless of a high score", async () => {
+    const { store, journal } = await makeStore();
+    const { id } = await store.remember({
+      content: "high-confidence fact",
+      reason: "seed",
+      session: "s1",
+      score: 0.99,
+    });
+
+    // A high score must NOT auto-promote on remember -- status stays scratch
+    // until promote() is called, identical to the unscored case exercised
+    // throughout the rest of this file.
+    expect(journal.getMemory(id)!.status).toBe("scratch");
+
+    const result = await store.promote({ id, target_status: "working", reason: "confirmed", session: "s1" });
+    expect(result).toEqual({ promoted: true });
+    expect(journal.getMemory(id)!.status).toBe("working");
+  });
+
+  test("score never gates: working->canonical still queues an approval regardless of a high score", async () => {
+    const { store, journal } = await makeStore();
+    const { id } = await store.remember({
+      content: "high-confidence fact",
+      reason: "seed",
+      session: "s1",
+      score: 0.99,
+    });
+    await store.promote({ id, target_status: "working", reason: "confirmed", session: "s1" });
+
+    const result = await store.promote({
+      id,
+      target_status: "canonical",
+      reason: "well-established fact",
+      session: "s1",
+    });
+
+    // Same shape as the unscored "promote working -> canonical enqueues an
+    // approval" test above -- a high score does not bypass the gate.
+    expect(result.promoted).toBe(false);
+    expect(result.approvalId).toBeDefined();
+    expect(journal.getMemory(id)!.status).toBe("working");
+  });
+
+  test("score never gates: forget/retire on a CANONICAL memory still queue approval regardless of a high score", async () => {
+    const { store, journal } = await makeStore();
+    const a = await store.remember({
+      content: "canonical fact A",
+      reason: "seed",
+      session: "s1",
+      score: 0.99,
+    });
+    await store.setStatus(a.id, "canonical", "approved as durable belief", "s1");
+    const forgetResult = await store.forget({ id: a.id, reason: "dodge", session: "s1" });
+    expect(forgetResult).toHaveProperty("queued", true);
+    expect(journal.getMemory(a.id)!.status).toBe("canonical");
+
+    const b = await store.remember({
+      content: "canonical fact B",
+      reason: "seed",
+      session: "s1",
+      score: 0.99,
+    });
+    await store.setStatus(b.id, "canonical", "approved as durable belief", "s1");
+    const retireResult = await store.retire({ id: b.id, reason: "dodge", session: "s1" });
+    expect(retireResult).toHaveProperty("queued", true);
+    expect(journal.getMemory(b.id)!.status).toBe("canonical");
+  });
+
   test("remember queues a conflict when a live (working) same-entity peer already conflicts on a fact", async () => {
     const { store, journal } = await makeStore();
     const a = await store.remember({

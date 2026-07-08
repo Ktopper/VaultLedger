@@ -139,6 +139,11 @@ function governedSlice(data: Record<string, unknown>): unknown {
  * Adding a ledger block/entity where there was none, or removing one entirely,
  * both count as CHANGED: the absent side normalizes to `null`, which never
  * canonically equals a present value.
+ *
+ * v0.3b's `derivation`, `retired_reason`, `superseded_by`, and `score` all
+ * live INSIDE the `ledger:` block, so this whole-block comparison already
+ * covers them by construction — no change was needed here to guard them
+ * (see broker.test.ts's LEDGER_NOTE_V03B tests for the locking regression).
  */
 export function governedProvenanceChanged(before: string, after: string): boolean {
   let beforeSlice: unknown;

@@ -829,6 +829,101 @@ describe("Broker", () => {
     expect(journal.listTransactions({}).some((t) => t.op === "revise")).toBe(false);
   });
 
+  // v0.3b lifecycle-ops fields (`derivation`, `superseded_by`, `score`) all
+  // live INSIDE the `ledger:` block, so governedProvenanceChanged's
+  // whole-block comparison already covers them by construction — no
+  // production change was needed for these three tests to pass. Kept as
+  // locking regression tests against that invariant regressing later.
+  const LEDGER_NOTE_V03B =
+    "---\nledger:\n  status: working\n  supersedes: null\n  score: 0.5\n  superseded_by: null\n" +
+    "  derivation:\n    kind: distilled\n    sources:\n      - mem_a\nentity: alice\n---\n\n" +
+    "Alice prefers dark mode.\nShe also prefers larger fonts.\nAnd a minimal sidebar.\n" +
+    "She reads mostly technical documentation.\nHer timezone is US/Pacific.\n";
+
+  test("unapproved revise forging ledger.derivation.sources throws LEDGER_GUARD and writes nothing", async () => {
+    const { broker, journal, vaultRoot } = await makeBroker();
+    await createAgentFile(broker, "Agent/Memory/lg5.md", LEDGER_NOTE_V03B);
+
+    const tampered = LEDGER_NOTE_V03B.replace("- mem_a", "- mem_forged");
+    const patchText = createPatch("lg5.md", LEDGER_NOTE_V03B, tampered);
+    const expectedHash = hashBytes(Buffer.from(LEDGER_NOTE_V03B, "utf8"));
+
+    let thrown: unknown;
+    try {
+      await broker.apply({
+        op: "revise",
+        path: "Agent/Memory/lg5.md",
+        expected_hash: expectedHash,
+        patch: patchText,
+        reason: "forge derivation source",
+        session: "s1",
+      });
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(BrokerError);
+    expect((thrown as BrokerError).code).toBe("LEDGER_GUARD");
+
+    expect(readFileSync(join(vaultRoot, "Agent/Memory/lg5.md"), "utf8")).toBe(LEDGER_NOTE_V03B);
+    expect(journal.listTransactions({}).some((t) => t.op === "revise")).toBe(false);
+  });
+
+  test("unapproved revise adding ledger.superseded_by throws LEDGER_GUARD and writes nothing", async () => {
+    const { broker, journal, vaultRoot } = await makeBroker();
+    await createAgentFile(broker, "Agent/Memory/lg6.md", LEDGER_NOTE_V03B);
+
+    const tampered = LEDGER_NOTE_V03B.replace("superseded_by: null", "superseded_by: mem_fake");
+    const patchText = createPatch("lg6.md", LEDGER_NOTE_V03B, tampered);
+    const expectedHash = hashBytes(Buffer.from(LEDGER_NOTE_V03B, "utf8"));
+
+    let thrown: unknown;
+    try {
+      await broker.apply({
+        op: "revise",
+        path: "Agent/Memory/lg6.md",
+        expected_hash: expectedHash,
+        patch: patchText,
+        reason: "forge successor",
+        session: "s1",
+      });
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(BrokerError);
+    expect((thrown as BrokerError).code).toBe("LEDGER_GUARD");
+
+    expect(readFileSync(join(vaultRoot, "Agent/Memory/lg6.md"), "utf8")).toBe(LEDGER_NOTE_V03B);
+    expect(journal.listTransactions({}).some((t) => t.op === "revise")).toBe(false);
+  });
+
+  test("unapproved revise changing ledger.score throws LEDGER_GUARD and writes nothing", async () => {
+    const { broker, journal, vaultRoot } = await makeBroker();
+    await createAgentFile(broker, "Agent/Memory/lg7.md", LEDGER_NOTE_V03B);
+
+    const tampered = LEDGER_NOTE_V03B.replace("score: 0.5", "score: 0.99");
+    const patchText = createPatch("lg7.md", LEDGER_NOTE_V03B, tampered);
+    const expectedHash = hashBytes(Buffer.from(LEDGER_NOTE_V03B, "utf8"));
+
+    let thrown: unknown;
+    try {
+      await broker.apply({
+        op: "revise",
+        path: "Agent/Memory/lg7.md",
+        expected_hash: expectedHash,
+        patch: patchText,
+        reason: "inflate score",
+        session: "s1",
+      });
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(BrokerError);
+    expect((thrown as BrokerError).code).toBe("LEDGER_GUARD");
+
+    expect(readFileSync(join(vaultRoot, "Agent/Memory/lg7.md"), "utf8")).toBe(LEDGER_NOTE_V03B);
+    expect(journal.listTransactions({}).some((t) => t.op === "revise")).toBe(false);
+  });
+
   test("unapproved revise that changes only the body succeeds", async () => {
     const { broker, vaultRoot } = await makeBroker();
     await createAgentFile(broker, "Agent/Memory/lg4.md", LEDGER_NOTE);
