@@ -23,19 +23,6 @@ describe("applyPatch", () => {
     }
   });
 
-  test("throws PATCH_TOO_LARGE when a patch changes more than the threshold of a small file", () => {
-    const original = "a\nb\nc\nd\n";
-    const rewritten = "A\nB\nC\nd\n";
-    const patchText = createPatch("file.md", original, rewritten);
-
-    try {
-      applyPatch(original, patchText, 0.5);
-      throw new Error("expected applyPatch to throw");
-    } catch (e) {
-      expect(e).toBeInstanceOf(BrokerError);
-      expect((e as BrokerError).code).toBe("PATCH_TOO_LARGE");
-    }
-  });
 
   test("throws SYNTAX_BREAK when the patch context doesn't match the original", () => {
     // Use a file large enough that a one-line change is well under the size

@@ -301,9 +301,17 @@ describe("Broker", () => {
 
   test("revise with a patch that changes >50% of the file propagates PATCH_TOO_LARGE", async () => {
     const { broker } = await makeBroker();
-    const original = "a\nb\nc\nd\n";
+    // Above the 512-byte ratio-guard floor (WU-4): the guard only applies to
+    // files this size, so use a genuinely large note to prove the broker's
+    // revise path still propagates PATCH_TOO_LARGE where the guard is active.
+    const original =
+      Array.from({ length: 40 }, (_, i) => `original content line number ${i} with padding`).join("\n") + "\n";
     await createAgentFile(broker, "Agent/Memory/big.md", original);
-    const rewritten = "A\nB\nC\nD\n";
+    // Change 25 of 40 lines (>50%) so the ratio guard trips.
+    const rewritten =
+      Array.from({ length: 40 }, (_, i) =>
+        i < 25 ? `REWRITTEN content line number ${i} with padding` : `original content line number ${i} with padding`,
+      ).join("\n") + "\n";
     const patchText = createPatch("big.md", original, rewritten);
 
     let thrown: unknown;
