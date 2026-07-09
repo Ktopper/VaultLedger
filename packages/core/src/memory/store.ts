@@ -528,6 +528,7 @@ export class MemoryStore {
         state: "pending",
         created_at: this.now(),
         resolved_at: null,
+        stale_reason: null,
       });
       return { queued: true, approvalId };
     }
@@ -609,6 +610,7 @@ export class MemoryStore {
         state: "pending",
         created_at: this.now(),
         resolved_at: null,
+        stale_reason: null,
       });
       return { promoted: false, approvalId };
     }
@@ -686,6 +688,7 @@ export class MemoryStore {
         state: "pending",
         created_at: this.now(),
         resolved_at: null,
+        stale_reason: null,
       });
       return { queued: true, approvalId };
     }
@@ -802,6 +805,7 @@ export class MemoryStore {
         state: "pending",
         created_at: this.now(),
         resolved_at: null,
+        stale_reason: null,
       });
       return { queued: true, approvalId };
     }

@@ -45,6 +45,12 @@ export interface ApprovalRow {
   state: ApprovalState;
   created_at: string;
   resolved_at: string | null;
+  /** WHY this approval was marked `stale` -- the RejectionCode of the
+   * dispatch failure (e.g. "INVALID_TRANSITION", "STALE_HASH") that made the
+   * held operation no longer applicable. Null for every other state (and for
+   * a `stale` row from before this column existed -- see
+   * db.ts's migrateApprovalsTable). Set only by `setApprovalStale`. */
+  stale_reason: string | null;
 }
 
 export interface ConflictRow {
@@ -386,8 +392,8 @@ export class Journal {
     this.db
       .prepare(
         `INSERT INTO approvals
-           (id, held_operation, zone, reason, session, state, created_at, resolved_at)
-         VALUES (@id, @held_operation, @zone, @reason, @session, @state, @created_at, @resolved_at)`,
+           (id, held_operation, zone, reason, session, state, created_at, resolved_at, stale_reason)
+         VALUES (@id, @held_operation, @zone, @reason, @session, @state, @created_at, @resolved_at, @stale_reason)`,
       )
       .run(row);
   }
@@ -416,6 +422,23 @@ export class Journal {
     this.db
       .prepare(`UPDATE approvals SET state = @state, resolved_at = @resolvedAt WHERE id = @id`)
       .run({ id, state, resolvedAt: resolvedAtIso ?? null });
+  }
+
+  /**
+   * Mark an approval `stale`, recording WHY (the RejectionCode of the
+   * dispatch failure that made the held operation no longer applicable --
+   * see approvals/queue.ts's STALE_ELIGIBLE_CODES/runDispatch). Distinct from
+   * `setApprovalState(id, "stale", ...)` (still usable directly, but leaves
+   * `stale_reason` untouched/null) so every caller that stales an approval
+   * for an allowlisted dispatch failure records a reason, not just the bare
+   * state flip.
+   */
+  setApprovalStale(id: string, reason: string, resolvedAtIso: string): void {
+    this.db
+      .prepare(
+        `UPDATE approvals SET state = 'stale', resolved_at = @resolvedAt, stale_reason = @reason WHERE id = @id`,
+      )
+      .run({ id, resolvedAt: resolvedAtIso, reason });
   }
 
   // ---------------------------------------------------------------------

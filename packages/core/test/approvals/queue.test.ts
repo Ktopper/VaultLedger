@@ -1,7 +1,7 @@
 import { describe, expect, test, afterEach } from "vitest";
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { createPatch } from "diff";
 import { Broker } from "../../src/broker/broker.js";
 import { LedgerGit } from "../../src/broker/git.js";
@@ -81,7 +81,9 @@ describe("Approvals", () => {
     relPath: string,
     content: string,
   ): Promise<void> {
-    writeFileSync(join(vaultRoot, relPath), content, "utf8");
+    const abs = join(vaultRoot, relPath);
+    mkdirSync(dirname(abs), { recursive: true });
+    writeFileSync(abs, content, "utf8");
     await git.commitFile(relPath, `ledger: create ${relPath} seed`);
   }
 
@@ -143,6 +145,73 @@ describe("Approvals", () => {
     expect(readFileSync(join(vaultRoot, "stale.md"), "utf8")).toBe(drifted);
     const approval = journal.getApproval(queued.approvalId);
     expect(approval!.state).toBe("stale");
+    expect(approval!.stale_reason).toBe("STALE_HASH");
+  });
+
+  test("approve() on a held retire whose target was forgotten out from under it stales (INVALID_TRANSITION) instead of throwing and leaving a zombie pending approval", async () => {
+    const { approvals, store, journal } = await makeHarness();
+
+    const { id: memId } = await store.remember({
+      content: "well established fact, later forgotten before its retire is approved",
+      reason: "seed",
+      session: "s1",
+    });
+    await store.setStatus(memId, "canonical", "approved as durable belief", "s1");
+
+    // Queue a canonical retire (held for approval).
+    const retireQueued = await store.retire({ id: memId, reason: "superseded", session: "s1" });
+    expect(retireQueued).toHaveProperty("queued", true);
+    const retireApprovalId = (retireQueued as { queued: true; approvalId: string }).approvalId;
+
+    // Now forget the SAME canonical memory and approve that forget first --
+    // the world moves out from under the still-pending retire.
+    const forgetQueued = await store.forget({ id: memId, reason: "dodge", session: "s1" });
+    expect(forgetQueued).toHaveProperty("queued", true);
+    const forgetApprovalId = (forgetQueued as { queued: true; approvalId: string }).approvalId;
+    const forgetResult = await approvals.approve(forgetApprovalId);
+    expect(forgetResult).toEqual({ applied: true });
+    expect(journal.getMemory(memId)!.status).toBe("forgotten");
+
+    // Approving the now-inapplicable retire must NOT throw -- it should
+    // stale, recording why, and leave the memory untouched (still forgotten).
+    const result = await approvals.approve(retireApprovalId);
+    expect(result).toEqual({ stale: true });
+
+    const approval = journal.getApproval(retireApprovalId);
+    expect(approval!.state).toBe("stale");
+    expect(approval!.stale_reason).toBe("INVALID_TRANSITION");
+    expect(journal.getMemory(memId)!.status).toBe("forgotten");
+  });
+
+  test("approve() on a dispatch failure with a NON-allowlisted code (FORBIDDEN_ZONE) still throws and leaves the approval pending", async () => {
+    const { approvals, journal, vaultRoot, git, genId } = await makeHarness();
+    const original = "secret content\n";
+    // MANIFEST's `excluded` zone is Private/**.
+    await seedTrustedNote(git, vaultRoot, "Private/secret.md", original);
+    const patchText = createPatch("Private/secret.md", original, original + "more\n");
+    const expectedHash = hashFile(join(vaultRoot, "Private/secret.md"));
+
+    // Manually enqueue a held revise targeting the excluded zone -- this
+    // could never be queued via the normal broker.apply path (an excluded
+    // revise rejects immediately), so it's built directly to exercise
+    // dispatchApply's error handling on a non-allowlisted BrokerError code.
+    const approvalId = approvals.enqueue(
+      {
+        op: "revise",
+        path: "Private/secret.md",
+        expected_hash: expectedHash,
+        patch: patchText,
+        reason: "sneak an edit",
+        session: "s1",
+      },
+      "excluded-zone-probe",
+      "sneak an edit",
+      "s1",
+      genId,
+    );
+
+    await expect(approvals.approve(approvalId)).rejects.toMatchObject({ code: "FORBIDDEN_ZONE" });
+    expect(journal.getApproval(approvalId)!.state).toBe("pending");
   });
 
   test("reject() marks the approval rejected and leaves the file untouched", async () => {

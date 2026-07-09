@@ -45,7 +45,8 @@ CREATE TABLE IF NOT EXISTS approvals (
   session TEXT NOT NULL,
   state TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  resolved_at TEXT
+  resolved_at TEXT,
+  stale_reason TEXT
 );
 
 CREATE TABLE IF NOT EXISTS conflicts (
@@ -112,6 +113,7 @@ export function openJournal(dbPath: string): Database.Database {
   migrateTransactionsTable(db);
   createTransactionsApprovalIndex(db);
   migrateMemoryRelations(db);
+  migrateApprovalsTable(db);
   return db;
 }
 
@@ -332,4 +334,25 @@ function migrateMemoryRelations(db: Database.Database): void {
     `);
   }
   db.exec(`CREATE INDEX IF NOT EXISTS ix_memory_relations_source ON memory_relations(source_id);`);
+}
+
+// v0.3b2: `approvals.stale_reason` records WHY a held approval was marked
+// `stale` (the RejectionCode of the dispatch failure that made the held
+// operation no longer applicable, e.g. "INVALID_TRANSITION" or
+// "STALE_HASH" -- see approvals/queue.ts's STALE_ELIGIBLE_CODES). A
+// brand-new journal already gets the column directly from SCHEMA_SQL's
+// CREATE TABLE; this migration exists purely to UPGRADE a pre-existing
+// journal created before this column existed. Nullable, so a plain ALTER
+// TABLE ADD COLUMN needs no DEFAULT/backfill -- every pre-existing row
+// simply reads NULL (it was never staled with a recorded reason).
+// Driven off `pragma table_info`, matching this file's other migrations
+// (e.g. migrateTransactionsTable), so re-running against an already-
+// migrated (or fresh) db is a no-op.
+function migrateApprovalsTable(db: Database.Database): void {
+  const existing = new Set(
+    (db.prepare("pragma table_info(approvals)").all() as Array<{ name: string }>).map((c) => c.name),
+  );
+  if (!existing.has("stale_reason")) {
+    db.exec(`ALTER TABLE approvals ADD COLUMN stale_reason TEXT`);
+  }
 }

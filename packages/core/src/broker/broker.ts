@@ -416,6 +416,7 @@ export class Broker {
       state: "pending",
       created_at: this.now(),
       resolved_at: null,
+      stale_reason: null,
     };
     this.journal.insertApproval(row);
 
