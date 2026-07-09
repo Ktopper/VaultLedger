@@ -137,6 +137,15 @@ export async function backfillEntity(
     }
 
     // fileEntity === null, journal has one -> BACKFILL.
+    // NOTE (source-linked staleness, v0.3b-2): this approved revise deliberately
+    // does NOT trigger the staleness hook (unlike store.revise/dispatchApply),
+    // even though extract() currently treats a top-level `entity` as a fact. It
+    // only ever writes `entity = mem.entity` — the journal's ALREADY-
+    // authoritative value the citing distillation was derived under — into a
+    // file that lacked it: a rebuild-durability NORMALIZATION, not a belief
+    // change, so flagging citers here would be a false positive. It is also a
+    // human-run maintenance command, never agent-reachable. (Follow-up: exclude
+    // `entity` from extract()'s facts so this is intrinsic, not incidental.)
     try {
       const after = matter.stringify(parsed.content, {
         ...parsed.data,

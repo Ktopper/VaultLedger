@@ -15,6 +15,7 @@ import { recall } from "../../src/recall/recall.js";
 import { undoTransaction } from "../../src/broker/undo.js";
 import { Conflicts } from "../../src/conflicts/queue.js";
 import { Approvals } from "../../src/approvals/queue.js";
+import { staleSourceDetail } from "../../src/contradiction/staleness.js";
 import type { PermissionsManifest } from "../../src/schemas/manifest.js";
 
 const MANIFEST: PermissionsManifest = {
@@ -490,8 +491,8 @@ describe("MemoryStore", () => {
   });
 
   test("a held canonical-revise, once approved, lands the patch and marks the approval approved", async () => {
-    const { store, broker, journal, vaultRoot, now } = await makeStore();
-    const approvals = new Approvals({ broker, store, journal, now });
+    const { store, broker, journal, vaultRoot, now, genId } = await makeStore();
+    const approvals = new Approvals({ broker, store, journal, now, vaultRoot, genId });
     const { id, path } = await store.remember({ content: "durable fact 2", reason: "seed", session: "s1" });
     await store.setStatus(id, "canonical", "approved as durable belief", "s1");
 
@@ -511,8 +512,8 @@ describe("MemoryStore", () => {
   });
 
   test("a held canonical-revise, when rejected, leaves the file unchanged and the approval rejected", async () => {
-    const { store, broker, journal, vaultRoot, now } = await makeStore();
-    const approvals = new Approvals({ broker, store, journal, now });
+    const { store, broker, journal, vaultRoot, now, genId } = await makeStore();
+    const approvals = new Approvals({ broker, store, journal, now, vaultRoot, genId });
     const { id, path } = await store.remember({ content: "durable fact 3", reason: "seed", session: "s1" });
     await store.setStatus(id, "canonical", "approved as durable belief", "s1");
 
@@ -1300,6 +1301,151 @@ describe("MemoryStore", () => {
       expect(result).toEqual({ retired: true, id });
       const onDisk = matter(readFileSync(join(vaultRoot, path), "utf8"));
       expect(onDisk.data.ledger.superseded_by).toBe(oldest.id);
+    });
+  });
+
+  describe("source-linked staleness (retire/forget/revise)", () => {
+    test("retire of a cited source flags every citing distillation stale (status 'retired')", async () => {
+      const { store, journal, vaultRoot } = await makeStore();
+      const source = await store.remember({
+        content: "The project deadline is firm.",
+        entity: "proj",
+        reason: "seed",
+        session: "s1",
+      });
+      const d1 = await store.distill({
+        content: "Summary A citing the deadline note.",
+        sources: [source.id],
+        reason: "summarize",
+        session: "s1",
+      });
+      const d2 = await store.distill({
+        content: "Summary B citing the deadline note.",
+        sources: [source.id],
+        reason: "summarize",
+        session: "s1",
+      });
+      await store.promote({ id: source.id, target_status: "working", reason: "confirmed", session: "s1" });
+
+      await store.retire({ id: source.id, reason: "superseded", session: "s1" });
+
+      const stale = journal.listConflicts("open").filter((c) => c.kind === "stale-source");
+      expect(stale).toHaveLength(2);
+      const citing = stale
+        .map((c) => (c.memory_a === source.id ? c.memory_b : c.memory_a))
+        .sort();
+      expect(citing).toEqual([d1.id, d2.id].sort());
+
+      const expectedContentId = hashFile(join(vaultRoot, source.path));
+      for (const c of stale) {
+        const distillationId = c.memory_a === source.id ? c.memory_b! : c.memory_a!;
+        expect(c.detail).toBe(
+          staleSourceDetail({
+            distillationId,
+            sourceId: source.id,
+            sourceStatus: "retired",
+            contentId: expectedContentId,
+          }),
+        );
+      }
+    });
+
+    test("forget of a cited (working) source flags citing distillations (status 'forgotten'), contentId is the ARCHIVE file's sha (not GONE)", async () => {
+      const { store, journal, vaultRoot } = await makeStore();
+      const source = await store.remember({
+        content: "The rollout window is next week.",
+        entity: "proj",
+        reason: "seed",
+        session: "s1",
+      });
+      await store.promote({ id: source.id, target_status: "working", reason: "confirmed", session: "s1" });
+      const d = await store.distill({
+        content: "Summary citing the rollout note.",
+        sources: [source.id],
+        reason: "summarize",
+        session: "s1",
+      });
+
+      await store.forget({ id: source.id, reason: "obsolete", session: "s1" });
+
+      const archivePath = `Agent/Archive/${source.id}.md`;
+      expect(existsSync(join(vaultRoot, archivePath))).toBe(true);
+      const expectedContentId = hashFile(join(vaultRoot, archivePath));
+      expect(expectedContentId).not.toBe("GONE");
+
+      const stale = journal.listConflicts("open").filter((c) => c.kind === "stale-source");
+      expect(stale).toHaveLength(1);
+      expect(stale[0]!.detail).toBe(
+        staleSourceDetail({
+          distillationId: d.id,
+          sourceId: source.id,
+          sourceStatus: "forgotten",
+          contentId: expectedContentId,
+        }),
+      );
+    });
+
+    test("revise: a FACT-changing revise of a cited working source flags; a PROSE-only revise of the same source does not; a revise of an UNCITED memory does not", async () => {
+      const { store, journal, vaultRoot } = await makeStore();
+      const source = await store.remember({
+        content: "deadline: 2026-01-01\nThe project remains on track.",
+        entity: "proj",
+        reason: "seed",
+        session: "s1",
+      });
+      const d = await store.distill({
+        content: "Summary citing the deadline note.",
+        sources: [source.id],
+        reason: "summarize",
+        session: "s1",
+      });
+      await store.promote({ id: source.id, target_status: "working", reason: "confirmed", session: "s1" });
+      const uncited = await store.remember({
+        content: "status: green\nAn unrelated note.",
+        entity: "other",
+        reason: "seed",
+        session: "s1",
+      });
+
+      // 1. PROSE-only revise of the cited source: body prose changes, no
+      // fact changes -> no flag.
+      let before = readFileSync(join(vaultRoot, source.path), "utf8");
+      let after = before.replace(
+        "The project remains on track.",
+        "The project remains firmly on track.",
+      );
+      let patch = createPatch(source.path, before, after);
+      await store.revise({ id: source.id, patch, reason: "wording", session: "s1" });
+      expect(journal.listConflicts("open").filter((c) => c.kind === "stale-source")).toHaveLength(0);
+
+      // 2. Revise of an UNCITED memory, even a fact change -> no flag
+      // (nobody cites it, so the cheap guard skips the diff entirely).
+      before = readFileSync(join(vaultRoot, uncited.path), "utf8");
+      after = before.replace("status: green", "status: red");
+      patch = createPatch(uncited.path, before, after);
+      await store.revise({ id: uncited.id, patch, reason: "status change", session: "s1" });
+      expect(journal.listConflicts("open").filter((c) => c.kind === "stale-source")).toHaveLength(0);
+
+      // 3. FACT-changing revise of the cited source -> flags the citing
+      // distillation.
+      before = readFileSync(join(vaultRoot, source.path), "utf8");
+      after = before.replace("deadline: 2026-01-01", "deadline: 2026-03-01");
+      patch = createPatch(source.path, before, after);
+      await store.revise({ id: source.id, patch, reason: "deadline moved", session: "s1" });
+
+      const stale = journal.listConflicts("open").filter((c) => c.kind === "stale-source");
+      expect(stale).toHaveLength(1);
+      expect([stale[0]!.memory_a, stale[0]!.memory_b]).toContain(d.id);
+      expect([stale[0]!.memory_a, stale[0]!.memory_b]).toContain(source.id);
+      const expectedContentId = hashFile(join(vaultRoot, source.path));
+      expect(stale[0]!.detail).toBe(
+        staleSourceDetail({
+          distillationId: d.id,
+          sourceId: source.id,
+          sourceStatus: "working",
+          contentId: expectedContentId,
+        }),
+      );
     });
   });
 });

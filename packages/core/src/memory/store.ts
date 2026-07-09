@@ -7,6 +7,7 @@ import { Broker } from "../broker/broker.js";
 import { hashFile } from "../broker/hash.js";
 import { BrokerError } from "../errors.js";
 import { checkContradictions } from "../contradiction/check.js";
+import { checkSourceStaleness, flagCitingDistillations } from "../contradiction/staleness.js";
 import type { Journal, MemoryRow } from "../journal/journal.js";
 import type { Confidence, MemoryStatus } from "../schemas/provenance.js";
 
@@ -528,9 +529,14 @@ export class MemoryStore {
         state: "pending",
         created_at: this.now(),
         resolved_at: null,
+        stale_reason: null,
       });
       return { queued: true, approvalId };
     }
+
+    // Pre-image for the source-linked staleness fact-diff (design v0.3b-2)
+    // -- MUST be read BEFORE broker.apply below mutates the file.
+    const beforeContent = readFileSync(join(this.vaultRoot, mem.path), "utf8");
 
     const result = await this.broker.apply(
       {
@@ -558,6 +564,28 @@ export class MemoryStore {
       { journal: this.journal, vaultRoot: this.vaultRoot, now: this.now, genId: this.genId },
       input.id,
     );
+
+    // Post-commit, non-blocking source-linked staleness (design v0.3b-2):
+    // the ONE `checkSourceStaleness` helper (contradiction/staleness.ts),
+    // wired to BOTH content-changing revise surfaces -- this is the other
+    // one being `Approvals.dispatchApply` (the approved-canonical-revise
+    // apply path, which never re-enters this method — see this method's
+    // EXECUTION CONTRACT doc comment above). Its own cheap guard skips the
+    // fact-diff entirely when `input.id` is cited by nobody.
+    // The read+hash of the after-content is INSIDE this try so a file-unreadable
+    // race in the sub-ms window after the commit can never fail the (already
+    // committed) write — the non-blocking contract covers the arg evaluation,
+    // not just the helper body.
+    try {
+      checkSourceStaleness(
+        { journal: this.journal, now: this.now, genId: this.genId },
+        input.id,
+        beforeContent,
+        readFileSync(join(this.vaultRoot, mem.path), "utf8"),
+      );
+    } catch (err) {
+      console.error(`revise: source-linked staleness failed for ${input.id}:`, err);
+    }
 
     return { revised: true, id: input.id };
   }
@@ -609,6 +637,7 @@ export class MemoryStore {
         state: "pending",
         created_at: this.now(),
         resolved_at: null,
+        stale_reason: null,
       });
       return { promoted: false, approvalId };
     }
@@ -686,6 +715,7 @@ export class MemoryStore {
         state: "pending",
         created_at: this.now(),
         resolved_at: null,
+        stale_reason: null,
       });
       return { queued: true, approvalId };
     }
@@ -711,6 +741,27 @@ export class MemoryStore {
     // 'forgotten' — and it un-hides them again if the forget is later
     // undone (the memory goes live again), rather than permanently baking
     // in a 'moot' state that a re-detect could never reopen.
+
+    // Post-commit, non-blocking source-linked staleness (design v0.3b-2):
+    // ALWAYS flags every citing distillation, on both the immediate
+    // (working) and approved-canonical (store.forget(..., {approved:true}))
+    // paths -- both fall through to this exact code. `contentId` hashes the
+    // note at its NEW archived path (the move already landed above), not
+    // "GONE": the file still exists on disk, it just moved.
+    // read+hash inside the try (see revise's note): the non-blocking contract
+    // must cover the arg evaluation too, so a post-commit file race never fails
+    // an already-committed forget.
+    try {
+      flagCitingDistillations(
+        { journal: this.journal, now: this.now, genId: this.genId },
+        input.id,
+        "forgotten",
+        hashFile(join(this.vaultRoot, archivePath)),
+      );
+    } catch (err) {
+      console.error(`forget: source-linked staleness failed for ${input.id}:`, err);
+    }
+
     return { forgotten: true, id: input.id };
   }
 
@@ -802,6 +853,7 @@ export class MemoryStore {
         state: "pending",
         created_at: this.now(),
         resolved_at: null,
+        stale_reason: null,
       });
       return { queued: true, approvalId };
     }
@@ -812,6 +864,28 @@ export class MemoryStore {
     }
     await this.flipFrontmatterStatus(mem, "retired", input.reason, input.session, extra);
     this.journal.updateMemory(input.id, { status: "retired" });
+
+    // Post-commit, non-blocking source-linked staleness (design v0.3b-2):
+    // this single call site covers BOTH the working-retire path (immediate,
+    // reaches here directly) and the approved-canonical-retire path
+    // (Approvals.approve's `retire` arm calls `store.retire(...,
+    // {approved:true})`, which skips the queue-and-return above and falls
+    // through to this exact code) -- so retire ALWAYS flags, regardless of
+    // which path landed it. `mem.path` is unchanged by retire (a metadata
+    // flip, not a move), so it's still the note's current on-disk path.
+    // read+hash inside the try (see revise's note): the non-blocking contract
+    // must cover the arg evaluation too, so a post-commit file race never fails
+    // an already-committed retire.
+    try {
+      flagCitingDistillations(
+        { journal: this.journal, now: this.now, genId: this.genId },
+        input.id,
+        "retired",
+        hashFile(join(this.vaultRoot, mem.path)),
+      );
+    } catch (err) {
+      console.error(`retire: source-linked staleness failed for ${input.id}:`, err);
+    }
 
     return { retired: true, id: input.id };
   }

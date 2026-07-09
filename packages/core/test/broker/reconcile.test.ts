@@ -226,6 +226,7 @@ describe("reconcile: closes stale pending approvals (approve->apply crash gap)",
       state: "pending",
       created_at: "2026-07-01T00:00:00.000Z",
       resolved_at: null,
+      stale_reason: null,
       ...overrides,
     };
   }
@@ -364,7 +365,7 @@ describe("reconcile: closes stale pending approvals (approve->apply crash gap)",
     });
     const broker = new Broker({ vaultRoot, git, journal, manifest, now, genId });
     const store = new MemoryStore({ broker, journal, now, genId, vaultRoot });
-    const approvals = new Approvals({ broker, store, journal, now });
+    const approvals = new Approvals({ broker, store, journal, now, vaultRoot, genId });
 
     // A padded note so a one-word revise stays under the patch-size threshold.
     const original =

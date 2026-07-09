@@ -76,6 +76,7 @@ describe("openJournal", () => {
       state: "pending",
       created_at: "2026-07-01T00:00:00.000Z",
       resolved_at: null,
+      stale_reason: null,
     } as unknown as ApprovalRow;
     expect(() => j.insertApproval(badRow)).toThrow(/NOT NULL/i);
   });
@@ -301,6 +302,7 @@ describe("Journal approvals", () => {
       state: "pending",
       created_at: "2026-07-01T00:00:00.000Z",
       resolved_at: null,
+      stale_reason: null,
       ...overrides,
     };
   }
@@ -339,6 +341,7 @@ describe("Journal.runInTransaction", () => {
       state: "pending",
       created_at: "2026-07-01T00:00:00.000Z",
       resolved_at: null,
+      stale_reason: null,
     });
 
     j.runInTransaction(() => {
@@ -359,6 +362,7 @@ describe("Journal.runInTransaction", () => {
       state: "pending",
       created_at: "2026-07-01T00:00:00.000Z",
       resolved_at: null,
+      stale_reason: null,
     });
 
     expect(() =>

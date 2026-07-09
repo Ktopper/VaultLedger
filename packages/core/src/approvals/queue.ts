@@ -1,5 +1,8 @@
+import { readFileSync } from "node:fs";
+import { basename, join } from "node:path";
 import { BrokerError } from "../errors.js";
 import type { Broker } from "../broker/broker.js";
+import { checkSourceStaleness } from "../contradiction/staleness.js";
 import type { ApprovalRow, Journal } from "../journal/journal.js";
 import type { MemoryStore } from "../memory/store.js";
 import type { ProposedOperation } from "../schemas/operation.js";
@@ -9,9 +12,42 @@ export interface ApprovalsOptions {
   store: MemoryStore;
   journal: Journal;
   now: () => string;
+  /** Absolute vault root, needed to read a revise op's target file's
+   * before/after content for the source-linked staleness hook (design
+   * v0.3b-2, dispatchApply's staleness pin — see dispatchApply's doc
+   * comment). */
+  vaultRoot: string;
+  genId: (prefix: string) => string;
 }
 
 export type ApproveResult = { applied: true } | { stale: true };
+
+/**
+ * The "held op no longer applicable" class of dispatch failure -- the world
+ * moved out from under a queued/held operation between enqueue and approve
+ * time, and retrying the identical operation can never succeed. Any
+ * BrokerError whose code is in this set causes `approve()` to mark the
+ * approval `stale` (recording the code as `stale_reason`) and return
+ * `{stale:true}` INSTEAD of throwing, across every dispatch arm (create/
+ * revise/propose_edit via `dispatchApply`, and promote/forget/retire) -- see
+ * `runDispatch` below.
+ *
+ * `NOT_FOUND` is DELIBERATELY EXCLUDED: a vanished target (file or memory
+ * row) is ambiguous -- it could be a transient sync flake where the target
+ * reappears -- so the conservative call is to leave the approval `pending`
+ * for a human to review, not to auto-resolve it as stale.
+ *
+ * Any code NOT in this set propagates (throws) unchanged and leaves the
+ * approval row `pending` -- a transient DB/lock bug or a real rejection
+ * (FORBIDDEN_ZONE, PATCH_TOO_LARGE, SYNTAX_BREAK, NOT_FOUND, ...) must never
+ * be silently buried by marking a legitimate approval stale.
+ */
+const STALE_ELIGIBLE_CODES = new Set<string>([
+  "STALE_HASH",
+  "INVALID_TRANSITION",
+  "ALREADY_CLOSED",
+  "ALREADY_REVERTED",
+]);
 
 /**
  * The pending-approval queue (design §5.2/§approvals). This is the general
@@ -56,12 +92,16 @@ export class Approvals {
   private readonly store: MemoryStore;
   private readonly journal: Journal;
   private readonly now: () => string;
+  private readonly vaultRoot: string;
+  private readonly genId: (prefix: string) => string;
 
   constructor(opts: ApprovalsOptions) {
     this.broker = opts.broker;
     this.store = opts.store;
     this.journal = opts.journal;
     this.now = opts.now;
+    this.vaultRoot = opts.vaultRoot;
+    this.genId = opts.genId;
   }
 
   /** Enqueue an arbitrary held operation for later approval. Returns the new approval id. */
@@ -82,6 +122,7 @@ export class Approvals {
       state: "pending",
       created_at: this.now(),
       resolved_at: null,
+      stale_reason: null,
     };
     this.journal.insertApproval(row);
     return id;
@@ -111,13 +152,15 @@ export class Approvals {
         // Durable status (design §6.0): flip the FILE frontmatter (and the
         // journal row) to canonical via the store, not a bare
         // journal.setMemoryStatus — otherwise the promotion is lost on the
-        // next reindex.
+        // next reindex. Routed through runDispatch (like every other arm)
+        // so a held promote whose target has since moved out from under it
+        // (e.g. INVALID_TRANSITION) stales instead of throwing.
         const memoryId = op.id as string;
         const reason = typeof op.reason === "string" ? op.reason : "approved canonical promotion";
         const session = typeof op.session === "string" ? op.session : "approval";
-        await this.store.setStatus(memoryId, "canonical", reason, session);
-        this.journal.setApprovalState(id, "approved", this.now());
-        return { applied: true };
+        return this.runDispatch(id, async () => {
+          await this.store.setStatus(memoryId, "canonical", reason, session);
+        });
       }
       case "forget": {
         // A canonical-forget is not a path-based broker op at all
@@ -129,9 +172,9 @@ export class Approvals {
         const memoryId = op.id as string;
         const reason = typeof op.reason === "string" ? op.reason : "approved canonical forget";
         const session = typeof op.session === "string" ? op.session : "approval";
-        await this.store.forget({ id: memoryId, reason, session }, { approved: true });
-        this.journal.setApprovalState(id, "approved", this.now());
-        return { applied: true };
+        return this.runDispatch(id, async () => {
+          await this.store.forget({ id: memoryId, reason, session }, { approved: true });
+        });
       }
       case "retire": {
         // A canonical-retire (queued by `MemoryStore.retire`, mirroring the
@@ -139,17 +182,20 @@ export class Approvals {
         // is applied via MemoryStore.retire(..., {approved:true}), which
         // bypasses the canonical gate and runs the real metadata patch
         // (frontmatter status/retired_reason/superseded_by flip) — mirrors
-        // the `forget` case above.
+        // the `forget` case above. THIS is the arm that used to strand a
+        // zombie pending approval when the target was forgotten out from
+        // under a queued retire (INVALID_TRANSITION) — runDispatch now
+        // stales it instead.
         const memoryId = op.id as string;
         const reason = typeof op.reason === "string" ? op.reason : "approved canonical retire";
         const session = typeof op.session === "string" ? op.session : "approval";
         const supersededBy = typeof op.superseded_by === "string" ? op.superseded_by : undefined;
-        await this.store.retire(
-          { id: memoryId, reason, superseded_by: supersededBy, session },
-          { approved: true },
-        );
-        this.journal.setApprovalState(id, "approved", this.now());
-        return { applied: true };
+        return this.runDispatch(id, async () => {
+          await this.store.retire(
+            { id: memoryId, reason, superseded_by: supersededBy, session },
+            { approved: true },
+          );
+        });
       }
       default:
         throw new BrokerError(
@@ -172,35 +218,118 @@ export class Approvals {
     return approval;
   }
 
+  /**
+   * HOOK-POINT PIN (design v0.3b-2): this is the OTHER content-changing
+   * revise surface, alongside `MemoryStore.revise`'s own immediate-apply
+   * path — an approved canonical-source revise's actual write lands HERE
+   * (`Broker.apply` directly), never re-entering `store.revise` (see that
+   * method's EXECUTION CONTRACT doc comment). Both surfaces call the SAME
+   * `checkSourceStaleness` helper (contradiction/staleness.ts) so neither
+   * can silently drift out of coverage — the class of bug `supersedes` once
+   * had before the matcher's lineage exclusion existed.
+   *
+   * `dispatchApply` also applies plain `create` ops and `propose_edit`-
+   * reshaped-to-`revise` ops (see `approve()`'s dispatch table); only the
+   * `revise` case (post-reshape) is a candidate, and only when its `path`
+   * names a memory id with a `memories` journal row — the pre-check below
+   * derives that id from the path (memory note paths are always
+   * `<dir>/<id>.md`, both in Agent/Memory and Agent/Archive) and skips
+   * everything else. `checkSourceStaleness`'s own cheap guard handles the
+   * "cited by nobody" case, so this fires unconditionally for every
+   * journal-known revise target and lets that guard do the filtering.
+   */
   private async dispatchApply(id: string, op: ProposedOperation): Promise<ApproveResult> {
-    try {
+    return this.runDispatch(id, async () => {
+      // Pre-image, read BEFORE broker.apply mutates the file below. Never
+      // throws (non-blocking, mirrors checkContradictions/checkSourceStaleness):
+      // a pre-image read failure just skips the staleness hook for this
+      // apply, it must never abort the real approval dispatch.
+      let stalenessTarget: { memoryId: string; path: string; beforeContent: string } | null = null;
+      if (op.op === "revise") {
+        try {
+          const candidateId = basename(op.path, ".md");
+          if (this.journal.getMemory(candidateId)) {
+            stalenessTarget = {
+              memoryId: candidateId,
+              path: op.path,
+              beforeContent: readFileSync(join(this.vaultRoot, op.path), "utf8"),
+            };
+          }
+        } catch (err) {
+          console.error(
+            `dispatchApply: could not read staleness pre-image for ${op.path}:`,
+            err,
+          );
+        }
+      }
+
       // Pass approvalId so the transaction the broker records carries this
       // approval's id — the SOUND link reconcile.closeStaleApprovals uses to
       // close a stale pending approval by exact id-match after a crash in the
-      // gap below (see that function). The promote-canonical branch of
-      // approve() does NOT route through here (it calls store.setStatus, which
-      // records no approval_id-tagged transaction) — a crash there just leaves
-      // the approval pending, which is safe: no false-close, a human re-acts.
+      // gap below (see that function). The promote/forget/retire arms of
+      // approve() do NOT route through broker.apply at all (they call the
+      // store directly, which records no approval_id-tagged transaction) — a
+      // crash there just leaves the approval pending, which is safe: no
+      // false-close, a human re-acts.
       await this.broker.apply(op, { approved: true, approvalId: id });
+
+      // Post-commit, non-blocking source-linked staleness (design v0.3b-2)
+      // — see this method's doc comment above.
+      if (stalenessTarget !== null) {
+        try {
+          const afterContent = readFileSync(join(this.vaultRoot, stalenessTarget.path), "utf8");
+          checkSourceStaleness(
+            { journal: this.journal, now: this.now, genId: this.genId },
+            stalenessTarget.memoryId,
+            stalenessTarget.beforeContent,
+            afterContent,
+          );
+        } catch (err) {
+          console.error(
+            `dispatchApply: checkSourceStaleness failed for ${stalenessTarget.memoryId}:`,
+            err,
+          );
+        }
+      }
+    });
+  }
+
+  /**
+   * Shared dispatch wrapper for EVERY held-op arm of `approve()` (create/
+   * revise/propose_edit via `dispatchApply` above, and promote/forget/retire
+   * directly): run `fn` (the actual apply — broker.apply or a store call),
+   * and
+   *   - on success: mark the approval `approved` and return `{applied:true}`.
+   *   - on a BrokerError whose code is in `STALE_ELIGIBLE_CODES` ("the world
+   *     moved, this held op no longer applies"): mark the approval `stale`
+   *     (recording the code as `stale_reason`) and return `{stale:true}` —
+   *     NEVER throw. This is what fixes the retire-after-forget zombie: a
+   *     queued canonical-retire whose target was forgotten out from under it
+   *     used to throw INVALID_TRANSITION here and strand the approval
+   *     `pending` forever; now it stales cleanly.
+   *   - on any OTHER error (a non-allowlisted BrokerError, e.g.
+   *     FORBIDDEN_ZONE/PATCH_TOO_LARGE/SYNTAX_BREAK/NOT_FOUND, or a
+   *     non-BrokerError): propagate (throw) and leave the approval row
+   *     `pending` — the write did not happen, and a human can inspect and
+   *     reject() it. A transient DB/lock bug (or NOT_FOUND, deliberately
+   *     excluded from the allowlist — see STALE_ELIGIBLE_CODES) must never be
+   *     silently buried by auto-staling a legitimate approval.
+   *
+   * Crash gap (dispatchApply's broker.apply path only — see comment there):
+   * the process can die between the write landing and this setApprovalState,
+   * leaving the edit applied but the approval row still "pending". reconcile's
+   * closeStaleApprovals repairs exactly this by approval_id id-match.
+   */
+  private async runDispatch(id: string, fn: () => Promise<void>): Promise<ApproveResult> {
+    try {
+      await fn();
     } catch (e) {
-      if (e instanceof BrokerError && e.code === "STALE_HASH") {
-        this.journal.setApprovalState(id, "stale", this.now());
+      if (e instanceof BrokerError && STALE_ELIGIBLE_CODES.has(e.code)) {
+        this.journal.setApprovalStale(id, e.code, this.now());
         return { stale: true };
       }
-      // Any OTHER BrokerError (FORBIDDEN_ZONE, PATCH_TOO_LARGE, SYNTAX_BREAK,
-      // NOT_FOUND, ...) propagates and INTENTIONALLY leaves the approval row
-      // pending: the write did not happen, and a human can inspect and
-      // reject() it. Only STALE_HASH auto-resolves the row (to "stale").
       throw e;
     }
-    // Crash gap: the process can die between the broker's write (file + commit
-    // + transaction row all landing) and this setApprovalState, leaving the
-    // edit applied but the approval row still "pending". reconcile's
-    // closeStaleApprovals repairs exactly this: it closes any pending approval
-    // that has an APPLIED transaction tagged with its approval_id (the sound
-    // id-link stamped above via broker.apply's approvalId), so the recovery is
-    // exact — never a path/time heuristic that could false-close an unrelated
-    // same-path op.
     this.journal.setApprovalState(id, "approved", this.now());
     return { applied: true };
   }

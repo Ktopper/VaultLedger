@@ -2,6 +2,7 @@
 import { pathToFileURL } from "node:url";
 import { Command } from "commander";
 import { approveCommand } from "./commands/approve.js";
+import { auditCommand } from "./commands/audit.js";
 import { backfillEntityCommand } from "./commands/backfillEntity.js";
 import { conflictsCommand } from "./commands/conflicts.js";
 import { initCommand } from "./commands/init.js";
@@ -18,6 +19,7 @@ import { undoCommand } from "./commands/undo.js";
 // real `initCommand`/`undoCommand` rather than reaching into CLI internals)
 // import the exact same functions `buildProgram` wires up above.
 export { approveCommand, type ApproveOptions, type ApproveCommandResult } from "./commands/approve.js";
+export { auditCommand, type AuditOptions } from "./commands/audit.js";
 export { backfillEntityCommand, type BackfillEntityOptions } from "./commands/backfillEntity.js";
 export { conflictsCommand, type ConflictsOptions } from "./commands/conflicts.js";
 export { initCommand, type InitOptions, type InitResult } from "./commands/init.js";
@@ -121,6 +123,26 @@ export function buildProgram(): Command {
         // only an outright processing error (missing/unreadable/corrupt
         // note) fails the exit code, mirroring `undo`/`approve`'s
         // result.ok-driven exitCode convention rather than throwing.
+        if (result.errors.length > 0) {
+          process.exitCode = 1;
+        }
+      } catch (e) {
+        reportError(e);
+      }
+    });
+
+  memory
+    .command("audit <vaultDir>")
+    .description(
+      "state-based scan: flag every distillation citing a source that is dead-or-gone " +
+        "(retired/forgotten/reverted/missing), catching sources that died AFTER they were cited",
+    )
+    .action(async (vaultDir: string) => {
+      try {
+        const result = await auditCommand(vaultDir);
+        // Stale pairs are a report for a human to act on, not a run failure —
+        // only an outright per-edge processing error fails the exit code,
+        // mirroring backfill-entity's result.ok-driven exitCode convention.
         if (result.errors.length > 0) {
           process.exitCode = 1;
         }
