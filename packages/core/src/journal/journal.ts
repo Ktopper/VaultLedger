@@ -544,4 +544,17 @@ export class Journal {
       )
       .all({ source_id });
   }
+
+  /** Every distillation->source edge in the journal — the full enumeration a
+   * state-based scan (e.g. `auditMemories`) walks, as opposed to
+   * `getRelationsForMemory`/`getDistillationsCitingSource`'s single-sided
+   * lookups. Ordered by (memory_id, source_id) purely for deterministic
+   * iteration, not because it means anything semantically. */
+  getAllRelations(): MemoryRelationRow[] {
+    return this.db
+      .prepare<[], MemoryRelationRow>(
+        `SELECT * FROM memory_relations ORDER BY memory_id, source_id, kind`,
+      )
+      .all();
+  }
 }
