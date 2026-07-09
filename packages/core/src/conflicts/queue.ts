@@ -76,12 +76,60 @@ export class Conflicts {
     this.journal.setConflictState(id, nextState, nowIso);
   }
 
-  /** Enrich + apply the both-sides-live filter; null if either side is dead/missing. */
+  /**
+   * Enrich + apply the both-sides-live filter; null if either side is
+   * dead/missing. `kind` branches the liveness rule (see
+   * `isStaleSourceLive`'s doc comment for why `stale-source` differs from
+   * `value-conflict`/`negation-conflict`).
+   */
   private enrich(row: ConflictRow): EnrichedConflict | null {
     const memoryA = row.memory_a ? this.journal.getMemory(row.memory_a) : null;
     const memoryB = row.memory_b ? this.journal.getMemory(row.memory_b) : null;
     if (!memoryA || !memoryB) return null;
+
+    if (row.kind === "stale-source") {
+      return this.isStaleSourceLive(memoryA, memoryB) ? { row, memoryA, memoryB } : null;
+    }
+
     if (DEAD_STATUSES.has(memoryA.status) || DEAD_STATUSES.has(memoryB.status)) return null;
     return { row, memoryA, memoryB };
+  }
+
+  /**
+   * `stale-source` liveness rule: unlike `value-conflict`/`negation-conflict`
+   * (both sides must be live), ONLY the DISTILLATION side of the pair must
+   * be live -- the source being dead/stale is the entire premise of the
+   * flag, so requiring it to be live too would make the kind unable to ever
+   * surface anything.
+   *
+   * Which side IS the distillation is resolved per-pair via the
+   * memory_relations edge, NOT by memory_a/pair_lo position (ids sort
+   * arbitrarily relative to which was the distillation) and NOT by "is this
+   * memory a distillation of anything" (v0.3b allows distillation chains --
+   * D2 cites D1, D1 cites S -- so on the pair {D2, D1} BOTH sides are "a
+   * distillation" of something in general; only the specific D2->D1 edge
+   * identifies D2 as the distillation for THIS pair).
+   */
+  private isStaleSourceLive(memoryA: MemoryRow, memoryB: MemoryRow): boolean {
+    const aIsDistillation = this.journal
+      .getRelationsForMemory(memoryA.id)
+      .some((e) => e.source_id === memoryB.id && e.kind === "distilled");
+    if (aIsDistillation) return !DEAD_STATUSES.has(memoryA.status);
+
+    const bIsDistillation = this.journal
+      .getRelationsForMemory(memoryB.id)
+      .some((e) => e.source_id === memoryA.id && e.kind === "distilled");
+    if (bIsDistillation) return !DEAD_STATUSES.has(memoryB.status);
+
+    // Defensive, shouldn't happen: flagStaleSource is only ever called for
+    // an actual distillation->source pair, so a stale-source row with
+    // neither direction's edge present indicates the edge was deleted out
+    // from under the flag (e.g. undo of the distill, or a reindex that
+    // rebuilt memory_relations without this citation anymore). Drop it
+    // (not-live) rather than keep it: with no discoverable distillation
+    // relationship there is no principled way to say WHICH side the human
+    // is meant to look at, so surfacing the row would be a UI paradox --
+    // silence is the safer failure mode than a phantom row nobody can act on.
+    return false;
   }
 }
