@@ -209,6 +209,18 @@ Commit: `feat(core,cli): ledger memory audit — state-based stale-source scan (
 
 ---
 
+## Precision follow-up (from the WU-3 review — non-blocking)
+`extract()` currently folds a top-level `entity` into the fact set, so an approved
+revise that legitimately changes `entity` would flag every citing distillation
+stale even with zero body-fact change (a false positive), and the human-only
+`backfill-entity` maintenance revise is technically a fact-changing surface (it's
+documented as a deliberate skip in `backfillEntity.ts`). Cleaner fix for both:
+**exclude `entity` from `extract()`'s facts** — `entity` is the same-entity
+comparison KEY / governed provenance metadata, not a body fact (two same-entity
+memories always share it, so it never produced a contradiction anyway). Deferred
+here because it touches the core contradiction engine and wants a full
+matcher-suite re-verify (which the current host contention makes unreliable).
+
 ## Out of scope / notes
 - **Plugin labeling:** stale-source rows already render in the Conflicts tab; a
   distinct "Staleness" label/section is a cosmetic follow-up, not b-2.
