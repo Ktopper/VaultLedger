@@ -213,7 +213,7 @@ describe("reindex", () => {
     const { journal, git, vaultRoot, now, genId } = await makeHarness();
     const broker = new Broker({ vaultRoot, git, journal, manifest: MANIFEST, now, genId });
     const store = new MemoryStore({ broker, journal, now, genId, vaultRoot });
-    const approvals = new Approvals({ broker, store, journal, now });
+    const approvals = new Approvals({ broker, store, journal, now, vaultRoot, genId });
 
     const { id } = await store.remember({ content: "canonical truth", reason: "seed", session: "s1" });
     await store.promote({ id, target_status: "working", reason: "confirmed", session: "s1" });
@@ -335,7 +335,7 @@ describe("reindex", () => {
     const { journal, git, vaultRoot, now, genId } = await makeHarness();
     const broker = new Broker({ vaultRoot, git, journal, manifest: MANIFEST, now, genId });
     const store = new MemoryStore({ broker, journal, now, genId, vaultRoot });
-    const approvals = new Approvals({ broker, store, journal, now });
+    const approvals = new Approvals({ broker, store, journal, now, vaultRoot, genId });
 
     const { id } = await store.remember({ content: "y", reason: "seed", session: "s1" });
     await store.promote({ id, target_status: "working", reason: "confirmed", session: "s1" });

@@ -70,7 +70,7 @@ describe("Approvals", () => {
     const { now, genId } = makeClock();
     const broker = new Broker({ vaultRoot, git, journal, manifest: MANIFEST, now, genId });
     const store = new MemoryStore({ broker, journal, now, genId, vaultRoot });
-    const approvals = new Approvals({ broker, store, journal, now });
+    const approvals = new Approvals({ broker, store, journal, now, vaultRoot, genId });
     return { approvals, broker, store, journal, git, vaultRoot, now, genId };
   }
 
@@ -409,6 +409,66 @@ describe("Approvals", () => {
     // approval must not double-apply the patch -- it throws NOT_FOUND
     // (loadPending), mirroring the generic already-resolved guard.
     await expect(approvals.approve(approvalId)).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  test("SURFACE COVERAGE: an approved canonical-source revise applied via dispatchApply (NOT store.revise) flags a citing distillation stale on a fact change", async () => {
+    // This is the hook-point pin (source-linked staleness, v0.3b-2): every
+    // content-changing revise surface must trigger the source-linked
+    // staleness check, not just `MemoryStore.revise`. A canonical-source
+    // revise's actual APPLY runs through `Approvals.approve` ->
+    // `dispatchApply` -> `Broker.apply` directly -- it never re-enters
+    // `store.revise` (see that method's EXECUTION CONTRACT doc comment).
+    const { approvals, store, journal, vaultRoot } = await makeHarness();
+
+    const source = await store.remember({
+      content: "deadline: 2026-01-01\nThe rollout plan is steady.",
+      entity: "proj",
+      reason: "seed",
+      session: "s1",
+    });
+    const distillation = await store.distill({
+      content: "Summary citing the deadline note.",
+      sources: [source.id],
+      reason: "summarize",
+      session: "s1",
+    });
+
+    await store.promote({ id: source.id, target_status: "working", reason: "confirmed", session: "s1" });
+    const promotion = await store.promote({
+      id: source.id,
+      target_status: "canonical",
+      reason: "well established",
+      session: "s1",
+    });
+    expect(promotion.promoted).toBe(false);
+    const promoteResult = await approvals.approve(promotion.approvalId!);
+    expect(promoteResult).toEqual({ applied: true });
+    expect(journal.getMemory(source.id)!.status).toBe("canonical");
+
+    // No stale-source conflict yet -- the source hasn't changed.
+    expect(journal.listConflicts("open").filter((c) => c.kind === "stale-source")).toHaveLength(0);
+
+    const before = readFileSync(join(vaultRoot, source.path), "utf8");
+    const after = before.replace("deadline: 2026-01-01", "deadline: 2026-06-01");
+    const patchText = createPatch(source.path, before, after);
+    const queued = await store.revise({
+      id: source.id,
+      patch: patchText,
+      reason: "deadline moved",
+      session: "s1",
+    });
+    expect(queued).toHaveProperty("queued", true);
+    const approvalId = (queued as { queued: true; approvalId: string }).approvalId;
+
+    const result = await approvals.approve(approvalId);
+
+    expect(result).toEqual({ applied: true });
+    expect(readFileSync(join(vaultRoot, source.path), "utf8")).toBe(after);
+
+    const stale = journal.listConflicts("open").filter((c) => c.kind === "stale-source");
+    expect(stale).toHaveLength(1);
+    expect([stale[0]!.memory_a, stale[0]!.memory_b]).toContain(distillation.id);
+    expect([stale[0]!.memory_a, stale[0]!.memory_b]).toContain(source.id);
   });
 
   test("approve() on an unknown id throws NOT_FOUND", async () => {

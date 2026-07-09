@@ -1,5 +1,8 @@
+import { readFileSync } from "node:fs";
+import { basename, join } from "node:path";
 import { BrokerError } from "../errors.js";
 import type { Broker } from "../broker/broker.js";
+import { checkSourceStaleness } from "../contradiction/staleness.js";
 import type { ApprovalRow, Journal } from "../journal/journal.js";
 import type { MemoryStore } from "../memory/store.js";
 import type { ProposedOperation } from "../schemas/operation.js";
@@ -9,6 +12,12 @@ export interface ApprovalsOptions {
   store: MemoryStore;
   journal: Journal;
   now: () => string;
+  /** Absolute vault root, needed to read a revise op's target file's
+   * before/after content for the source-linked staleness hook (design
+   * v0.3b-2, dispatchApply's staleness pin — see dispatchApply's doc
+   * comment). */
+  vaultRoot: string;
+  genId: (prefix: string) => string;
 }
 
 export type ApproveResult = { applied: true } | { stale: true };
@@ -83,12 +92,16 @@ export class Approvals {
   private readonly store: MemoryStore;
   private readonly journal: Journal;
   private readonly now: () => string;
+  private readonly vaultRoot: string;
+  private readonly genId: (prefix: string) => string;
 
   constructor(opts: ApprovalsOptions) {
     this.broker = opts.broker;
     this.store = opts.store;
     this.journal = opts.journal;
     this.now = opts.now;
+    this.vaultRoot = opts.vaultRoot;
+    this.genId = opts.genId;
   }
 
   /** Enqueue an arbitrary held operation for later approval. Returns the new approval id. */
@@ -205,8 +218,51 @@ export class Approvals {
     return approval;
   }
 
+  /**
+   * HOOK-POINT PIN (design v0.3b-2): this is the OTHER content-changing
+   * revise surface, alongside `MemoryStore.revise`'s own immediate-apply
+   * path — an approved canonical-source revise's actual write lands HERE
+   * (`Broker.apply` directly), never re-entering `store.revise` (see that
+   * method's EXECUTION CONTRACT doc comment). Both surfaces call the SAME
+   * `checkSourceStaleness` helper (contradiction/staleness.ts) so neither
+   * can silently drift out of coverage — the class of bug `supersedes` once
+   * had before the matcher's lineage exclusion existed.
+   *
+   * `dispatchApply` also applies plain `create` ops and `propose_edit`-
+   * reshaped-to-`revise` ops (see `approve()`'s dispatch table); only the
+   * `revise` case (post-reshape) is a candidate, and only when its `path`
+   * names a memory id with a `memories` journal row — the pre-check below
+   * derives that id from the path (memory note paths are always
+   * `<dir>/<id>.md`, both in Agent/Memory and Agent/Archive) and skips
+   * everything else. `checkSourceStaleness`'s own cheap guard handles the
+   * "cited by nobody" case, so this fires unconditionally for every
+   * journal-known revise target and lets that guard do the filtering.
+   */
   private async dispatchApply(id: string, op: ProposedOperation): Promise<ApproveResult> {
     return this.runDispatch(id, async () => {
+      // Pre-image, read BEFORE broker.apply mutates the file below. Never
+      // throws (non-blocking, mirrors checkContradictions/checkSourceStaleness):
+      // a pre-image read failure just skips the staleness hook for this
+      // apply, it must never abort the real approval dispatch.
+      let stalenessTarget: { memoryId: string; path: string; beforeContent: string } | null = null;
+      if (op.op === "revise") {
+        try {
+          const candidateId = basename(op.path, ".md");
+          if (this.journal.getMemory(candidateId)) {
+            stalenessTarget = {
+              memoryId: candidateId,
+              path: op.path,
+              beforeContent: readFileSync(join(this.vaultRoot, op.path), "utf8"),
+            };
+          }
+        } catch (err) {
+          console.error(
+            `dispatchApply: could not read staleness pre-image for ${op.path}:`,
+            err,
+          );
+        }
+      }
+
       // Pass approvalId so the transaction the broker records carries this
       // approval's id — the SOUND link reconcile.closeStaleApprovals uses to
       // close a stale pending approval by exact id-match after a crash in the
@@ -216,6 +272,25 @@ export class Approvals {
       // crash there just leaves the approval pending, which is safe: no
       // false-close, a human re-acts.
       await this.broker.apply(op, { approved: true, approvalId: id });
+
+      // Post-commit, non-blocking source-linked staleness (design v0.3b-2)
+      // — see this method's doc comment above.
+      if (stalenessTarget !== null) {
+        try {
+          const afterContent = readFileSync(join(this.vaultRoot, stalenessTarget.path), "utf8");
+          checkSourceStaleness(
+            { journal: this.journal, now: this.now, genId: this.genId },
+            stalenessTarget.memoryId,
+            stalenessTarget.beforeContent,
+            afterContent,
+          );
+        } catch (err) {
+          console.error(
+            `dispatchApply: checkSourceStaleness failed for ${stalenessTarget.memoryId}:`,
+            err,
+          );
+        }
+      }
     });
   }
 

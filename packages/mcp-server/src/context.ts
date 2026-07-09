@@ -160,7 +160,7 @@ export async function loadServerContext(
       lockDir,
     });
     const store = new MemoryStore({ broker, journal, now, genId, vaultRoot });
-    const approvals = new Approvals({ broker, journal, store, now });
+    const approvals = new Approvals({ broker, journal, store, now, vaultRoot, genId });
 
     await ensureJournal({ vaultRoot, git, journal, now, genId });
     await reconcile({ git, journal, now, genId });
