@@ -37,6 +37,11 @@ manually reject). Only the propose_edit `STALE_HASH` path currently stales.
 - **Any OTHER error RE-THROWS.** Never "mark stale on any failure": a transient
   bug (a DB error, a lock timeout) must NOT silently bury a legitimate pending
   approval. The allowlist is the whole safety property.
+- **`NOT_FOUND` is deliberately EXCLUDED** (a held op whose target file vanished
+  entirely). It's ambiguous — "the world moved" OR a transient sync flake where the
+  file returns. The conservative call is to **leave the approval `pending` for
+  human review** rather than auto-stale a possibly-recoverable op. Stated so the
+  exclusion reads as a decision, not an oversight.
 - **Record the rejection code on the staled row** (`stale_reason` column on
   `approvals`, migration-added) so the human browsing the queue sees *why* it
   became unapplicable (`stale: INVALID_TRANSITION`), not just *that* it did.
@@ -57,9 +62,18 @@ Commit: `feat(core): stale an approval whose held op is no longer applicable (al
 A staleness flag is a `conflicts` row with `kind = "stale-source"`. The pair is
 {distillation, source}. **Keep the universal `memory_a == pair_lo == id-sorted-low`
 convention (5146b44)** — do NOT make `memory_a` semantically "the distillation."
-Roles are recovered by **lookup**: the distillation is the side that appears as a
-`memory_relations.memory_id`. `fact_key` = the constant `"source"`. Reuses the
-unique key `(pair_lo, pair_hi, kind, fact_key, value_hash)` → **no schema change**.
+Roles are recovered by a **PER-PAIR edge query** (NOT a per-memory lookup): the
+distillation in this row is the side `a` for which an edge
+`(memory_id = a, source_id = the-other-side)` exists in `memory_relations`.
+**This must be per-pair because b-1 allows distillation CHAINS** (D2 cites
+distillation D1 — clean-room spot-check a): on a stale-source row for pair
+{D2, D1}, BOTH sides appear as some `memory_id` (D2 cites D1; D1 cites its own
+source), so a per-memory "is this side any `memory_id`?" test is ambiguous — but
+only the edge `(memory_id=D2, source_id=D1)` matches THIS pair. Cycles are
+impossible (a source must pre-exist the distillation citing it; ids are fresh), so
+exactly one direction of the pair matches. `fact_key` = the constant `"source"`.
+Reuses the unique key `(pair_lo, pair_hi, kind, fact_key, value_hash)` → **no
+schema change**.
 
 ### 2.2 `value_hash` and the LOAD-BEARING detail format
 `value_hash = conflictValueHash(detail)` — the ONE hash-of-detail rule (WU-2/F1:
@@ -97,19 +111,23 @@ scan. Therefore:
 ### 2.3 Kind-aware both-sides-live filter (P2)
 `Conflicts.list("open")` + `GET /conflicts` become kind-aware:
 - `value-conflict` / `negation-conflict`: BOTH sides live (unchanged).
-- `stale-source`: only the **distillation** side must be live — identified by
-  LOOKUP (§2.1), NOT by `memory_a`/`pair_lo` position (source and distillation ids
-  sort randomly; checking `memory_a` would filter the wrong side for ~half of rows
-  — silent, and it passes any test that doesn't control id ordering). A
-  `forgotten`/`reverted` distillation moots the flag; the source being dead is the
-  whole point.
+- `stale-source`: only the **distillation** side must be live — identified by the
+  PER-PAIR edge query (§2.1), NOT by `memory_a`/`pair_lo` position (source and
+  distillation ids sort randomly; checking `memory_a` would filter the wrong side
+  for ~half of rows — silent, and it passes any test that doesn't control id
+  ordering). A `forgotten`/`reverted` distillation moots the flag; the source being
+  dead is the whole point.
 
 **Tests:** a stale-source row survives `list()` even though its source side is
 `retired`; a `forgotten` distillation's stale-source row is filtered out; **create
 stale-source rows with BOTH id orderings** (source-id < distillation-id AND >) and
-assert the filter keeps both (the P2 regression that a position-based check would
-fail); the golden-string detail test; same-source-state re-flag dedups, new state
-→ new row; a GONE-source flag hashes deterministically.
+assert the filter keeps both (the P2 regression a position-based check would fail);
+**a CHAIN fixture** — a stale-source row on a pair {D2, D1} where BOTH sides are
+distillations (D2 cites D1; D1 cites source S), asserting the per-pair edge query
+picks D2 (not D1) as the live-side to check, and covering both id orderings (the §2.1
+ambiguity a per-memory lookup would get wrong); the golden-string detail test;
+same-source-state re-flag dedups, new state → new row; a GONE-source flag hashes
+deterministically.
 
 Commit: `feat(core): stale-source conflict kind (hash-stable detail) + kind-aware both-sides-live filter`
 
@@ -121,6 +139,19 @@ Commit: `feat(core): stale-source conflict kind (hash-stable detail) + kind-awar
   every distillation citing it (`journal.getDistillationsCitingSource(sourceId)`),
   insert a stale-source flag — detail status `retired`, contentId = sha of the
   current file. **Always** (retirement is a definitive "no longer current" event).
+- **On `forget` of a cited source** (`store.forget`, after the archive lands): the
+  SAME as retire — flag every citing distillation (detail status `forgotten`,
+  contentId = the Archive-file sha). **This event is agent-reachable and must not
+  be omitted:** forgetting a WORKING source is ungated, so without this trigger an
+  agent could distill from a working source, forget the source, and the
+  distillation would cite gone content with **no flag** until someone happens to
+  run `audit` — the same laundering shape as the gaps already closed, only lazier.
+  Retire and forget share ONE helper.
+- **Undo of a cited source's create is SCAN-ONLY** (deliberately NOT an inline
+  event): `undo` is CLI/human-initiated, so the operator is present to run `ledger
+  memory audit`, and the state scan (WU-4) catches the resulting
+  `reverted`/missing source. Stated explicitly so it reads as a decision, not an
+  omission.
 - **On a `revise` that changes a source's content**, flag citing distillations
   **only if the extracted FACTS changed** (your lean — noise control: prose
   course-correction on a working source is silent). 
