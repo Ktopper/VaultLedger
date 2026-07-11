@@ -84,9 +84,18 @@ export function auditMemories(deps: AuditMemoriesDeps): AuditResult {
   const errors: AuditMemoriesError[] = [];
 
   for (const edge of journal.getAllRelations()) {
+    if (edge.kind !== "distilled") continue; // LOW-5: only distillation edges
     const distillationId = edge.memory_id;
     const sourceId = edge.source_id;
     try {
+      // LOW-4: skip an edge whose DISTILLATION side is itself dead-or-gone
+      // (missing, or a dead status). Its staleness flag would be mooted +
+      // permanently hidden by the kind-aware liveness filter (which requires a
+      // live distillation), so flagging it only inflates the count and inserts
+      // a row nobody can ever see or act on.
+      const distillation = journal.getMemory(distillationId);
+      if (!distillation || DEAD_STATUSES.has(distillation.status)) continue;
+
       const source = journal.getMemory(sourceId);
 
       let reason: string;
@@ -102,7 +111,6 @@ export function auditMemories(deps: AuditMemoriesDeps): AuditResult {
         continue; // live source (scratch/working/canonical) -- not stale.
       }
 
-      const distillation = journal.getMemory(distillationId);
       flagStaleSource(
         journal,
         {
@@ -110,7 +118,7 @@ export function auditMemories(deps: AuditMemoriesDeps): AuditResult {
           sourceId,
           sourceStatus: reason,
           contentId,
-          entity: distillation?.entity ?? null,
+          entity: distillation.entity ?? null,
         },
         now,
         genId,

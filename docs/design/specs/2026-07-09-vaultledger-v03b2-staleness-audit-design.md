@@ -209,17 +209,29 @@ Commit: `feat(core,cli): ledger memory audit — state-based stale-source scan (
 
 ---
 
-## Precision follow-up (from the WU-3 review — non-blocking)
-`extract()` currently folds a top-level `entity` into the fact set, so an approved
-revise that legitimately changes `entity` would flag every citing distillation
-stale even with zero body-fact change (a false positive), and the human-only
-`backfill-entity` maintenance revise is technically a fact-changing surface (it's
-documented as a deliberate skip in `backfillEntity.ts`). Cleaner fix for both:
-**exclude `entity` from `extract()`'s facts** — `entity` is the same-entity
-comparison KEY / governed provenance metadata, not a body fact (two same-entity
-memories always share it, so it never produced a contradiction anyway). Deferred
-here because it touches the core contradiction engine and wants a full
-matcher-suite re-verify (which the current host contention makes unreliable).
+## Follow-up fix batch (SHIPPED — from the independent clean-env review)
+- ~~**MEDIUM — `missing`-source stale flags invisible in browse surfaces.**~~ FIXED:
+  `Conflicts.enrich` evaluates `stale-source` BEFORE the both-sides-exist guard;
+  a stale-source flag shows iff the distillation side is live AND the source is
+  dead-or-gone (incl. a missing row). Also HIDES the flag when the source is live
+  again (undo of the retire).
+- ~~**MEDIUM — approved canonical revises skipped contradiction detection.**~~
+  FIXED: `dispatchApply` now runs `checkContradictions` beside the staleness hook,
+  so an approved revise that flips a value against a live belief is flagged at
+  approve time, not only on `--rescan`.
+- ~~**Precision — `extract()` folded top-level `entity` as a fact**~~ FIXED:
+  `extract()` now excludes `entity` (the same-entity comparison KEY / governed
+  metadata, never a body fact) — removes the staleness false-positive on an
+  entity-only revise and makes the `backfill-entity` non-hook intrinsically
+  correct. The two compensating comments were removed.
+- LOWs folded: audit skips a dead-or-gone distillation; source-live-again hides
+  the flag; `getDistillationsCitingSource` + the audit loop filter `kind =
+  'distilled'`; a crash-window doc-note on `checkSourceStaleness`.
+- Residual (LOW, documented): a fact-changing revise of a still-LIVE source lost
+  to a crash before its flag is NOT recovered by the audit scan (it only flags
+  dead-or-gone sources) — re-surfaces on the next fact-change or when the source
+  dies. And `ledger memory audit` doesn't print conflict ids, but the rows are
+  now visible+resolvable in `ledger conflicts` (which does).
 
 ## Out of scope / notes
 - **Plugin labeling:** stale-source rows already render in the Conflicts tab; a

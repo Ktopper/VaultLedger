@@ -183,6 +183,15 @@ function factsEqual(a: MemoryFacts, b: MemoryFacts): boolean {
  *
  * POST-COMMIT, NON-BLOCKING: called AFTER the revise has already landed
  * (`afterContent` is the on-disk post-revise text). Never throws.
+ *
+ * CRASH WINDOW (accepted, documented): the revise commits before this runs, so
+ * a crash in between loses the flag for that event. `ledger memory audit`'s
+ * state scan recovers the case where the source is (or later becomes)
+ * dead-or-gone — but a fact-changing revise of a still-LIVE source lost to a
+ * crash is NOT recovered by the scan (it only flags dead-or-gone sources); it
+ * re-surfaces on the source's next fact-changing revise, or when it is
+ * retired/forgotten. A tolerable gap: staleness is advisory, not a governance
+ * gate, and a truly durable signal would require pre-committing the flag.
  */
 export function checkSourceStaleness(
   deps: StalenessDeps,

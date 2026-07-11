@@ -210,7 +210,14 @@ export function extract(noteText: string): MemoryFacts {
   const facts: MemoryFacts = new Map();
 
   for (const [key, rawValue] of Object.entries(data ?? {})) {
-    if (key === "ledger") continue;
+    // `ledger` is the provenance block, not content. `entity` is the same-entity
+    // comparison KEY / governed provenance metadata, NOT a body fact: two
+    // same-entity memories always share it (so it never produced a contradiction
+    // anyway), and folding it in caused false positives in source-linked
+    // staleness — an approved revise that legitimately changes `entity` looked
+    // like a fact change, and the human-only backfill-entity revise looked like
+    // one too. Excluding it here makes those correct intrinsically.
+    if (key === "ledger" || key === "entity") continue;
 
     let asString: string;
     if (rawValue instanceof Date) {

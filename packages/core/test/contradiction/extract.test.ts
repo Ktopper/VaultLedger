@@ -126,6 +126,23 @@ random prose line
     expect(facts.size).toBe(3);
   });
 
+  test("top-level `entity` is NOT a fact (it's the comparison key / provenance metadata)", () => {
+    const note = `---
+ledger:
+  id: mem_1
+entity: nova
+deadline: 2026-08-15
+---
+body
+`;
+    const facts = extract(note);
+    // entity is the same-entity grouping key, excluded like `ledger` — folding
+    // it in caused false-positive staleness on an entity-only revise.
+    expect(facts.has("entity")).toBe(false);
+    expect(facts.get("deadline")).toEqual({ type: "date", value: "2026-08-15" });
+    expect(facts.size).toBe(1);
+  });
+
   test("first occurrence wins on duplicate folded keys (frontmatter before body)", () => {
     const note = `---
 ledger:

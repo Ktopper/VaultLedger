@@ -131,6 +131,31 @@ describe("auditMemories", () => {
     expect(journal.listConflicts("open").filter((c) => c.kind === "stale-source")).toEqual([]);
   });
 
+  // LOW-4 (follow-up review): an edge whose DISTILLATION side is itself
+  // dead-or-gone is skipped — flagging it would insert a row the kind-aware
+  // liveness filter permanently hides, and inflate the count. Isolated from the
+  // event-driven flags: the source dies via UNDO (scan-only, no event), and the
+  // distillation is forgotten (it cites nobody, so its forget fires no event).
+  test("a dead-or-gone distillation is skipped (no moot, permanently-hidden row)", async () => {
+    const { journal, git, store, vaultRoot, now, genId } = await makeHarness();
+
+    const s = await store.remember({ content: "x: 1", entity: "nova", reason: "seed", session: "s1" });
+    const d = await store.distill({ content: "summary", sources: [s.id], reason: "sum", session: "s1" });
+    // Source dead WITHOUT firing the retire/forget event (undo is scan-only);
+    // the d->s edge survives (undo of s removes only s's own outgoing edges).
+    await undoTransaction({ git, journal, now, genId }, s.txnId);
+    // Distillation itself dead (no event: d is cited by nobody).
+    await store.forget({ id: d.id, reason: "drop distillation", session: "s1" });
+
+    const result = auditMemories({ journal, vaultRoot, now, genId });
+
+    // Without LOW-4 the reverted source would be flagged; with it, the dead
+    // distillation's edge is skipped entirely.
+    expect(result.pairs).toEqual([]);
+    expect(result.staleFlagged).toBe(0);
+    expect(journal.listConflicts("open").filter((c) => c.kind === "stale-source")).toEqual([]);
+  });
+
   test("idempotent: a second run adds no new conflict rows", async () => {
     const { journal, git, store, vaultRoot, now, genId } = await makeHarness();
 

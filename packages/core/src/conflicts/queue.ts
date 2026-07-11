@@ -85,51 +85,74 @@ export class Conflicts {
   private enrich(row: ConflictRow): EnrichedConflict | null {
     const memoryA = row.memory_a ? this.journal.getMemory(row.memory_a) : null;
     const memoryB = row.memory_b ? this.journal.getMemory(row.memory_b) : null;
-    if (!memoryA || !memoryB) return null;
 
+    // stale-source is evaluated BEFORE the both-sides-exist guard below: its
+    // source side is EXPECTED to be dead OR GONE (a missing journal row after
+    // undo/wipe), so requiring both rows to exist would hide exactly the flags
+    // this kind exists to surface (audit's "missing source" + post-rebuild
+    // recovery). It has its own rule (see `staleSourceShowable`).
     if (row.kind === "stale-source") {
-      return this.isStaleSourceLive(memoryA, memoryB) ? { row, memoryA, memoryB } : null;
+      return this.staleSourceShowable(row, memoryA, memoryB) ? { row, memoryA, memoryB } : null;
     }
 
+    if (!memoryA || !memoryB) return null;
     if (DEAD_STATUSES.has(memoryA.status) || DEAD_STATUSES.has(memoryB.status)) return null;
     return { row, memoryA, memoryB };
   }
 
   /**
-   * `stale-source` liveness rule: unlike `value-conflict`/`negation-conflict`
-   * (both sides must be live), ONLY the DISTILLATION side of the pair must
-   * be live -- the source being dead/stale is the entire premise of the
-   * flag, so requiring it to be live too would make the kind unable to ever
-   * surface anything.
+   * A `stale-source` flag is browsable iff BOTH hold:
+   *  (1) the DISTILLATION side exists AND is live — a forgotten/reverted/retired
+   *      distillation, or a missing one, moots the flag (nothing to act on); and
+   *  (2) the SOURCE side is still dead-or-gone — a dead status OR a missing
+   *      journal row. If the source came back to life (e.g. an undo of the
+   *      retire made it live again), the staleness no longer holds, so the row
+   *      is HIDDEN even though it stays `open` in the table.
    *
-   * Which side IS the distillation is resolved per-pair via the
-   * memory_relations edge, NOT by memory_a/pair_lo position (ids sort
-   * arbitrarily relative to which was the distillation) and NOT by "is this
-   * memory a distillation of anything" (v0.3b allows distillation chains --
-   * D2 cites D1, D1 cites S -- so on the pair {D2, D1} BOTH sides are "a
-   * distillation" of something in general; only the specific D2->D1 edge
-   * identifies D2 as the distillation for THIS pair).
+   * The distillation side is identified PER-PAIR via the memory_relations edge
+   * (NOT by memory_a/pair_lo position — ids sort arbitrarily — and NOT by "is a
+   * distillation of anything": chains (D2 cites D1, D1 cites S) make both sides
+   * "a distillation" in general, so only the specific edge identifies THIS
+   * pair's distillation). The pair's IDS come from the row, which are present
+   * even when a side's journal row is missing.
    */
-  private isStaleSourceLive(memoryA: MemoryRow, memoryB: MemoryRow): boolean {
+  private staleSourceShowable(
+    row: ConflictRow,
+    memoryA: MemoryRow | null,
+    memoryB: MemoryRow | null,
+  ): boolean {
+    const idA = row.memory_a;
+    const idB = row.memory_b;
+    if (!idA || !idB) return false;
+
     const aIsDistillation = this.journal
-      .getRelationsForMemory(memoryA.id)
-      .some((e) => e.source_id === memoryB.id && e.kind === "distilled");
-    if (aIsDistillation) return !DEAD_STATUSES.has(memoryA.status);
+      .getRelationsForMemory(idA)
+      .some((e) => e.source_id === idB && e.kind === "distilled");
+    const bIsDistillation =
+      !aIsDistillation &&
+      this.journal
+        .getRelationsForMemory(idB)
+        .some((e) => e.source_id === idA && e.kind === "distilled");
 
-    const bIsDistillation = this.journal
-      .getRelationsForMemory(memoryB.id)
-      .some((e) => e.source_id === memoryA.id && e.kind === "distilled");
-    if (bIsDistillation) return !DEAD_STATUSES.has(memoryB.status);
+    let distillation: MemoryRow | null;
+    let source: MemoryRow | null;
+    if (aIsDistillation) {
+      distillation = memoryA;
+      source = memoryB;
+    } else if (bIsDistillation) {
+      distillation = memoryB;
+      source = memoryA;
+    } else {
+      // No edge in either direction: the citation was deleted out from under
+      // the flag (undo of the distill, or a reindex that dropped it). Moot —
+      // no discoverable distillation, so nobody can act on it.
+      return false;
+    }
 
-    // Defensive, shouldn't happen: flagStaleSource is only ever called for
-    // an actual distillation->source pair, so a stale-source row with
-    // neither direction's edge present indicates the edge was deleted out
-    // from under the flag (e.g. undo of the distill, or a reindex that
-    // rebuilt memory_relations without this citation anymore). Drop it
-    // (not-live) rather than keep it: with no discoverable distillation
-    // relationship there is no principled way to say WHICH side the human
-    // is meant to look at, so surfacing the row would be a UI paradox --
-    // silence is the safer failure mode than a phantom row nobody can act on.
-    return false;
+    // (1) distillation must exist and be live.
+    if (!distillation || DEAD_STATUSES.has(distillation.status)) return false;
+    // (2) source must still be dead-or-gone; a resurrected (live) source hides
+    //     the flag (the staleness premise no longer holds).
+    return source === null || DEAD_STATUSES.has(source.status);
   }
 }
