@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { BrokerError } from "../errors.js";
 import type { Broker } from "../broker/broker.js";
+import { checkContradictions } from "../contradiction/check.js";
 import { checkSourceStaleness } from "../contradiction/staleness.js";
 import type { ApprovalRow, Journal } from "../journal/journal.js";
 import type { MemoryStore } from "../memory/store.js";
@@ -273,9 +274,19 @@ export class Approvals {
       // false-close, a human re-acts.
       await this.broker.apply(op, { approved: true, approvalId: id });
 
-      // Post-commit, non-blocking source-linked staleness (design v0.3b-2)
-      // — see this method's doc comment above.
+      // Post-commit, non-blocking detection for an APPROVED revise of a memory
+      // (design v0.3b-2). This apply path never re-enters store.revise, so BOTH
+      // post-commit hooks that store.revise runs must be mirrored here or an
+      // approved revise silently skips them: (1) contradiction detection — an
+      // approved revise that flips a canonical value against another live belief
+      // would otherwise go unflagged until a `--rescan`; and (2) source-linked
+      // staleness. Both `checkContradictions` and `checkSourceStaleness` are
+      // self-swallowing (a detection failure never fails the committed write).
       if (stalenessTarget !== null) {
+        checkContradictions(
+          { journal: this.journal, vaultRoot: this.vaultRoot, now: this.now, genId: this.genId },
+          stalenessTarget.memoryId,
+        );
         try {
           const afterContent = readFileSync(join(this.vaultRoot, stalenessTarget.path), "utf8");
           checkSourceStaleness(

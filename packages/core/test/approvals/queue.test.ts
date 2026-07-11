@@ -383,6 +383,39 @@ describe("Approvals", () => {
     expect(journal.getMemory(memId)!.status).toBe("canonical");
   });
 
+  // MEDIUM-2 (follow-up review): an approved canonical revise applies via
+  // dispatchApply, which never re-enters store.revise -- so it must run
+  // checkContradictions here too, or a human-approved revise that flips a
+  // canonical value against another live belief goes unflagged until --rescan.
+  test("CONTRADICTION COVERAGE: an approved canonical revise that flips a value against another live belief is flagged at approve time (not only on --rescan)", async () => {
+    const { approvals, store, journal, vaultRoot } = await makeHarness();
+
+    // A and B are two canonical beliefs on the same entity, initially agreeing.
+    const a = await store.remember({ content: "deadline: 2026-08-15", entity: "nova", reason: "seed", session: "s1" });
+    await store.setStatus(a.id, "canonical", "durable", "s1");
+    const b = await store.remember({ content: "deadline: 2026-08-15", entity: "nova", reason: "seed", session: "s1" });
+    await store.setStatus(b.id, "canonical", "durable", "s1");
+    expect(journal.listConflicts("open")).toHaveLength(0); // agree -> no conflict
+
+    // Queue + approve a canonical revise of B that flips its deadline to
+    // contradict A. The revise lands via dispatchApply.
+    const before = readFileSync(join(vaultRoot, b.path), "utf8");
+    const after = before.replace("deadline: 2026-08-15", "deadline: 2026-09-01");
+    const patchText = createPatch(b.path, before, after);
+    const queued = await store.revise({ id: b.id, patch: patchText, reason: "revise deadline", session: "s1" });
+    const approvalId = (queued as { queued: true; approvalId: string }).approvalId;
+
+    await approvals.approve(approvalId);
+
+    // The contradiction (B's 2026-09-01 vs A's 2026-08-15 on `deadline`) is
+    // flagged NOW, at approve time -- no --rescan needed.
+    const open = journal.listConflicts("open");
+    expect(open).toHaveLength(1);
+    expect(open[0]!.kind).toBe("value-conflict");
+    expect(open[0]!.fact_key).toBe("deadline");
+    expect([open[0]!.memory_a, open[0]!.memory_b].sort()).toEqual([a.id, b.id].sort());
+  });
+
   test("reject() on a held canonical-revise leaves the file unchanged and the approval rejected", async () => {
     const { approvals, store, journal, vaultRoot } = await makeHarness();
 

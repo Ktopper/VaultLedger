@@ -538,9 +538,12 @@ export class Journal {
   /** Every distillation edge citing a given source (indexed lookup via
    * ix_memory_relations_source). */
   getDistillationsCitingSource(source_id: string): MemoryRelationRow[] {
+    // `AND kind = 'distilled'` is defensive: it's the only relation kind today,
+    // but a future second kind must not be treated as a distillation citation by
+    // the staleness flagger (it would flag the wrong pair).
     return this.db
       .prepare<{ source_id: string }, MemoryRelationRow>(
-        `SELECT * FROM memory_relations WHERE source_id = @source_id`,
+        `SELECT * FROM memory_relations WHERE source_id = @source_id AND kind = 'distilled'`,
       )
       .all({ source_id });
   }

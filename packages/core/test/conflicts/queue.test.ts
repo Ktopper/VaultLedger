@@ -284,6 +284,58 @@ describe("Conflicts", () => {
       expect(conflicts.list("open")).toHaveLength(0);
     });
 
+    // MEDIUM-1 (follow-up review): a stale-source flag whose SOURCE row is
+    // MISSING entirely (no journal row -- e.g. audit flagged a distillation
+    // citing a reverted/undone source, or a post-wipe recovery) must still be
+    // BROWSABLE (and resolvable by its conflict id). The old both-sides-exist
+    // guard dropped it before the kind-aware branch ran, making it invisible.
+    test("missing source row: the flag is still shown (and resolvable by id)", () => {
+      const j = makeJournal();
+      const { now, genId } = makeClock();
+      const distillationId = "mem_d";
+      const sourceId = "mem_gone"; // NO journal row inserted for the source
+      j.insertMemory(memRow({ id: distillationId, status: "working" }));
+      j.insertRelation({ memory_id: distillationId, source_id: sourceId, kind: "distilled" });
+
+      flagStaleSource(
+        j,
+        { distillationId, sourceId, sourceStatus: "missing", contentId: "GONE", entity: "nova" },
+        now,
+        genId,
+      );
+
+      const conflicts = new Conflicts(j);
+      const open = conflicts.list("open");
+      expect(open).toHaveLength(1); // shown despite the missing source
+      expect(open[0]!.memoryB).toBeNull(); // source side renders as absent
+      expect(open[0]!.row.id).toBeTruthy(); // resolvable by conflict id
+    });
+
+    // LOW-3 (follow-up review): if the source comes back to LIFE (e.g. an undo
+    // of the retire made it live again), the staleness premise no longer holds,
+    // so the flag is HIDDEN even though it stays `open` in the table.
+    test("source resurrected (live again): the flag is hidden", () => {
+      const j = makeJournal();
+      const { now, genId } = makeClock();
+      const distillationId = "mem_d";
+      const sourceId = "mem_s";
+      j.insertMemory(memRow({ id: distillationId, status: "working" }));
+      j.insertMemory(memRow({ id: sourceId, status: "retired" }));
+      j.insertRelation({ memory_id: distillationId, source_id: sourceId, kind: "distilled" });
+      flagStaleSource(
+        j,
+        { distillationId, sourceId, sourceStatus: "retired", contentId: "sha256:abc", entity: "nova" },
+        now,
+        genId,
+      );
+
+      const conflicts = new Conflicts(j);
+      expect(conflicts.list("open")).toHaveLength(1); // source dead -> shown
+
+      j.setMemoryStatus(sourceId, "working"); // resurrected
+      expect(conflicts.list("open")).toHaveLength(0); // now hidden
+    });
+
     // Distillation chain: D2 cites D1, D1 cites S. A stale-source flag on the
     // {D2, D1} pair must resolve D2 (not D1) as "the distillation" for THIS
     // pair, via the D2->D1 edge specifically -- both D1 and D2 are
@@ -299,7 +351,7 @@ describe("Conflicts", () => {
         expect(d2 < d1).toBe(true);
 
         j.insertMemory(memRow({ id: d2, status: "working" }));
-        j.insertMemory(memRow({ id: d1, status: "working" }));
+        j.insertMemory(memRow({ id: d1, status: "retired" })); // D1 is the SOURCE here — must be dead-or-gone for the flag to show
         j.insertMemory(memRow({ id: s, status: "retired" }));
         j.insertRelation({ memory_id: d2, source_id: d1, kind: "distilled" });
         j.insertRelation({ memory_id: d1, source_id: s, kind: "distilled" });
@@ -330,7 +382,7 @@ describe("Conflicts", () => {
         expect(d2 > d1).toBe(true);
 
         j.insertMemory(memRow({ id: d2, status: "working" }));
-        j.insertMemory(memRow({ id: d1, status: "working" }));
+        j.insertMemory(memRow({ id: d1, status: "retired" })); // D1 is the SOURCE here — must be dead-or-gone for the flag to show
         j.insertMemory(memRow({ id: s, status: "retired" }));
         j.insertRelation({ memory_id: d2, source_id: d1, kind: "distilled" });
         j.insertRelation({ memory_id: d1, source_id: s, kind: "distilled" });
