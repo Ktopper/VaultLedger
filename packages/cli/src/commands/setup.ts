@@ -30,6 +30,7 @@ export async function setupCommand(
   deps: SetupDeps = {},
 ): Promise<StepResult[]> {
   const out = deps.out ?? console.log;
+  const env = deps.env ?? process.env;
   const vaultDir = resolve(vault);
   const results: StepResult[] = [];
 
@@ -62,7 +63,7 @@ export async function setupCommand(
   }
 
   // smoke step
-  const smokeResult = await steps.smoke(vaultDir, entry, deps.env);
+  const smokeResult = await steps.smoke(vaultDir, entry, env);
   results.push(smokeResult);
 
   // plugin step

@@ -13,6 +13,7 @@ function baseOpts(overrides: Partial<SetupOptions> = {}): SetupOptions {
 
 interface FakeSteps extends SetupSteps {
   calls: string[];
+  smokeEnv?: NodeJS.ProcessEnv;
 }
 
 function makeFakeSteps(opts: {
@@ -22,7 +23,7 @@ function makeFakeSteps(opts: {
   pluginResult?: StepResult;
 } = {}): FakeSteps {
   const calls: string[] = [];
-  return {
+  const steps: FakeSteps = {
     calls,
     async configureMcp() {
       calls.push("configureMcp");
@@ -31,8 +32,9 @@ function makeFakeSteps(opts: {
         entry: opts.mcpEntry === undefined ? "node dist/index.js" : opts.mcpEntry,
       };
     },
-    async smoke() {
+    async smoke(_vault, _entry, env) {
       calls.push("smoke");
+      steps.smokeEnv = env;
       return opts.smokeResult ?? { step: "smoke", state: "verified", detail: "server responded pong in 10ms" };
     },
     async installPlugin() {
@@ -40,6 +42,7 @@ function makeFakeSteps(opts: {
       return opts.pluginResult ?? { step: "plugin", state: "created", detail: "plugin installed" };
     },
   };
+  return steps;
 }
 
 describe("setupCommand", () => {
@@ -125,6 +128,21 @@ describe("setupCommand", () => {
     expect(results[1]).toMatchObject({ step: "mcp", state: "failed" });
     expect(results).toHaveLength(2);
     expect(steps.calls).toEqual(["configureMcp"]);
+  });
+
+  test("smoke receives process.env when deps.env is omitted", async () => {
+    const steps = makeFakeSteps();
+    await setupCommand(dir, baseOpts({ yes: true }), steps, { out: () => {} });
+
+    expect(steps.smokeEnv).toBe(process.env);
+  });
+
+  test("smoke receives exactly deps.env when provided", async () => {
+    const steps = makeFakeSteps();
+    const injectedEnv = { HOME: "/tmp/fake-home", PATH: "/usr/bin" } as NodeJS.ProcessEnv;
+    await setupCommand(dir, baseOpts({ yes: true }), steps, { out: () => {}, env: injectedEnv });
+
+    expect(steps.smokeEnv).toBe(injectedEnv);
   });
 
   describe("already-initialized vault", () => {
