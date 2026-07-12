@@ -50,3 +50,6 @@ docs/design/plans/
 
 # Stray editor/harness temp files
 _tmp_*
+
+# Security-skim PoC harnesses — gitignored but referenced by the findings doc
+security/poc/
