@@ -165,6 +165,25 @@ Driving the real command is the entire point — an in-process check would pass
 while the emitted path is wrong. This is an integration check of the artifact we
 just produced.
 
+**The sweep hazard — smoke must not mutate the vault.** `loadServerContext`
+([context.ts](../../../packages/mcp-server/src/context.ts)) runs the startup TTL
+sweep — a *real vault write* (archives expired scratch, flags stale) — by design,
+*unlike* the CLI's `loadContext`. But the smoke check spawns that same server, so
+on a re-run against a lived-in vault, `ledger setup` — a **print-by-default
+command whose contract is "touches nothing outside `.ledger/`"** — would archive
+stale scratch memories as a side effect of *verifying itself*. The e2e wouldn't
+catch it (a fresh temp vault has nothing to sweep), and WU-1's mutation-free
+re-run assertion would pass for the same reason while the promise is silently
+broken in production.
+
+**Fix — a `--no-sweep` flag on the mcp-server entry, passed by the smoke spawn
+only.** WU-3 therefore also touches `packages/mcp-server`: `main()` parses
+`--no-sweep` from argv and threads `skipSweep: true` into `loadServerContext`'s
+existing `deps` (`LoadServerContextDeps`), guarding the sweep call. The sweep
+stays **on** for real agent-session startups (its design intent) and **off** for
+setup's ephemeral verification spawn. One flag, visible and auditable (preferred
+over a hidden env var). `parseVaultArg` is unaffected; the flag is orthogonal.
+
 ---
 
 ## WU-4 — `--install-plugin`: opt-in copy + a deliberate constitutional amendment
@@ -225,6 +244,16 @@ footprint rule to agent/broker content writes and to name `ledger setup
   `--write-mcp`) → `--install-plugin` + the enable steps → first
   `remember`/`recall`. Without the prerequisites the <10-min claim only holds for
   people who didn't need the doc.
+  - **Framing (deliberate):** present the smoke check's green line as the
+    **"VaultLedger is verified working"** moment — it just drove the real server
+    over stdio with **no Claude Code involved**. The Claude Code `remember`/
+    `recall` is framed as **first use**, *not* verification. So a stranger whose
+    Claude Code wiring fails knows the fault line is on the Claude-Code side,
+    because VaultLedger already proved itself one step earlier. (No CLI-only
+    memory step is added: the memory loop is MCP-only today — there is no `ledger
+    remember`/`recall` command — so a CLI-first proof would mean building new
+    commands, out of scope. The smoke check already *is* the no-Claude-Code
+    proof.)
 - **README refresh** — fix F5: status header + roadmap (v0.3b **shipped**),
   replace the "install dance" quickstart with `pnpm bootstrap` → `ledger setup`,
   keep the detailed developer walkthrough below the fold.
@@ -241,12 +270,20 @@ footprint rule to agent/broker content writes and to name `ledger setup
   *existing `.mcp.json` with another server → both present after*; unparseable
   target → refuse + print, no write; plugin skip by default, error-when-unbuilt,
   `styles.css` copied only if present; **diagnostic re-run output** shape.
+- **`--no-sweep` (mcp-server unit):** seed a vault with an **expired scratch
+  memory**, load the server context with `skipSweep: true` (and the `--no-sweep`
+  argv path in `main()`'s parse), assert the expired memory is **left
+  un-archived**; the default (sweep on) still archives it. This directly pins the
+  sweep hazard the smoke check would otherwise trip.
 - **E2E (`setup.e2e.test.ts`, mirroring `v01-gate.e2e.test.ts`):** temp vault →
   `setup --yes --write-mcp <tmp> --json` → assert the smoke check **actually
   spawned the server** and got a healthy `ledger_status`; then a **second
   invocation asserts the re-run is diagnostic-shaped AND mutation-free** — no new
-  git commits, no file mtime changes outside `.ledger/` logs. This pins WU-1's
-  idempotence promise, otherwise the least-tested claim.
+  git commits, no file mtime changes outside `.ledger/` logs. **Seed one expired
+  scratch memory before the re-run** so the mutation-free assertion also proves
+  the smoke spawn didn't sweep it (otherwise the fresh-vault case makes the
+  assertion vacuous for exactly the hazard it must catch). This pins WU-1's
+  idempotence promise + the `--no-sweep` guarantee together.
 
 ---
 
