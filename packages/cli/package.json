@@ -8,6 +8,7 @@
   "bin": { "ledger": "./dist/index.js" },
   "scripts": { "build": "tsc -b", "test": "vitest run" },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
     "commander": "^12.1.0",
     "diff": "^7.0.0",
     "yaml": "^2.5.0",

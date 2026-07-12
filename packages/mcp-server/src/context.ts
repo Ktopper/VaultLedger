@@ -47,6 +47,13 @@ export interface LoadServerContextDeps {
   genId?: (prefix: string) => string;
   env?: NodeJS.ProcessEnv;
   session?: string;
+  /** Skip the startup TTL sweep (design: `--no-sweep`, driven by `ledger
+   * setup`'s smoke check). The smoke check spawns a real server to verify
+   * it — since `ledger setup` is a print-by-default command that must touch
+   * nothing outside `.ledger/`, that verification must not archive expired
+   * scratch as a side effect. Everything else in loadServerContext
+   * (ensureJournal's auto-heal, reconcile's crash-recovery) still runs. */
+  skipSweep?: boolean;
 }
 
 /** Real, collision-safe id generator: `<prefix>_<8 hex chars>`. Tests inject
@@ -164,15 +171,17 @@ export async function loadServerContext(
 
     await ensureJournal({ vaultRoot, git, journal, now, genId });
     await reconcile({ git, journal, now, genId });
-    const sweepResult = await sweep({
-      store,
-      journal,
-      now,
-      ttlDays: config.ttlDays,
-      stalenessDays: config.stalenessDays,
-      session,
-    });
-    reportSweep(sweepResult);
+    if (!deps?.skipSweep) {
+      const sweepResult = await sweep({
+        store,
+        journal,
+        now,
+        ttlDays: config.ttlDays,
+        stalenessDays: config.stalenessDays,
+        session,
+      });
+      reportSweep(sweepResult);
+    }
 
     return {
       vaultRoot,

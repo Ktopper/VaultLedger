@@ -105,9 +105,20 @@ export function parseVaultArg(argv: string[]): string {
   return resolve(value);
 }
 
+/** Extract the `--no-sweep` flag (design: pairs with `LoadServerContextDeps.
+ * skipSweep` — `ledger setup`'s smoke check spawns the real server and must
+ * verify it without the startup TTL sweep mutating the vault). Orthogonal to
+ * `--vault`: presence/position of one must never affect parsing of the
+ * other. Exported for unit testing. */
+export function parseNoSweep(argv: string[]): boolean {
+  return argv.includes("--no-sweep");
+}
+
 async function main(): Promise<void> {
-  const vaultRoot = parseVaultArg(process.argv.slice(2));
-  const ctx = await loadServerContext(vaultRoot);
+  const argv = process.argv.slice(2);
+  const vaultRoot = parseVaultArg(argv);
+  const skipSweep = parseNoSweep(argv);
+  const ctx = await loadServerContext(vaultRoot, { skipSweep });
 
   let server: Server;
   try {

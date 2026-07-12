@@ -4,7 +4,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { createPatch } from "diff";
 import { loadServerContext, type ServerContext } from "../src/context.js";
 import { buildTools, type ToolDef } from "../src/tools.js";
-import { listToolNames, parseVaultArg } from "../src/index.js";
+import { listToolNames, parseNoSweep, parseVaultArg } from "../src/index.js";
 import { makeTestVault, type TestVault } from "./helpers.js";
 
 let vault: TestVault;
@@ -436,5 +436,24 @@ describe("parseVaultArg", () => {
   test("leaves an already-absolute --vault unchanged", () => {
     const abs = resolve("/tmp/vault");
     expect(parseVaultArg(["--vault", abs])).toBe(abs);
+  });
+});
+
+describe("parseNoSweep", () => {
+  test("true when --no-sweep is present", () => {
+    expect(parseNoSweep(["--no-sweep"])).toBe(true);
+  });
+
+  test("false when --no-sweep is absent", () => {
+    expect(parseNoSweep(["--vault", "/x"])).toBe(false);
+  });
+
+  test("true when --no-sweep is present alongside --vault", () => {
+    expect(parseNoSweep(["--vault", "/x", "--no-sweep"])).toBe(true);
+  });
+
+  test("--no-sweep does not disturb --vault parsing either way", () => {
+    expect(parseVaultArg(["--vault", "/x", "--no-sweep"])).toBe(resolve("/x"));
+    expect(parseVaultArg(["--no-sweep", "--vault", "/x"])).toBe(resolve("/x"));
   });
 });
