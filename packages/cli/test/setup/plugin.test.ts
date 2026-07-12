@@ -1,8 +1,8 @@
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { afterEach, describe, expect, test } from "vitest";
-import { installPlugin, resolvePluginRoot } from "../../src/setup/plugin.js";
+import { checkPluginFreshness, installPlugin, resolvePluginRoot } from "../../src/setup/plugin.js";
 
 /**
  * `installPlugin` copies the REAL built `@vaultledger/obsidian-plugin`
@@ -141,5 +141,69 @@ describe("installPlugin — guards via injectable resolveRoot", () => {
 
     expect(result.state).toBe("failed");
     expect(existsSync(destDir(vaultDir))).toBe(false);
+  });
+});
+
+/**
+ * `checkPluginFreshness` is the read-only probe that surfaces plugin
+ * outdated-ness on a FLAGLESS `ledger setup` re-run (no --install-plugin, no
+ * copy). It must never nag a user who never installed the plugin at all.
+ */
+describe("checkPluginFreshness", () => {
+  test("not installed: returns null (no nag for a vault that never installed the plugin)", () => {
+    vaultDir = mkdtempSync(join(tmpdir(), "vl-plugin-vault-"));
+    const result = checkPluginFreshness(vaultDir);
+    expect(result).toBeNull();
+  });
+
+  test("installed and current: state already", async () => {
+    vaultDir = mkdtempSync(join(tmpdir(), "vl-plugin-vault-"));
+    await installPlugin(vaultDir);
+
+    const result = checkPluginFreshness(vaultDir);
+    expect(result).not.toBeNull();
+    expect(result?.step).toBe("plugin");
+    expect(result?.state).toBe("already");
+    expect(result?.detail).toContain("current");
+  });
+
+  test("installed but older than the package version: state outdated, rerun hint via renderReport", async () => {
+    vaultDir = mkdtempSync(join(tmpdir(), "vl-plugin-vault-"));
+    await installPlugin(vaultDir);
+
+    const destManifest = join(destDir(vaultDir), "manifest.json");
+    const manifest = JSON.parse(readFileSync(destManifest, "utf8"));
+    const realVersion = manifest.version as string;
+    manifest.version = "0.0.1";
+    writeFileSync(destManifest, JSON.stringify(manifest, null, 2));
+
+    const result = checkPluginFreshness(vaultDir);
+    expect(result).not.toBeNull();
+    expect(result?.state).toBe("outdated");
+    expect(result?.detail).toContain("0.0.1");
+    expect(result?.detail).toContain(realVersion);
+  });
+
+  test("installed, but plugin package not resolvable: returns null rather than throwing", () => {
+    vaultDir = mkdtempSync(join(tmpdir(), "vl-plugin-vault-"));
+    const dest = destDir(vaultDir);
+    mkdirSync(dest, { recursive: true });
+    writeFileSync(join(dest, "manifest.json"), JSON.stringify({ version: "1.0.0" }));
+
+    const result = checkPluginFreshness(vaultDir, () => null);
+    expect(result).toBeNull();
+  });
+
+  test("installed, but package manifest unreadable (unbuilt/corrupt): returns null rather than throwing", () => {
+    vaultDir = mkdtempSync(join(tmpdir(), "vl-plugin-vault-"));
+    fixtureDir = mkdtempSync(join(tmpdir(), "vl-plugin-fixture-"));
+    // No manifest.json written at the fixture root — package resolves but its
+    // version is unreadable.
+    const dest = destDir(vaultDir);
+    mkdirSync(dest, { recursive: true });
+    writeFileSync(join(dest, "manifest.json"), JSON.stringify({ version: "1.0.0" }));
+
+    const result = checkPluginFreshness(vaultDir, () => fixtureDir);
+    expect(result).toBeNull();
   });
 });

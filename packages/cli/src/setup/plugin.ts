@@ -110,3 +110,48 @@ export async function installPlugin(
     detail: `updated v${installedVersion} → v${pkgVersion} → ${dest}${ENABLE_HINT}`,
   };
 }
+
+/**
+ * Read-only freshness probe for a FLAGLESS `ledger setup` re-run (no
+ * `--install-plugin`, no copy): tells a user whose plugin is already
+ * installed that it's stale, without ever nagging a user who never
+ * installed it in the first place.
+ *
+ * - Not installed (no dest manifest) → `null` — nothing to report.
+ * - Installed, but the `@vaultledger/obsidian-plugin` package doesn't
+ *   resolve (or its manifest is missing/unbuilt/corrupt) → `null` rather
+ *   than throwing; we can't compare versions we can't read, and a probe run
+ *   on every `ledger setup` invocation must never crash the whole command
+ *   over this.
+ * - Installed and current → `already`.
+ * - Installed and older than the package version → `outdated`, with a
+ *   `vOLD → vNEW` detail (the "rerun with --install-plugin" call-to-action is
+ *   added by `report.ts`'s `outdated` renderer, not duplicated here).
+ *
+ * `resolveRoot` mirrors `installPlugin`'s injectable seam for the same
+ * reason: tests need to exercise the not-resolvable / not-built guards
+ * without a genuinely broken monorepo install.
+ */
+export function checkPluginFreshness(
+  vault: string,
+  resolveRoot: () => string | null = resolvePluginRoot,
+): StepResult | null {
+  const destManifest = join(vault, ".obsidian", "plugins", "vaultledger", "manifest.json");
+  const installedVersion = readVersion(destManifest);
+  if (installedVersion === null) return null; // not installed — don't nag
+
+  const root = resolveRoot();
+  if (root === null) return null; // package not resolvable — can't compare
+
+  const pkgVersion = readVersion(join(root, "manifest.json"));
+  if (pkgVersion === null) return null; // unbuilt/corrupt package manifest — can't compare
+
+  if (installedVersion === pkgVersion) {
+    return { step: "plugin", state: "already", detail: `plugin v${pkgVersion} current` };
+  }
+  return {
+    step: "plugin",
+    state: "outdated",
+    detail: `v${installedVersion} → v${pkgVersion}`,
+  };
+}

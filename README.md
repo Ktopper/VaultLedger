@@ -66,7 +66,10 @@ vaultledger/
   broker.
 - Patch-level edits only; whole-file rewrites are a broker rejection.
 - Every mutation is attributable: who, when, why, which session, which commit.
-- `.ledger/` is the only in-vault footprint besides the agent zone.
+- `.ledger/` is the only in-vault footprint of agent/broker writes besides the
+  agent zone. (The one sanctioned human-initiated exception: `ledger setup
+  --install-plugin` copies the review plugin into `<vault>/.obsidian/plugins/`
+  — an explicit opt-in flag, touching Obsidian config, never notes.)
 - Rollback of any transaction or entire session via `git revert`, with the
   memory journal kept consistent.
 
@@ -137,9 +140,9 @@ for a static example):
 
 Running straight out of this repo, `node <repo>/packages/mcp-server/dist/index.js`
 is the reliable invocation (the bare `vaultledger-mcp` bin only resolves once the
-package is globally installed/linked). The server exposes 7 tools: `memory_recall`, `memory_remember`,
-`memory_revise`, `memory_promote`, `memory_forget`, `vault_propose_edit`, and
-`ledger_status`.
+package is globally installed/linked). The server exposes 9 tools: `memory_recall`,
+`memory_remember`, `memory_distill`, `memory_revise`, `memory_promote`,
+`memory_forget`, `memory_retire`, `vault_propose_edit`, and `ledger_status`.
 
 **4. Remember, then recall**
 
@@ -310,7 +313,7 @@ automatically. Embedding/LLM-assisted detection is a later milestone; the
   (extract → detect → match → check) + the `conflicts/` queue: a precision-first,
   lineage-aware, pluggable detector run non-blocking on every write.
 - [`packages/mcp-server`](packages/mcp-server) — the `vaultledger-mcp` bin: the
-  7 MCP tools listed above, wired over stdio via the official MCP SDK.
+  9 MCP tools listed above, wired over stdio via the official MCP SDK.
 - [`packages/server`](packages/server) — **(v0.2)** the fastify bridge behind
   `ledger serve`: token-authed, loopback-only HTTP over the core, the plugin's
   only backend.

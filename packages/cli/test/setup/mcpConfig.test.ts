@@ -133,6 +133,32 @@ describe("mergeMcpConfig", () => {
     expect(parsed.mcpServers.vaultledger).toEqual({ command: "node", args: ["/e", "--vault", "/v"] });
   });
 
+  test("re-merging an already-vaultledger config with the SAME entry: true no-op, state already", () => {
+    const existing = JSON.stringify({
+      mcpServers: {
+        other: { command: "x" },
+        vaultledger: { command: "node", args: ["/e", "--vault", "/v"] },
+      },
+    });
+    const result = mergeMcpConfig(existing, "/v", "/e");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.state).toBe("already");
+    const parsed = JSON.parse(result.text);
+    expect(parsed.mcpServers.other).toEqual({ command: "x" });
+    expect(parsed.mcpServers.vaultledger).toEqual({ command: "node", args: ["/e", "--vault", "/v"] });
+  });
+
+  test("re-merging with a DIFFERENT entry (e.g. changed --vault path) still reports updated, not already", () => {
+    const existing = JSON.stringify({
+      mcpServers: { vaultledger: { command: "node", args: ["/e", "--vault", "/old-vault"] } },
+    });
+    const result = mergeMcpConfig(existing, "/v", "/e");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.state).toBe("updated");
+  });
+
   test("serialized text ends with a trailing newline", () => {
     const result = mergeMcpConfig(null, "/v", "/e");
     expect(result.ok).toBe(true);

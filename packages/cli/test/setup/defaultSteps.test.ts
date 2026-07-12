@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
@@ -116,6 +116,28 @@ describe.skipIf(!distBuilt)("defaultSteps().configureMcp (real entry resolution)
     };
     expect(written.mcpServers.vaultledger.command).toBe("node");
     expect(written.mcpServers.vaultledger.args).toEqual([entry, "--vault", vault]);
+  });
+
+  test("idempotent re-run: second call against the now-existing file reports already and does NOT rewrite it", async () => {
+    dir = mkdtempSync(join(tmpdir(), "vl-defaultsteps-"));
+    const target = join(dir, ".mcp.json");
+
+    const steps = defaultSteps();
+    const first = await steps.configureMcp(vault, baseOpts({ writeMcp: target }), () => {});
+    expect(first.result).toMatchObject({ step: "mcp", state: "created" });
+
+    const bytesBefore = readFileSync(target, "utf8");
+    const mtimeBefore = statSync(target).mtimeMs;
+
+    const printed: string[] = [];
+    const second = await steps.configureMcp(vault, baseOpts({ writeMcp: target }), (s) => printed.push(s));
+
+    expect(second.result).toMatchObject({ step: "mcp", state: "already" });
+    expect(second.result.detail).toContain(target);
+    // No rewrite: bytes AND mtime unchanged, no refusal block printed.
+    expect(readFileSync(target, "utf8")).toBe(bytesBefore);
+    expect(statSync(target).mtimeMs).toBe(mtimeBefore);
+    expect(printed).toEqual([]);
   });
 });
 

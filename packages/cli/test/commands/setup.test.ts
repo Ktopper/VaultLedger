@@ -103,18 +103,34 @@ describe("setupCommand", () => {
     expect(results[3]).toMatchObject({ step: "plugin", state: "created" });
   });
 
-  test("--json -> out receives parseable StepResult[]", async () => {
+  test("--json -> deps.out receives ONLY the JSON line — no human/profile lines leak into it", async () => {
     const steps = makeFakeSteps();
     const messages: string[] = [];
     const results = await setupCommand(dir, baseOpts({ yes: true, json: true }), steps, {
       out: (s) => messages.push(s),
     });
 
-    expect(messages.length).toBeGreaterThan(0);
-    const lastMessage = messages[messages.length - 1];
-    expect(lastMessage).toBeDefined();
-    const parsed = JSON.parse(lastMessage as string) as StepResult[];
+    // Exactly one message: the JSON line. Human-facing output (the init
+    // scan/profile print, printableBlock, renderReport) is routed to stderr
+    // in json mode, not to the injected `out` sink — so stdout-equivalent
+    // capture is pure JSON, safe for `ledger setup --json | jq`.
+    expect(messages).toHaveLength(1);
+    const parsed = JSON.parse(messages[0] as string) as StepResult[];
     expect(parsed).toEqual(results);
+  });
+
+  test("fresh vault + --yes (non-json): the zone-review profile block prints once, not twice", async () => {
+    const steps = makeFakeSteps();
+    const messages: string[] = [];
+    await setupCommand(dir, baseOpts({ yes: true }), steps, {
+      out: (s) => messages.push(s),
+    });
+
+    // `initCommand` is called twice internally (confirm:false scan, then
+    // confirm:true write) — the profile line must only render from the
+    // FIRST (scan) call; the second call's `out` must be silenced.
+    const profileLines = messages.filter((s) => s.startsWith("Vault: "));
+    expect(profileLines).toHaveLength(1);
   });
 
   test("mcp step failure stops before smoke", async () => {

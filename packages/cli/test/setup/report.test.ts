@@ -27,12 +27,24 @@ describe("renderReport", () => {
     ];
     expect(renderReport(results)).toBe(
       [
-        "· init already — already initialized ✓",
-        "· mcp already — entry present and matches ✓",
-        "· smoke updated — config.json rewritten ✓",
+        "· init already ✓ — already initialized",
+        "· mcp already ✓ — entry present and matches",
+        "· smoke updated ✓ — config.json rewritten",
         "· plugin outdated (0.3.0 → 0.4.0) → rerun with --install-plugin",
       ].join("\n"),
     );
+  });
+
+  test("already/updated: ✓ sits on the status portion, adjacent to the state word, even with a multi-line detail", () => {
+    // Regression guard for the plugin step's multi-line ENABLE_HINT detail:
+    // the ✓ must not land after the LAST line of detail (which would read as
+    // "enabling done" when Obsidian still requires a manual enable).
+    const multiLineDetail = "v1.2.0 already current\n  Enable it: Obsidian → Settings → Community plugins";
+    const result: StepResult = { step: "plugin", state: "already", detail: multiLineDetail };
+    const rendered = renderReport([result]);
+    const firstLine = rendered.split("\n")[0]!;
+    expect(firstLine).toBe("· plugin already ✓ — v1.2.0 already current");
+    expect(rendered.endsWith("Community plugins")).toBe(true);
   });
 
   test("failed step renders as an error line", () => {

@@ -1,6 +1,5 @@
 #!/usr/bin/env node
-import { realpathSync } from "node:fs";
-import { pathToFileURL } from "node:url";
+import { resolvesToThisModule } from "@vaultledger/core";
 import { Command } from "commander";
 import { approveCommand } from "./commands/approve.js";
 import { auditCommand } from "./commands/audit.js";
@@ -303,33 +302,11 @@ export async function run(argv?: string[]): Promise<void> {
 }
 
 // Only auto-run when this module is the process's actual entry point (the
-// installed `ledger` bin), never when imported by tests. Compares via
-// pathToFileURL (not a bare `file://${process.argv[1]}` template) so this
-// still matches when the path contains characters (spaces, unicode, ...)
-// that import.meta.url percent-encodes.
-//
-// realpathSync on argv[1] is load-bearing: pnpm's `ledger` bin shim (and any
-// workspace-linked invocation) launches this file through a symlink
-// (node_modules/@vaultledger/cli -> ../../packages/cli). Node's ESM loader
-// resolves import.meta.url to the REAL path, but process.argv[1] keeps the
-// symlinked path verbatim — pathToFileURL doesn't resolve symlinks, so a
-// bare comparison silently mismatches and `run()` never fires (the bin looks
-// installed, runs, and exits 0 having done nothing). Resolving argv[1]'s
-// realpath first makes both sides agree in exactly the deployment shape
-// `pnpm bootstrap` produces.
-//
-// The realpathSync is wrapped so a defined-but-nonexistent argv[1] (which
-// makes realpathSync throw ENOENT) degrades to `false` rather than crashing
-// the module at import time — importing this file must never throw.
-function resolvesToThisModule(argv1: string | undefined): boolean {
-  if (argv1 === undefined) return false;
-  try {
-    return import.meta.url === pathToFileURL(realpathSync(argv1)).href;
-  } catch {
-    return false;
-  }
-}
-const isMainModule = resolvesToThisModule(process.argv[1]);
+// installed `ledger` bin), never when imported by tests. See
+// `resolvesToThisModule` in `@vaultledger/core` (hoisted there since
+// `packages/mcp-server/src/index.ts` needs the identical symlink-aware guard)
+// for the pnpm-bin-shim / realpath rationale.
+const isMainModule = resolvesToThisModule(process.argv[1], import.meta.url);
 if (isMainModule) {
   void run();
 }

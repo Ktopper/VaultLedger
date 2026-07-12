@@ -48,7 +48,7 @@ export function buildMcpConfig(vault: string, entry: string): McpConfig {
 }
 
 export type MergeResult =
-  | { ok: true; text: string; state: "created" | "updated" }
+  | { ok: true; text: string; state: "created" | "updated" | "already" }
   | { ok: false; reason: "unparseable" | "not-an-object" };
 
 /** Serialize with 2-space indent and a trailing LF. Output is ALWAYS
@@ -59,6 +59,27 @@ function serialize(o: unknown): string {
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return v !== null && typeof v === "object" && !Array.isArray(v);
+}
+
+/** Structural equality for the plain-JSON-shaped values `mergeMcpConfig`
+ * works with (objects/arrays/primitives — no cycles, no Dates/Maps/etc,
+ * since both sides always come from `JSON.parse`/object-literal
+ * construction). Used to detect a true semantic no-op re-run so the caller
+ * can skip the rewrite entirely and report `already` instead of `updated`. */
+function deepEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b)) return false;
+    if (a.length !== b.length) return false;
+    return a.every((v, i) => deepEqual(v, b[i]));
+  }
+  if (isPlainObject(a) && isPlainObject(b)) {
+    const aKeys = Object.keys(a);
+    const bKeys = Object.keys(b);
+    if (aKeys.length !== bKeys.length) return false;
+    return aKeys.every((k) => Object.prototype.hasOwnProperty.call(b, k) && deepEqual(a[k], b[k]));
+  }
+  return false;
 }
 
 /**
@@ -109,6 +130,13 @@ export function mergeMcpConfig(existingText: string | null, vault: string, entry
   const existingEntry = servers.vaultledger;
   const mergedEntry = isPlainObject(existingEntry) ? { ...existingEntry, ...ours } : ours;
   const merged = { ...parsedObj, mcpServers: { ...servers, vaultledger: mergedEntry } };
+
+  // A true semantic no-op (re-running against an already-current config)
+  // reports `already` rather than `updated`, and the caller skips the
+  // rewrite entirely — an idempotent re-run must not touch the file's mtime.
+  if (had && deepEqual(merged, parsedObj)) {
+    return { ok: true, state: "already", text: serialize(merged) };
+  }
 
   return { ok: true, state: had ? "updated" : "created", text: serialize(merged) };
 }
