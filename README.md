@@ -4,12 +4,14 @@
 an Obsidian vault (or any markdown folder) as persistent memory, with
 provenance, approval, and rollback enforced *in code, not prompts*.
 
-> **Status:** v0.3b shipped; v0.4 (onboarding & setup) in progress. Shipped: the
-> deterministic write-broker core (v0.1), the review surface (v0.2 — localhost
-> HTTP bridge + Obsidian plugin), write-time contradiction detection (v0.3a),
-> and the Undertow merge — `memory_distill`/`memory_retire`, source-linked
-> staleness, memory-health reporting (v0.3b). See [`spec.md`](spec.md) for the
-> product spec and [`docs/design/specs/`](docs/design/specs/) for the designs.
+> **Status:** v0.4 shipped. Shipped: the deterministic write-broker core
+> (v0.1), the review surface (v0.2 — localhost HTTP bridge + Obsidian plugin),
+> write-time contradiction detection (v0.3a), the Undertow merge —
+> `memory_distill`/`memory_retire`, source-linked staleness, memory-health
+> reporting (v0.3b) — and onboarding/setup (v0.4 — `ledger setup`, `pnpm
+> bootstrap`, [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md)). See
+> [`spec.md`](spec.md) for the product spec and
+> [`docs/design/specs/`](docs/design/specs/) for the designs.
 
 ## Why
 
@@ -25,9 +27,13 @@ Git, and queues protected-zone writes for human approval.
 
 ```sh
 git clone <this repo's URL> && cd VaultLedger
-pnpm bootstrap                      # install deps, build core/cli/mcp-server/plugin, link the `ledger` bin
-ledger setup /path/to/your/vault    # zone review, Claude Code MCP config, a real verification smoke check
+pnpm bootstrap                                # install deps (links the `ledger`/`vaultledger-mcp` bins), build core/cli/mcp-server/plugin
+pnpm exec ledger setup /path/to/your/vault    # zone review, Claude Code MCP config, a real verification smoke check
 ```
+
+(`pnpm exec` finds the workspace-linked bin without needing it on your shell
+`PATH` — see the callout in [Developer walkthrough](#developer-walkthrough-v01-internals-manual-steps)
+below if you'd rather have a bare `ledger`.)
 
 `ledger setup` walks you through the vault's zone manifest (which folders the
 agent may propose edits to vs. never touch), prints — or `--write-mcp <path>`
@@ -94,20 +100,22 @@ pnpm build
 
 This builds `@vaultledger/core`, `@vaultledger/cli` (the `ledger` bin), and
 `@vaultledger/mcp-server` (the `vaultledger-mcp` bin) via `tsc --build`. (`pnpm
-bootstrap` does this plus the Obsidian plugin build plus the bin-link fixup
-below, in one command — see [Quickstart](#quickstart).)
+bootstrap` does this plus the Obsidian plugin build, in one command — see
+[Quickstart](#quickstart).)
 
-> **Invoking `ledger`:** pnpm links the `ledger` bin from
-> `packages/cli/dist/index.js`, which doesn't exist until `pnpm build` runs — so
-> the link is skipped during the initial `pnpm install`. After building, either
-> run `pnpm install` once more to (re)create the bin link, or invoke the CLI
-> directly as `node packages/cli/dist/index.js <args>` (equivalent to `ledger
-> <args>` below). The MCP server is likewise `node packages/mcp-server/dist/index.js`.
+> **Invoking `ledger`:** the `ledger`/`vaultledger-mcp` bins are committed
+> launcher scripts (`packages/cli/bin/ledger.mjs`,
+> `packages/mcp-server/bin/vaultledger-mcp.mjs`), so `pnpm install` links them
+> immediately — no build-order trick, no second install. A workspace-linked
+> bin isn't on your shell's `PATH` by itself, though, so from the repo root use
+> `pnpm exec ledger <args>` (this doc's commands below all use that form). If
+> you'd rather type a bare `ledger`, run `pnpm -C packages/cli link --global`
+> once, or add a shell alias.
 
 **2. Initialize a vault**
 
 ```sh
-ledger init /absolute/path/to/your/vault --yes
+pnpm exec ledger init /absolute/path/to/your/vault --yes
 ```
 
 Without `--yes`, `init` only *scans* the vault (note/link counts, detected
@@ -179,7 +187,7 @@ The file is untouched on disk until a human approves it.
 **6. Check status**
 
 ```sh
-ledger status /absolute/path/to/your/vault
+pnpm exec ledger status /absolute/path/to/your/vault
 ```
 
 Prints the zone manifest, the count of pending approvals, and the most recent
@@ -188,18 +196,18 @@ transactions (op, path, status) from the journal.
 **7. Approve the queued edit**
 
 ```sh
-ledger approve /absolute/path/to/your/vault            # list pending approvals with rendered diffs
-ledger approve /absolute/path/to/your/vault --id <id>  # apply the queued patch (or --reject to discard it)
+pnpm exec ledger approve /absolute/path/to/your/vault            # list pending approvals with rendered diffs
+pnpm exec ledger approve /absolute/path/to/your/vault --id <id>  # apply the queued patch (or --reject to discard it)
 ```
 
 **8. Undo**
 
 ```sh
-ledger undo /absolute/path/to/your/vault <txnId>          # revert one transaction (git revert + journal update)
-ledger undo /absolute/path/to/your/vault session:<sessionId>  # revert every applied transaction for a session
+pnpm exec ledger undo /absolute/path/to/your/vault <txnId>          # revert one transaction (git revert + journal update)
+pnpm exec ledger undo /absolute/path/to/your/vault session:<sessionId>  # revert every applied transaction for a session
 ```
 
-`ledger log /absolute/path/to/your/vault` lists transactions (with `--entity`
+`pnpm exec ledger log /absolute/path/to/your/vault` lists transactions (with `--entity`
 / `--session` / `--limit` filters) if you need to find a `<txnId>` to undo.
 
 ## The review surface (v0.2)
@@ -212,7 +220,7 @@ can audit agent memory like a bank statement.
 **1. Start the bridge**
 
 ```sh
-ledger serve /absolute/path/to/your/vault      # add --port N to pin a port
+pnpm exec ledger serve /absolute/path/to/your/vault      # add --port N to pin a port
 ```
 
 `ledger serve` runs a small localhost (`127.0.0.1`-only) HTTP server over the
@@ -229,7 +237,7 @@ index.
 **2. Install the plugin**
 
 ```sh
-ledger setup /absolute/path/to/your/vault --install-plugin
+pnpm exec ledger setup /absolute/path/to/your/vault --install-plugin
 ```
 
 Builds happen as part of `pnpm bootstrap`; `--install-plugin` copies
@@ -280,16 +288,16 @@ Minimal reproduction (via the MCP tools):
 1. memory_remember { "content": "deadline: 2026-08-15", "entity": "nova", "reason": "..." }   → scratch memory A
 2. memory_promote  { "id": "<A>", "target_status": "working", "reason": "..." }               → A is now live (scratch→working is immediate, no approval)
 3. memory_remember { "content": "deadline: 2026-09-01", "entity": "nova", "reason": "..." }   → contradiction queued
-4. ledger conflicts /path/to/vault                                                            → deadline: "2026-08-15" vs "2026-09-01"
+4. pnpm exec ledger conflicts /path/to/vault                                                   → deadline: "2026-08-15" vs "2026-09-01"
 ```
 
 Detected conflicts land in a queue, surfaced three ways:
 
 ```sh
-ledger conflicts /path/to/vault                 # list open conflicts (entity, kind, detail, both memories)
-ledger conflicts /path/to/vault resolve <id>    # close a conflict you've handled
-ledger conflicts /path/to/vault dismiss <id>    # dismiss a false positive (permanent — never resurfaces)
-ledger conflicts /path/to/vault --rescan        # re-run detection across the vault
+pnpm exec ledger conflicts /path/to/vault                 # list open conflicts (entity, kind, detail, both memories)
+pnpm exec ledger conflicts /path/to/vault resolve <id>    # close a conflict you've handled
+pnpm exec ledger conflicts /path/to/vault dismiss <id>    # dismiss a false positive (permanent — never resurfaces)
+pnpm exec ledger conflicts /path/to/vault --rescan        # re-run detection across the vault
 ```
 
 Also via the bridge (`GET /conflicts`, `POST /conflicts/:id/{resolve,dismiss}`)
@@ -346,8 +354,7 @@ index).
   relations, source-linked staleness, promotion rules, memory-health report. ✅
 - **v0.4** — onboarding & setup: `ledger setup` (interactive zone review,
   Claude Code MCP config emit/merge, a real-subprocess smoke check, opt-in
-  `--install-plugin`), `pnpm bootstrap`, [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md).
-  In progress.
+  `--install-plugin`), `pnpm bootstrap`, [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md). ✅
 - **v1.0** — polish, packaged installers, community-plugin submission, guides.
 
 ## License

@@ -9,7 +9,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint .",
-    "bootstrap": "pnpm install && pnpm build && pnpm -C packages/obsidian-plugin build && pnpm install"
+    "bootstrap": "pnpm install && pnpm build && pnpm -C packages/obsidian-plugin build"
   },
   "devDependencies": {
     "typescript": "^5.6.0",
@@ -17,6 +17,7 @@
     "eslint": "^9.10.0",
     "typescript-eslint": "^8.8.0",
     "@types/node": "^22.5.0",
-    "@vaultledger/cli": "workspace:*"
+    "@vaultledger/cli": "workspace:*",
+    "@vaultledger/mcp-server": "workspace:*"
   }
 }

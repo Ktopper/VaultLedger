@@ -1,6 +1,6 @@
 {
   "name": "@vaultledger/obsidian-plugin",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "type": "module",
   "private": true,
   "//": "This is a leaf Obsidian plugin, not a library: Obsidian loads it via manifest.json -> the esbuild-bundled main.js, and no other workspace package imports it. So there is deliberately no main/types/exports here — those previously pointed at a pre-Phase-4 stub (dist/index.js) and were misleading residue.",

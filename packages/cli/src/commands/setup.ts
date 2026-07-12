@@ -159,7 +159,22 @@ export function defaultSteps(): SetupSteps {
           };
         }
         writeMcpConfig(opts.writeMcp, merged.text);
-        return { entry, result: { step: "mcp", state: merged.state, detail: `${merged.state} ${opts.writeMcp}` } };
+        // `merged.state === "created"` means "the vaultledger entry didn't
+        // exist yet" — which is true both when the target FILE was brand new
+        // AND when an existing file (holding other MCP servers) simply had
+        // no vaultledger entry to update. Only the former is honestly
+        // "created"; the latter merged our entry into a pre-existing file,
+        // so it reads as "merged into <path>" rather than falsely implying
+        // the file itself was just created. `state` (created/updated/already)
+        // is unchanged — only this human-facing `detail` wording differs.
+        const fileExisted = existing !== null;
+        const detail =
+          merged.state === "created"
+            ? fileExisted
+              ? `merged into ${opts.writeMcp}`
+              : `created ${opts.writeMcp}`
+            : `${merged.state} ${opts.writeMcp}`;
+        return { entry, result: { step: "mcp", state: merged.state, detail } };
       }
       out(printableBlock(vault, entry)); // print-by-default
       return {

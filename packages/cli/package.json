@@ -1,11 +1,11 @@
 {
   "name": "@vaultledger/cli",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
-  "bin": { "ledger": "./dist/index.js" },
+  "bin": { "ledger": "./bin/ledger.mjs" },
   "scripts": { "build": "tsc -b", "test": "vitest run" },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
