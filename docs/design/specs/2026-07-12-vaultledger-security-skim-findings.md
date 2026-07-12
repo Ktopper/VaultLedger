@@ -124,7 +124,12 @@ S2-02 (positive control), S2-06 (size guard position-blind, subsumed), S3-02 (no
 - **D · MCP DoS / hardening (2 High + Med):** S4-01 upgrade `diff`; S4-03 memoize `canonicalize`; S4-05 zod `.max()` bounds.
 - **E · Misc hardening (Low):** S8-02 bundle XSS guard; S1-01 `lockDir` non-optional + stale-comment; S6-03 gitignore `.npmrc`; dev-dep bumps.
 
-## Disposition (to be completed at the gate)
-Medium-and-up require explicit human fix/accept sign-off (each accept names an
-expiry condition); Low/Info batch-approved. Recorded here after the gate as:
-reviewed → **fixed** (outcome + commit) / **accepted** (rationale + expiry).
+## Disposition (gate — 2026-07-12)
+**Human decision: FIX ALL Medium-and-up** (3 Critical + 4 High + 4 Medium — no
+accepted-deferred), and batch-approve the 7 Lows as fixes where cheap. Nothing
+accepted-with-expiry this cycle. The fixes proceed as a separate `writing-plans`
+batch over the 5 clusters (A–E), subagent-driven with two-stage review; each
+Critical/High fix re-runs its kept `security/poc/` harness (with negative
+controls) to prove closure. This section is updated to reviewed → **fixed**
+(outcome + commit) after the batch. Publishing remains blocked until at least
+the 3 Criticals + 4 agent-triggerable Highs are fixed + re-verified.
