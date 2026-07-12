@@ -8,11 +8,14 @@
   "bin": { "ledger": "./dist/index.js" },
   "scripts": { "build": "tsc -b", "test": "vitest run" },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
     "commander": "^12.1.0",
     "diff": "^7.0.0",
     "yaml": "^2.5.0",
     "@vaultledger/core": "workspace:*",
-    "@vaultledger/server": "workspace:*"
+    "@vaultledger/server": "workspace:*",
+    "@vaultledger/mcp-server": "workspace:*",
+    "@vaultledger/obsidian-plugin": "workspace:*"
   },
   "devDependencies": {
     "@types/diff": "^6.0.0"

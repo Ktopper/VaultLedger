@@ -4,10 +4,12 @@
 an Obsidian vault (or any markdown folder) as persistent memory, with
 provenance, approval, and rollback enforced *in code, not prompts*.
 
-> **Status:** v0.3.0. Shipped: the deterministic write-broker core (v0.1), the
-> review surface (v0.2 — localhost HTTP bridge + Obsidian plugin), and write-time
-> contradiction detection (v0.3a). See [`spec.md`](spec.md) for the product spec
-> and [`docs/design/specs/`](docs/design/specs/) for the designs.
+> **Status:** v0.3b shipped; v0.4 (onboarding & setup) in progress. Shipped: the
+> deterministic write-broker core (v0.1), the review surface (v0.2 — localhost
+> HTTP bridge + Obsidian plugin), write-time contradiction detection (v0.3a),
+> and the Undertow merge — `memory_distill`/`memory_retire`, source-linked
+> staleness, memory-health reporting (v0.3b). See [`spec.md`](spec.md) for the
+> product spec and [`docs/design/specs/`](docs/design/specs/) for the designs.
 
 ## Why
 
@@ -18,6 +20,25 @@ that layer: agents never touch files directly. They emit structured operations,
 and a deterministic broker validates zone permissions, verifies file hashes,
 applies patch-level edits only, stamps provenance, commits each transaction to
 Git, and queues protected-zone writes for human approval.
+
+## Quickstart
+
+```sh
+git clone <this repo's URL> && cd VaultLedger
+pnpm bootstrap                      # install deps, build core/cli/mcp-server/plugin, link the `ledger` bin
+ledger setup /path/to/your/vault    # zone review, Claude Code MCP config, a real verification smoke check
+```
+
+`ledger setup` walks you through the vault's zone manifest (which folders the
+agent may propose edits to vs. never touch), prints — or `--write-mcp <path>`
+writes — a Claude Code MCP config block, and finishes with a green `smoke
+verified` line proving the real server runs, with no Claude Code involved
+yet. Add `--install-plugin` to also install the Obsidian review plugin.
+Re-running `ledger setup` is safe and idempotent — an already-set-up vault
+reports back diagnostic-shaped (`already` / `verified`) rather than
+redoing anything. See **[`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md)**
+for the full non-developer walkthrough (under 10 minutes, zero existing notes
+touched).
 
 ## Architecture
 
@@ -45,18 +66,23 @@ vaultledger/
   broker.
 - Patch-level edits only; whole-file rewrites are a broker rejection.
 - Every mutation is attributable: who, when, why, which session, which commit.
-- `.ledger/` is the only in-vault footprint besides the agent zone.
+- `.ledger/` is the only in-vault footprint of agent/broker writes besides the
+  agent zone. (The one sanctioned human-initiated exception: `ledger setup
+  --install-plugin` copies the review plugin into `<vault>/.obsidian/plugins/`
+  — an explicit opt-in flag, touching Obsidian config, never notes.)
 - Rollback of any transaction or entire session via `git revert`, with the
   memory journal kept consistent.
 
-## 2-minute walkthrough (v0.1)
+## Developer walkthrough (v0.1 internals, manual steps)
 
-This walks through the exact commands and tool calls that make up the v0.1
-governed-write loop: init a vault, wire an agent to it over MCP, remember and
+The [Quickstart](#quickstart) above (`pnpm bootstrap` + `ledger setup`) is the
+fast path for getting a vault wired up. This section instead walks through the
+exact lower-level commands and tool calls that make up the v0.1 governed-write
+loop — useful if you're working *on* VaultLedger itself, or just want to see
+each moving part: init a vault, wire an agent to it over MCP, remember and
 recall a fact, check status, approve a queued edit, and undo a transaction.
 (This is also, almost verbatim, what `packages/mcp-server/test/v01-gate.e2e.test.ts`
-asserts end-to-end — the "2-minute walkthrough" and the release gate are the
-same loop.)
+asserts end-to-end — this walkthrough and the release gate are the same loop.)
 
 **1. Install and build**
 
@@ -67,7 +93,9 @@ pnpm build
 ```
 
 This builds `@vaultledger/core`, `@vaultledger/cli` (the `ledger` bin), and
-`@vaultledger/mcp-server` (the `vaultledger-mcp` bin) via `tsc --build`.
+`@vaultledger/mcp-server` (the `vaultledger-mcp` bin) via `tsc --build`. (`pnpm
+bootstrap` does this plus the Obsidian plugin build plus the bin-link fixup
+below, in one command — see [Quickstart](#quickstart).)
 
 > **Invoking `ledger`:** pnpm links the `ledger` bin from
 > `packages/cli/dist/index.js`, which doesn't exist until `pnpm build` runs — so
@@ -90,11 +118,14 @@ manifest: `trusted` / `agent` / `scratch` / `excluded` globs), and runs `git
 init` if the vault isn't already a git repo. Every other file in the vault —
 your existing notes — is left byte-for-byte untouched; `.ledger/` (plus the
 agent zone it points at, typically `Agent/`) is VaultLedger's only footprint.
+(`ledger setup` wraps this same scan-then-prompt flow — see Quickstart.)
 
 **3. Wire an agent to it over MCP**
 
 Point an MCP-capable client at the built server binary, passing the vault as
-`--vault`. See [`packages/mcp-server/examples/mcp.json`](packages/mcp-server/examples/mcp.json):
+`--vault`. (`ledger setup` — or `ledger setup --write-mcp <path>` — generates
+this block for you; see [`packages/mcp-server/examples/mcp.json`](packages/mcp-server/examples/mcp.json)
+for a static example):
 
 ```json
 {
@@ -109,9 +140,9 @@ Point an MCP-capable client at the built server binary, passing the vault as
 
 Running straight out of this repo, `node <repo>/packages/mcp-server/dist/index.js`
 is the reliable invocation (the bare `vaultledger-mcp` bin only resolves once the
-package is globally installed/linked). The server exposes 7 tools: `memory_recall`, `memory_remember`,
-`memory_revise`, `memory_promote`, `memory_forget`, `vault_propose_edit`, and
-`ledger_status`.
+package is globally installed/linked). The server exposes 9 tools: `memory_recall`,
+`memory_remember`, `memory_distill`, `memory_revise`, `memory_promote`,
+`memory_forget`, `memory_retire`, `vault_propose_edit`, and `ledger_status`.
 
 **4. Remember, then recall**
 
@@ -198,14 +229,16 @@ index.
 **2. Install the plugin**
 
 ```sh
-pnpm -C packages/obsidian-plugin build         # produces main.js
+ledger setup /absolute/path/to/your/vault --install-plugin
 ```
 
-Copy `packages/obsidian-plugin/manifest.json` and `main.js` into
-`<vault>/.obsidian/plugins/vaultledger/`, then enable **VaultLedger** in
-Obsidian's Community Plugins settings. (See
-[`packages/obsidian-plugin/SMOKE.md`](packages/obsidian-plugin/SMOKE.md) for the
-manual verification checklist.)
+Builds happen as part of `pnpm bootstrap`; `--install-plugin` copies
+`manifest.json` + `main.js` into `<vault>/.obsidian/plugins/vaultledger/`.
+Copying doesn't activate it — finish in Obsidian: **Settings → Community
+plugins** → turn off Restricted mode if it's on → enable **VaultLedger**.
+(Building the plugin manually is still `pnpm -C packages/obsidian-plugin
+build`; see [`packages/obsidian-plugin/SMOKE.md`](packages/obsidian-plugin/SMOKE.md)
+for the manual verification checklist.)
 
 **3. Use it**
 
@@ -280,7 +313,7 @@ automatically. Embedding/LLM-assisted detection is a later milestone; the
   (extract → detect → match → check) + the `conflicts/` queue: a precision-first,
   lineage-aware, pluggable detector run non-blocking on every write.
 - [`packages/mcp-server`](packages/mcp-server) — the `vaultledger-mcp` bin: the
-  7 MCP tools listed above, wired over stdio via the official MCP SDK.
+  9 MCP tools listed above, wired over stdio via the official MCP SDK.
 - [`packages/server`](packages/server) — **(v0.2)** the fastify bridge behind
   `ledger serve`: token-authed, loopback-only HTTP over the core, the plugin's
   only backend.
@@ -310,7 +343,11 @@ index).
 - **v0.3a** — write-time contradiction detection + conflicts queue (CLI / bridge /
   plugin); reindex/reconcile hardening. ✅
 - **v0.3b** — the Undertow merge: `memory_distill`/`memory_retire`, source
-  relations, source-linked staleness, promotion rules, memory-health report.
+  relations, source-linked staleness, promotion rules, memory-health report. ✅
+- **v0.4** — onboarding & setup: `ledger setup` (interactive zone review,
+  Claude Code MCP config emit/merge, a real-subprocess smoke check, opt-in
+  `--install-plugin`), `pnpm bootstrap`, [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md).
+  In progress.
 - **v1.0** — polish, packaged installers, community-plugin submission, guides.
 
 ## License

@@ -11,6 +11,9 @@ importers:
       '@types/node':
         specifier: ^22.5.0
         version: 22.20.0
+      '@vaultledger/cli':
+        specifier: workspace:*
+        version: link:packages/cli
       eslint:
         specifier: ^9.10.0
         version: 9.39.4
@@ -26,9 +29,18 @@ importers:
 
   packages/cli:
     dependencies:
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.0.0
+        version: 1.29.0(zod@3.25.76)
       '@vaultledger/core':
         specifier: workspace:*
         version: link:../core
+      '@vaultledger/mcp-server':
+        specifier: workspace:*
+        version: link:../mcp-server
+      '@vaultledger/obsidian-plugin':
+        specifier: workspace:*
+        version: link:../obsidian-plugin
       '@vaultledger/server':
         specifier: workspace:*
         version: link:../server

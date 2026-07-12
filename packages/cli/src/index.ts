@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { pathToFileURL } from "node:url";
+import { resolvesToThisModule } from "@vaultledger/core";
 import { Command } from "commander";
 import { approveCommand } from "./commands/approve.js";
 import { auditCommand } from "./commands/audit.js";
@@ -9,6 +9,7 @@ import { initCommand } from "./commands/init.js";
 import { logCommand } from "./commands/log.js";
 import { reindexCommand } from "./commands/reindex.js";
 import { serveCommand } from "./commands/serve.js";
+import { defaultSteps, setupCommand } from "./commands/setup.js";
 import { statusCommand } from "./commands/status.js";
 import { undoCommand } from "./commands/undo.js";
 
@@ -26,6 +27,7 @@ export { initCommand, type InitOptions, type InitResult } from "./commands/init.
 export { logCommand, type LogFilters } from "./commands/log.js";
 export { reindexCommand } from "./commands/reindex.js";
 export { serveCommand, type ServeOptions, type ServeHandle } from "./commands/serve.js";
+export { defaultSteps, setupCommand } from "./commands/setup.js";
 export { statusCommand, type StatusResult } from "./commands/status.js";
 export { undoCommand, type UndoOptions, type UndoCommandResult } from "./commands/undo.js";
 export { loadContext, type LedgerContext, type LoadContextDeps } from "./context.js";
@@ -241,6 +243,34 @@ export function buildProgram(): Command {
     });
 
   program
+    .command("setup <vaultDir>")
+    .description("onboard a vault: init, wire Claude Code MCP, verify, (optionally) install the plugin")
+    .option("-y, --yes", "auto-confirm the zone manifest (skip the prompt)", false)
+    .option("--write-mcp <path>", "merge the Claude Code MCP config into <path> instead of printing it")
+    .option("--install-plugin", "copy the Obsidian review plugin into <vault>/.obsidian/plugins/", false)
+    .option("--json", "emit StepResult[] as JSON", false)
+    .action(
+      async (
+        vaultDir: string,
+        opts: { yes: boolean; writeMcp?: string; installPlugin: boolean; json: boolean },
+      ) => {
+        try {
+          const results = await setupCommand(
+            vaultDir,
+            { yes: opts.yes, writeMcp: opts.writeMcp, installPlugin: opts.installPlugin, json: opts.json },
+            defaultSteps(),
+            {},
+          );
+          if (results.some((r) => r.state === "failed")) {
+            process.exitCode = 1;
+          }
+        } catch (e) {
+          reportError(e);
+        }
+      },
+    );
+
+  program
     .command("undo <vaultDir> <target>")
     .description("revert a transaction id, or every transaction for session:<id>")
     .action(async (vaultDir: string, target: string) => {
@@ -272,11 +302,11 @@ export async function run(argv?: string[]): Promise<void> {
 }
 
 // Only auto-run when this module is the process's actual entry point (the
-// installed `ledger` bin), never when imported by tests. Compares via
-// pathToFileURL (not a bare `file://${process.argv[1]}` template) so this
-// still matches when the path contains characters (spaces, unicode, ...)
-// that import.meta.url percent-encodes.
-const isMainModule = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+// installed `ledger` bin), never when imported by tests. See
+// `resolvesToThisModule` in `@vaultledger/core` (hoisted there since
+// `packages/mcp-server/src/index.ts` needs the identical symlink-aware guard)
+// for the pnpm-bin-shim / realpath rationale.
+const isMainModule = resolvesToThisModule(process.argv[1], import.meta.url);
 if (isMainModule) {
   void run();
 }

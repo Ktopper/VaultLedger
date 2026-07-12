@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema, type CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { resolvesToThisModule } from "@vaultledger/core";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { loadServerContext, type ServerContext } from "./context.js";
 import { buildTools, type ToolDef } from "./tools.js";
@@ -105,9 +105,20 @@ export function parseVaultArg(argv: string[]): string {
   return resolve(value);
 }
 
+/** Extract the `--no-sweep` flag (design: pairs with `LoadServerContextDeps.
+ * skipSweep` — `ledger setup`'s smoke check spawns the real server and must
+ * verify it without the startup TTL sweep mutating the vault). Orthogonal to
+ * `--vault`: presence/position of one must never affect parsing of the
+ * other. Exported for unit testing. */
+export function parseNoSweep(argv: string[]): boolean {
+  return argv.includes("--no-sweep");
+}
+
 async function main(): Promise<void> {
-  const vaultRoot = parseVaultArg(process.argv.slice(2));
-  const ctx = await loadServerContext(vaultRoot);
+  const argv = process.argv.slice(2);
+  const vaultRoot = parseVaultArg(argv);
+  const skipSweep = parseNoSweep(argv);
+  const ctx = await loadServerContext(vaultRoot, { skipSweep });
 
   let server: Server;
   try {
@@ -140,14 +151,10 @@ async function main(): Promise<void> {
 
 // Only run main() when this file is the process entrypoint (the `bin`
 // script), not when a test imports `createServer`/`listToolNames`/
-// `parseVaultArg` from it. Compares via pathToFileURL (not a bare
-// `file://${process.argv[1]}` template) so this still matches when the path
-// contains characters (spaces, unicode, ...) that import.meta.url
-// percent-encodes — a bare template-literal comparison would silently never
-// match (and so never run main()) for any install/vault path containing a
-// space, which is common enough (this very repo's path included) to be a
-// real bug rather than a hypothetical one.
-const isMainModule = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+// `parseVaultArg` from it. See `resolvesToThisModule` in `@vaultledger/core`
+// (hoisted there since `packages/cli/src/index.ts` needs the identical
+// symlink-aware guard) for the pathToFileURL / realpath rationale.
+const isMainModule = resolvesToThisModule(process.argv[1], import.meta.url);
 if (isMainModule) {
   main().catch((e) => {
     console.error(e instanceof Error ? e.message : String(e));
