@@ -165,9 +165,18 @@ async function main(): Promise<void> {
 // installed `vaultledger-mcp` bin, mirroring the same gotcha fixed in
 // packages/cli/src/index.ts): import.meta.url resolves to the real path,
 // argv[1] keeps the symlinked one, and pathToFileURL alone never reconciles
-// them.
-const isMainModule =
-  process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
+// them. The realpathSync is wrapped so a defined-but-nonexistent argv[1]
+// (ENOENT) degrades to `false` rather than crashing the module at import
+// time — importing this file must never throw.
+function resolvesToThisModule(argv1: string | undefined): boolean {
+  if (argv1 === undefined) return false;
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(argv1)).href;
+  } catch {
+    return false;
+  }
+}
+const isMainModule = resolvesToThisModule(process.argv[1]);
 if (isMainModule) {
   main().catch((e) => {
     console.error(e instanceof Error ? e.message : String(e));

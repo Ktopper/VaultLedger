@@ -117,8 +117,8 @@ export function defaultSteps(): SetupSteps {
           out(printableBlock(vault, entry));
           const reason =
             merged.reason === "unparseable"
-              ? "is not valid JSON"
-              : "does not contain a JSON object at its top level";
+              ? "is not valid JSON (unparseable)"
+              : "does not contain a top-level JSON object (not-an-object)";
           return {
             entry,
             result: {

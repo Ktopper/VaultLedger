@@ -317,8 +317,19 @@ export async function run(argv?: string[]): Promise<void> {
 // installed, runs, and exits 0 having done nothing). Resolving argv[1]'s
 // realpath first makes both sides agree in exactly the deployment shape
 // `pnpm bootstrap` produces.
-const isMainModule =
-  process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
+//
+// The realpathSync is wrapped so a defined-but-nonexistent argv[1] (which
+// makes realpathSync throw ENOENT) degrades to `false` rather than crashing
+// the module at import time — importing this file must never throw.
+function resolvesToThisModule(argv1: string | undefined): boolean {
+  if (argv1 === undefined) return false;
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(argv1)).href;
+  } catch {
+    return false;
+  }
+}
+const isMainModule = resolvesToThisModule(process.argv[1]);
 if (isMainModule) {
   void run();
 }
