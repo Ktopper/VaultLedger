@@ -1,5 +1,5 @@
 import { createRequire } from "node:module";
-import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 /**
@@ -49,10 +49,16 @@ export function buildMcpConfig(vault: string, entry: string): McpConfig {
 
 export type MergeResult =
   | { ok: true; text: string; state: "created" | "updated" }
-  | { ok: false; reason: "unparseable" };
+  | { ok: false; reason: "unparseable" | "not-an-object" };
 
+/** Serialize with 2-space indent and a trailing LF. Output is ALWAYS
+ * LF-newline (JSON.stringify emits no CR), independent of host platform. */
 function serialize(o: unknown): string {
   return JSON.stringify(o, null, 2) + "\n";
+}
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return v !== null && typeof v === "object" && !Array.isArray(v);
 }
 
 /**
@@ -62,11 +68,17 @@ function serialize(o: unknown): string {
  * input.
  *
  * - `existingText === null` → no file yet, create fresh (`state:"created"`).
- * - Existing text that isn't valid JSON → `ok:false` (caller must not
- *   overwrite an existing file it can't understand).
+ * - Existing text that isn't valid JSON → `ok:false, reason:"unparseable"`
+ *   (caller must not overwrite an existing file it can't understand).
+ * - Existing text that parses but is NOT a plain object (array / scalar /
+ *   `null` literal) → `ok:false, reason:"not-an-object"`. We refuse rather
+ *   than default to `{}`, because defaulting would silently DROP that payload
+ *   when the caller writes our result over the real file.
  * - Otherwise: parse, preserve every top-level key of the parsed object via
- *   spread, preserve every existing `mcpServers` entry via spread, and only
- *   ever write/replace the single `vaultledger` key.
+ *   spread, preserve every existing `mcpServers` entry via spread, and
+ *   deep-merge our `{command,args}` INTO the existing `vaultledger` object so
+ *   the user's extra fields (`env`, `disabled`, …) survive while our path
+ *   fields win.
  */
 export function mergeMcpConfig(existingText: string | null, vault: string, entry: string): MergeResult {
   const ours = buildMcpConfig(vault, entry).mcpServers.vaultledger;
@@ -82,27 +94,40 @@ export function mergeMcpConfig(existingText: string | null, vault: string, entry
     return { ok: false, reason: "unparseable" };
   }
 
-  const parsedObj: Record<string, unknown> =
-    parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
+  if (!isPlainObject(parsed)) {
+    return { ok: false, reason: "not-an-object" };
+  }
+  const parsedObj = parsed;
 
   const rawServers = parsedObj.mcpServers;
-  const servers: Record<string, unknown> =
-    rawServers !== null && typeof rawServers === "object" && !Array.isArray(rawServers)
-      ? (rawServers as Record<string, unknown>)
-      : {};
+  const servers: Record<string, unknown> = isPlainObject(rawServers) ? rawServers : {};
 
   const had = Object.prototype.hasOwnProperty.call(servers, "vaultledger");
-  const merged = { ...parsedObj, mcpServers: { ...servers, vaultledger: ours } };
+  // Deep-merge: keep the user's extra keys on the existing vaultledger entry
+  // (env secrets, disabled flag, …); our command/args overwrite (the entry
+  // path may have changed). Only spread the existing entry if it's an object.
+  const existingEntry = servers.vaultledger;
+  const mergedEntry = isPlainObject(existingEntry) ? { ...existingEntry, ...ours } : ours;
+  const merged = { ...parsedObj, mcpServers: { ...servers, vaultledger: mergedEntry } };
 
   return { ok: true, state: had ? "updated" : "created", text: serialize(merged) };
 }
 
 /** Atomically write `text` to `path`: create parent directories as needed,
  * write to a sibling `.tmp` file, then rename over the destination so a
- * crash mid-write never leaves a half-written config in place. */
+ * crash mid-write never leaves a half-written config in place.
+ *
+ * temp+rename swaps inodes, so a fresh `.tmp` created with the default umask
+ * would loosen a restrictive mode on the existing target (a `.mcp.json` can
+ * hold sibling servers' `env` secrets and may be chmod'd 600). If the target
+ * already exists, copy its mode onto the temp file before the rename. On a
+ * fresh create we leave the default mode. */
 export function writeMcpConfig(path: string, text: string): void {
   mkdirSync(dirname(path), { recursive: true });
   const tmpPath = path + ".tmp";
   writeFileSync(tmpPath, text, "utf8");
+  if (existsSync(path)) {
+    chmodSync(tmpPath, statSync(path).mode & 0o777);
+  }
   renameSync(tmpPath, path);
 }

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
@@ -80,6 +80,48 @@ describe("mergeMcpConfig", () => {
     expect(result).toEqual({ ok: false, reason: "unparseable" });
   });
 
+  test("valid-JSON-but-not-an-object refuses rather than destroying the file", () => {
+    // Each of these parses fine but is NOT a plain object. Merging into `{}`
+    // would silently drop the payload; the caller trusting ok:true would then
+    // writeMcpConfig over the real file. Refuse instead.
+    const cases: string[] = [
+      JSON.stringify([1, 2, 3]),
+      "42",
+      JSON.stringify("hello-sentinel"),
+      "null",
+    ];
+    for (const existing of cases) {
+      const result = mergeMcpConfig(existing, "/v", "/e");
+      expect(result).toEqual({ ok: false, reason: "not-an-object" });
+      // Belt-and-suspenders: no result text was produced at all.
+      expect("text" in result).toBe(false);
+    }
+  });
+
+  test("existing vaultledger extra fields (env, disabled) survive; command/args overwritten", () => {
+    const existing = JSON.stringify({
+      mcpServers: {
+        vaultledger: {
+          command: "node",
+          args: ["/stale-entry", "--vault", "/stale-vault"],
+          env: { SECRET: "1" },
+          disabled: true,
+        },
+      },
+    });
+    const result = mergeMcpConfig(existing, "/v", "/e");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.state).toBe("updated");
+    const parsed = JSON.parse(result.text);
+    expect(parsed.mcpServers.vaultledger).toEqual({
+      command: "node",
+      args: ["/e", "--vault", "/v"],
+      env: { SECRET: "1" },
+      disabled: true,
+    });
+  });
+
   test("mcpServers missing entirely: adds it, keeps other keys, state created", () => {
     const existing = JSON.stringify({ foo: 1 });
     const result = mergeMcpConfig(existing, "/v", "/e");
@@ -122,6 +164,19 @@ describe("writeMcpConfig", () => {
     writeFileSync(path, "old content", "utf8");
     writeMcpConfig(path, '{"fresh":true}\n');
     expect(readFileSync(path, "utf8")).toBe('{"fresh":true}\n');
+    expect(existsSync(path + ".tmp")).toBe(false);
+  });
+
+  test("preserves restrictive file mode on overwrite (temp+rename must not loosen 0o600)", () => {
+    dir = mkdtempSync(join(tmpdir(), "vl-mcp-config-"));
+    const path = join(dir, ".mcp.json");
+    mkdirSync(dir, { recursive: true });
+    // A config holding sibling servers' env secrets may be chmod'd 600.
+    writeFileSync(path, "old content", "utf8");
+    chmodSync(path, 0o600);
+    writeMcpConfig(path, '{"fresh":true}\n');
+    const mode = statSync(path).mode & 0o777;
+    expect(mode).toBe(0o600);
     expect(existsSync(path + ".tmp")).toBe(false);
   });
 });
