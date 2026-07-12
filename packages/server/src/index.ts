@@ -1,4 +1,4 @@
-export const VERSION = "0.3.0";
+export const VERSION = "0.4.0";
 
 export { buildBridge } from "./app.js";
 export { startBridge, type RunningBridge, type StartBridgeOptions } from "./start.js";

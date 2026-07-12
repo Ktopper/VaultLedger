@@ -46,7 +46,7 @@ function reportError(e: unknown): void {
 export function buildProgram(): Command {
   const program = new Command();
   // Keep in sync with packages/cli/package.json "version".
-  program.name("ledger").description("VaultLedger CLI").version("0.3.0");
+  program.name("ledger").description("VaultLedger CLI").version("0.4.0");
 
   program
     .command("init <vaultDir>")
@@ -301,12 +301,27 @@ export async function run(argv?: string[]): Promise<void> {
   }
 }
 
-// Only auto-run when this module is the process's actual entry point (the
-// installed `ledger` bin), never when imported by tests. See
+/**
+ * Exported process entry point, invoked by the committed bin launcher
+ * (`packages/cli/bin/ledger.mjs`). The launcher imports `dist/index.js` as a
+ * module rather than executing it as the process's main script, so
+ * `process.argv[1]` is the LAUNCHER's path, not this file's — the
+ * `isMainModule` guard below is (correctly) false in that case, and `main()`
+ * must be called explicitly instead. `run()` with no argument parses the
+ * real `process.argv`, exactly like the direct-invocation path.
+ */
+export async function main(): Promise<void> {
+  await run();
+}
+
+// Only auto-run when this module is the process's actual entry point (e.g.
+// `node dist/index.js` invoked directly), never when imported by tests OR by
+// the bin launcher (which calls the exported `main()` above instead — see its
+// doc comment for why this guard is false in that case). See
 // `resolvesToThisModule` in `@vaultledger/core` (hoisted there since
 // `packages/mcp-server/src/index.ts` needs the identical symlink-aware guard)
 // for the pnpm-bin-shim / realpath rationale.
 const isMainModule = resolvesToThisModule(process.argv[1], import.meta.url);
 if (isMainModule) {
-  void run();
+  void main();
 }

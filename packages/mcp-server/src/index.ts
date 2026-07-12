@@ -10,7 +10,7 @@ import { buildTools, type ToolDef } from "./tools.js";
 
 const SERVER_NAME = "vaultledger-mcp";
 // Keep in sync with packages/mcp-server/package.json "version".
-const SERVER_VERSION = "0.3.0";
+const SERVER_VERSION = "0.4.0";
 
 /** Static tool-name list, independent of any ServerContext — used by the
  * placeholder smoke test and anything that just wants the tool surface
@@ -114,7 +114,15 @@ export function parseNoSweep(argv: string[]): boolean {
   return argv.includes("--no-sweep");
 }
 
-async function main(): Promise<void> {
+/**
+ * Process entry point. Exported (not just declared) so the committed bin
+ * launcher (`packages/mcp-server/bin/vaultledger-mcp.mjs`) can call it
+ * explicitly: the launcher imports this module rather than executing it as
+ * the process's main script, so `process.argv[1]` is the launcher's path,
+ * not this file's — the `isMainModule` guard below is (correctly) false in
+ * that case, and this function must be invoked directly instead.
+ */
+export async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const vaultRoot = parseVaultArg(argv);
   const skipSweep = parseNoSweep(argv);

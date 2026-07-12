@@ -24,6 +24,13 @@ these two things installed first:
 corepack enable pnpm
 ```
 
+If that fails with an `EACCES` permission error (happens on some
+system-Node installs), fall back to installing pnpm directly:
+
+```sh
+npm install -g pnpm
+```
+
 ## 1. Clone and bootstrap
 
 ```sh
@@ -32,24 +39,28 @@ cd VaultLedger
 pnpm bootstrap
 ```
 
-`pnpm bootstrap` runs everything in one shot: installs dependencies, builds
-`@vaultledger/core`/`cli`/`mcp-server` (`tsc --build`), builds the Obsidian
-plugin (a separate esbuild step — the plugin's `main.js` is gitignored and
-`tsc --build` doesn't produce it), then re-runs `pnpm install` once more so
-pnpm links the `ledger` bin now that `packages/cli/dist/` exists. (The bin
-link is skipped on the very first `install` because `dist/` doesn't exist
-yet — that's the one bit of install-order trivia this command exists to hide.)
+`pnpm bootstrap` runs everything in one shot: installs dependencies (which
+also links the `ledger`/`vaultledger-mcp` bins — they're committed launcher
+scripts, so pnpm links them on the very first `install`, before anything is
+built), builds `@vaultledger/core`/`cli`/`mcp-server` (`tsc --build`), then
+builds the Obsidian plugin (a separate esbuild step — the plugin's `main.js`
+is gitignored and `tsc --build` doesn't produce it).
 
 Confirm it worked:
 
 ```sh
-ledger --version
+pnpm exec ledger --version
 ```
+
+A workspace bin like `ledger` isn't on your shell's `PATH` by itself — `pnpm
+exec` is what finds it (from the repo root; it resolves via the root
+`node_modules/.bin`). If you'd rather type a bare `ledger`, either run
+`pnpm -C packages/cli link --global` once, or add a shell alias.
 
 ## 2. Run `ledger setup` against your vault
 
 ```sh
-ledger setup /path/to/your/vault
+pnpm exec ledger setup /path/to/your/vault
 ```
 
 Point it at an existing Obsidian vault (or any folder of markdown — Obsidian
@@ -63,18 +74,19 @@ Write this zone manifest? [y/N]
 This is the moment worth reading, not skipping past. VaultLedger divides
 your vault into zones — trusted (agent can propose edits, you approve them),
 agent (the agent's own memory notes), scratch (short-lived agent notes), and
-excluded (the agent never reads or writes these at all). A vault with a
-`Private/` folder gets a proposed manifest like:
+excluded (the agent never reads or writes these at all). `.obsidian/**` (your
+Obsidian app config/plugins folder — never notes) is always excluded; a vault
+that also has a `Private/` folder gets a proposed manifest like:
 
 ```
-Proposed zones: trusted=[**] agent=[Agent/**] scratch=[Agent/Scratch/**] excluded=[Private/**]
+Proposed zones: trusted=[**] agent=[Agent/**] scratch=[Agent/Scratch/**] excluded=[.obsidian/**,Private/**]
 ```
 
-`Private/` excluded, everything else trusted — that's the actual
-auditability boundary VaultLedger enforces in code, not a suggestion in a
-prompt. Answer `y` once you're happy with it (or edit `.ledger/permissions.yaml`
-by hand afterward — it's just YAML). Scripting or re-running non-interactively?
-Pass `--yes` to auto-confirm.
+`.obsidian/` and `Private/` excluded, everything else trusted — that's the
+actual auditability boundary VaultLedger enforces in code, not a suggestion in
+a prompt. Answer `y` once you're happy with it (or edit
+`.ledger/permissions.yaml` by hand afterward — it's just YAML). Scripting or
+re-running non-interactively? Pass `--yes` to auto-confirm.
 
 ## 3. The green line is the verification
 
@@ -113,7 +125,7 @@ merges into an existing file rather than clobbering it, so any other MCP
 servers you've already configured are untouched:
 
 ```sh
-ledger setup /path/to/your/vault --write-mcp ./.mcp.json
+pnpm exec ledger setup /path/to/your/vault --write-mcp ./.mcp.json
 ```
 
 **Restart Claude Code** so it picks up the new server.
@@ -121,7 +133,7 @@ ledger setup /path/to/your/vault --write-mcp ./.mcp.json
 ## 5. Install the review plugin (optional but recommended)
 
 ```sh
-ledger setup /path/to/your/vault --install-plugin
+pnpm exec ledger setup /path/to/your/vault --install-plugin
 ```
 
 This copies the built Obsidian plugin into
@@ -154,12 +166,12 @@ actually restarted) first — VaultLedger itself already proved it works.
 
 - [README](../README.md) — full architecture, the review surface, and
   contradiction detection.
-- `ledger status /path/to/your/vault` — zones, pending approvals, recent
-  transactions.
-- `ledger approve /path/to/your/vault` — review and approve/reject queued
-  trusted-zone edits.
-- `ledger conflicts /path/to/your/vault` — contradictions the agent's writes
-  have flagged.
+- `pnpm exec ledger status /path/to/your/vault` — zones, pending approvals,
+  recent transactions.
+- `pnpm exec ledger approve /path/to/your/vault` — review and approve/reject
+  queued trusted-zone edits.
+- `pnpm exec ledger conflicts /path/to/your/vault` — contradictions the
+  agent's writes have flagged.
 - Re-running `ledger setup` any time is safe and diagnostic: an
   already-initialized vault, current MCP config, and a healthy smoke check
   all report back as `already`/`verified` rather than re-doing anything.
