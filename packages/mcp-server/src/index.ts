@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -158,7 +159,15 @@ async function main(): Promise<void> {
 // match (and so never run main()) for any install/vault path containing a
 // space, which is common enough (this very repo's path included) to be a
 // real bug rather than a hypothetical one.
-const isMainModule = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+//
+// realpathSync on argv[1] is likewise load-bearing whenever this file is
+// launched through a workspace-linked symlink (e.g. a future globally
+// installed `vaultledger-mcp` bin, mirroring the same gotcha fixed in
+// packages/cli/src/index.ts): import.meta.url resolves to the real path,
+// argv[1] keeps the symlinked one, and pathToFileURL alone never reconciles
+// them.
+const isMainModule =
+  process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
 if (isMainModule) {
   main().catch((e) => {
     console.error(e instanceof Error ? e.message : String(e));

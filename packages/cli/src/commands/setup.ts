@@ -1,8 +1,11 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { configPath, readConfig } from "@vaultledger/core";
+import { buildMcpConfig, mergeMcpConfig, resolveMcpServerEntry, writeMcpConfig } from "../setup/mcpConfig.js";
+import { installPlugin } from "../setup/plugin.js";
 import { promptYesNo } from "../prompt.js";
 import { renderReport } from "../setup/report.js";
+import { smokeCheck } from "../setup/smoke.js";
 import type { SetupDeps, SetupOptions, SetupSteps, StepResult } from "../setup/types.js";
 import { initCommand } from "./init.js";
 
@@ -74,4 +77,67 @@ export async function setupCommand(
 
   renderResults(results, opts, out);
   return results;
+}
+
+/** Human-facing block for the print-by-default MCP step: a one-line pointer
+ * plus the pretty-printed config JSON the user pastes into their Claude Code
+ * `.mcp.json`. Pulled out of `defaultSteps` so both the print-by-default path
+ * and the `--write-mcp`-refused-to-merge path (which also prints the block as
+ * a fallback) render identically. */
+export function printableBlock(vault: string, entry: string): string {
+  const config = buildMcpConfig(vault, entry);
+  return [
+    "Paste this into your Claude Code MCP config (.mcp.json):",
+    "",
+    JSON.stringify(config, null, 2),
+  ].join("\n");
+}
+
+/**
+ * The real (non-fake) `SetupSteps` used by `ledger setup` in production:
+ * resolves the built mcp-server entry, prints-or-writes the MCP config,
+ * forwards to the real `smokeCheck`/`installPlugin`. WU-1..4 built the
+ * underlying units; this is the glue `setupCommand` was built against fakes
+ * for.
+ */
+export function defaultSteps(): SetupSteps {
+  return {
+    async configureMcp(vault, opts, out) {
+      const entry = resolveMcpServerEntry();
+      if (!entry) {
+        return {
+          entry: null,
+          result: { step: "mcp", state: "failed", detail: "mcp-server not built — run: pnpm bootstrap" },
+        };
+      }
+      if (opts.writeMcp) {
+        const existing = existsSync(opts.writeMcp) ? readFileSync(opts.writeMcp, "utf8") : null;
+        const merged = mergeMcpConfig(existing, vault, entry);
+        if (!merged.ok) {
+          out(printableBlock(vault, entry));
+          const reason =
+            merged.reason === "unparseable"
+              ? "is not valid JSON"
+              : "does not contain a JSON object at its top level";
+          return {
+            entry,
+            result: {
+              step: "mcp",
+              state: "failed",
+              detail: `${opts.writeMcp} ${reason} — pasted block above, merge manually`,
+            },
+          };
+        }
+        writeMcpConfig(opts.writeMcp, merged.text);
+        return { entry, result: { step: "mcp", state: merged.state, detail: `${merged.state} ${opts.writeMcp}` } };
+      }
+      out(printableBlock(vault, entry)); // print-by-default
+      return {
+        entry,
+        result: { step: "mcp", state: "created", detail: "printed config block (use --write-mcp <path> to write)" },
+      };
+    },
+    smoke: (vault, entry, env) => smokeCheck(vault, entry, env), // forward the env seam
+    installPlugin,
+  };
 }

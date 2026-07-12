@@ -11,6 +11,9 @@ importers:
       '@types/node':
         specifier: ^22.5.0
         version: 22.20.0
+      '@vaultledger/cli':
+        specifier: workspace:*
+        version: link:packages/cli
       eslint:
         specifier: ^9.10.0
         version: 9.39.4
