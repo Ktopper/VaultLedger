@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import * as YAML from "yaml";
 import {
   DEFAULT_LEDGER_CONFIG,
@@ -80,6 +80,14 @@ export async function initCommand(vaultDir: string, opts: InitOptions): Promise<
   const { profile, proposedManifest } = scanVault(vaultDir);
 
   describeProfile(profile, proposedManifest, out);
+
+  // Disclose the one in-vault footprint the zone manifest doesn't cover: if the
+  // vault isn't already a Git repo, init will create `.git/`. For a product
+  // whose whole pitch is "nothing happens to your vault without you knowing,"
+  // the tool must say this itself (before the confirm prompt), not only the docs.
+  if (!existsSync(join(vaultDir, ".git"))) {
+    out("Git: not a repository yet — setup will run `git init` here (this is what powers `ledger undo` rollback).");
+  }
 
   if (!opts.confirm) {
     return { created: false, profile, manifest: proposedManifest };
