@@ -35,6 +35,9 @@ importers:
       '@vaultledger/mcp-server':
         specifier: workspace:*
         version: link:../mcp-server
+      '@vaultledger/obsidian-plugin':
+        specifier: workspace:*
+        version: link:../obsidian-plugin
       '@vaultledger/server':
         specifier: workspace:*
         version: link:../server
