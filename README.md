@@ -73,9 +73,11 @@ vaultledger/
 - Patch-level edits only; whole-file rewrites are a broker rejection.
 - Every mutation is attributable: who, when, why, which session, which commit.
 - `.ledger/` is the only in-vault footprint of agent/broker writes besides the
-  agent zone. (The one sanctioned human-initiated exception: `ledger setup
-  --install-plugin` copies the review plugin into `<vault>/.obsidian/plugins/`
-  — an explicit opt-in flag, touching Obsidian config, never notes.)
+  agent zone. Two sanctioned, disclosed, human-initiated exceptions (never
+  touching notes): `ledger init`/`setup` runs `git init` if the vault isn't a
+  repo yet — that `.git/` history is what `ledger undo` rolls back — and
+  `ledger setup --install-plugin` copies the review plugin into
+  `<vault>/.obsidian/plugins/` (Obsidian config, opt-in flag).
 - Rollback of any transaction or entire session via `git revert`, with the
   memory journal kept consistent.
 

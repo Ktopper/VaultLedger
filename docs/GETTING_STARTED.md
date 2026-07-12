@@ -67,6 +67,14 @@ Point it at an existing Obsidian vault (or any folder of markdown — Obsidian
 itself isn't required to use VaultLedger). `setup` first **scans** the vault
 and prints what it found, then asks:
 
+> **One thing setup does to your folder:** if your vault isn't already a Git
+> repository, setup runs `git init` in it. That Git history *is* the rollback
+> mechanism — it's how `ledger undo` reverts an agent's change. The scan output
+> tells you when this will happen, before you confirm. Nothing else is touched:
+> besides `.git/`, VaultLedger's only footprint is the `.ledger/` folder (config
+> + zone manifest) and the agent zone; your existing notes are left byte-for-byte
+> alone.
+
 ```
 Write this zone manifest? [y/N]
 ```
@@ -94,8 +102,17 @@ After the zone prompt, `setup` prints a Claude Code MCP config block (see
 step 4) and then a closing line like:
 
 ```
-✓ smoke verified — 4 zone globs, journal healthy, 0 pending
+✓ smoke verified — 5 zone globs, journal healthy, 0 pending
 ```
+
+The exact counts depend on your vault (a vault with a `Private/` folder shows
+5 zone globs, one without shows 4; `pending` is however many trusted-zone
+edits are awaiting approval) — **what matters is the leading `✓` and
+`journal healthy`, not the specific numbers.** ("journal healthy" refers to
+VaultLedger's SQLite index, which lives in your OS application-support
+directory — *not* inside the vault — so you won't find it in `.ledger/`; the
+vault + Git remain the source of truth, and the journal is a disposable,
+rebuildable cache.)
 
 **That green line means VaultLedger is verified working.** It just spawned
 the real `vaultledger-mcp` server over stdio and called its `ledger_status`
