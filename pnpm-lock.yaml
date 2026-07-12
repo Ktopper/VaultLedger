@@ -29,6 +29,9 @@ importers:
       '@vaultledger/core':
         specifier: workspace:*
         version: link:../core
+      '@vaultledger/mcp-server':
+        specifier: workspace:*
+        version: link:../mcp-server
       '@vaultledger/server':
         specifier: workspace:*
         version: link:../server
