@@ -52,9 +52,11 @@ independently-testable units:
 - **`installPlugin`** — opt-in copy into `.obsidian/` (WU-4).
 
 Each step returns a **`StepResult`** `{ step, state, detail }` where `state ∈
-{created, already, updated, outdated, skipped, failed}`. The orchestrator renders
-these; a fresh run reads as progress, a re-run reads as a diagnostic (§WU-1).
-`--json` emits the `StepResult[]` verbatim for the e2e.
+{created, already, updated, outdated, skipped, verified, failed}` (`verified` is
+the smoke step's success state — it creates nothing, so it does not reuse
+`created`). The orchestrator renders these; a fresh run reads as progress, a
+re-run reads as a diagnostic (§WU-1). `--json` emits the `StepResult[]` verbatim
+for the e2e.
 
 **WU order:** WU-1 (skeleton + interactive init + report contract) first — it
 fixes the `StepResult` shape every later unit returns, so they're written against
@@ -86,8 +88,11 @@ prompt.
     VaultLedger is working — N zones, journal healthy, M pending`.
   - re-run (diagnostic-shaped): `· already initialized ✓ · MCP config current ✓ ·
     plugin outdated (0.3.0 → 0.4.0) → rerun with --install-plugin · smoke ✓`.
-- **Report always ends on the smoke result** (WU-3) — the green line is the "you
-  can stop reading now, it works" signal.
+- **Smoke is the closer for a default run** (WU-3) — its green line is the "you
+  can stop reading now, it works" signal. When `--install-plugin` is passed, the
+  plugin step and its mandatory manual-enable instructions render *after* smoke
+  (the last thing on screen is then the enable steps — correct, since that's the
+  remaining human action).
 
 **Error handling:** any step's hard failure sets `state:"failed"` with a
 one-line remediation in `detail`, the orchestrator prints the partial report and
@@ -104,6 +109,10 @@ resolution**, not repo-relative math: `createRequire(import.meta.url).resolve(
 `dist/index.js`). In the monorepo this resolves via the workspace symlink; under
 a future `npx vaultledger` it resolves via the installed dep — **same code, no
 rewrite when the distribution track lands.** Returns an **absolute** path.
+**Not-built guard:** if the resolve fails or `dist/index.js` doesn't exist
+(CLI built but server not, or `bootstrap` never run), return `state:"failed"`
+with the remediation `pnpm bootstrap` (or `pnpm -C packages/mcp-server build`) —
+symmetric with WU-4's plugin-not-built handling, never an unhandled throw.
 
 **`buildMcpConfig(vault, entry)`** — returns the Claude Code object:
 
@@ -121,7 +130,8 @@ repo's existing `pathToFileURL` care around the space-in-path gotcha).
 `.mcp.json`, or re-run with `--write-mcp <path>`." **`--write-mcp <path>`
 merges, never clobbers:**
 
-- Target absent → write the object.
+- Target absent → write the object (`mkdirp` the parent dir first, so
+  `--write-mcp ./some/new/.mcp.json` doesn't fail opaquely on a missing parent).
 - Target present + valid JSON → **merge** the `vaultledger` key into
   `mcpServers`, preserving every other server. Atomic write (temp + rename).
 - Target present + a *different* existing `vaultledger` entry → overwrite **only**
@@ -139,9 +149,11 @@ Global config (`~/.claude.json`) is **never** touched.
 
 After config generation, prove it end-to-end by **spawning the exact
 `command`+`args` we just emitted** (not an in-process core call), over stdio, with
-the MCP SDK client, and calling `ledger_status`.
+the MCP SDK client, and calling `ledger_status`. **New dependency:** `packages/cli`
+does not currently depend on `@modelcontextprotocol/sdk` (only `mcp-server` does)
+— add it as a `cli` dependency for the stdio client transport.
 
-- Success → `state:"created"`, `detail: "N zones, journal healthy, M pending"`
+- Success → `state:"verified"`, `detail: "N zones, journal healthy, M pending"`
   (read from the tool result), rendered as the green closing line.
 - Failure → `state:"failed"`, `detail` carries the captured **stderr** + the
   resolved entry path, so an F2 path error is diagnosed *at setup time* rather
@@ -157,10 +169,20 @@ just produced.
 
 ## WU-4 — `--install-plugin`: opt-in copy + a deliberate constitutional amendment
 
-`--install-plugin` copies the built plugin from the resolved
+`--install-plugin` copies the built plugin from the
 `@vaultledger/obsidian-plugin` package into
 `<vault>/.obsidian/plugins/vaultledger/`.
 
+- **Resolution (do NOT reuse the WU-2 recipe).** The plugin package is `private`
+  and deliberately has **no `main`/`exports`** (and no root `index.js`), so a
+  bare-specifier `resolve("@vaultledger/obsidian-plugin")` throws
+  `MODULE_NOT_FOUND`. Resolve the package **root** instead:
+  `dirname(createRequire(import.meta.url).resolve(
+  "@vaultledger/obsidian-plugin/package.json"))` — permitted precisely because
+  there's no `exports` gate on the subpath. Copy from that **package root**:
+  esbuild's `outfile` is root `main.js` and `manifest.json` sits at the root.
+  **Do not copy from `dist/`** — that's unrelated `tsc` output, not the plugin
+  bundle.
 - **Copy set:** `manifest.json` + `main.js` (what the build produces today), plus
   `styles.css` **only if present** — Obsidian's third standard file isn't emitted
   now, but copy-if-exists means adding styling later can't silently ship a broken
