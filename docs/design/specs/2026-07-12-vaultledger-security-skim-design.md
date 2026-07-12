@@ -23,26 +23,34 @@ fixes — nothing is fixed inline during the skim.
 
 ---
 
-## Scope — 7 work units, ordered by worry
+## Scope — 8 work units, ordered by worry
 
 Each WU is a focused investigation mapped to a real surface. Investigators record
 **every** finding (down to Info); severity/disposition handled per the rubric below.
 
 ### S1 — Concurrency & filesystem races (§12; **PoC-demonstrated, with negative controls**)
-- **TOCTOU** check→write: `assertContainedAndReadable` runs "before any fs
-  mutation" (`packages/core/src/broker/broker.ts:152`). Determine whether the
-  `vault.lock` cross-process lock makes check+write **atomic across all three
-  writers** (broker apply, `undo`, the bridge) or merely narrows the window — and
-  whether the hash-check (`expected_hash`) → write is inside the same lock hold.
+- **TOCTOU** check→write: `assertContainedAndReadable` is delegated via
+  `resolveAbs` (`packages/core/src/broker/broker.ts:221-222`) and runs before fs
+  mutation. The on-point anchor is the explicit `// v0.1 TOCTOU gap` comment in
+  `applyRevise` (`broker.ts:307-309`): determine whether the hash-check
+  (`expected_hash`) → write is inside the **same** `vault.lock` hold, and whether
+  the lock makes check+write **atomic across all three writers** (broker apply,
+  `undo`, the bridge) or merely narrows the window.
 - **Symlink race**: realpath containment then write — a swap between check and
   write is the classic bypass. Evaluate `O_NOFOLLOW`-style open flags and/or
   re-check-under-lock.
 - **Method — PoC with negative controls (the S1 analogue of red-before-green):**
   for each race, the harness must (a) reproduce corruption with the guard
   **disabled** — proving the harness *can* observe the failure — and (b) show
-  no corruption with the guard **in place**. A green "no corruption observed"
-  without the disable-and-see-it-fail control is recorded as **inconclusive**,
-  not "closed."
+  no corruption with the guard **in place**. Because race PoCs are
+  timing-dependent, a single run is insufficient: use either a **test-only
+  synchronization hook that deterministically forces the check→write window
+  open** (preferred — makes both controls deterministic), or failing that **N≥100
+  repeated trials with a stated pass threshold (zero corruptions)**. A green "no
+  corruption observed" that lacks the disable-and-see-it-fail control, or that
+  rests on a single lucky run, is recorded as **inconclusive**, not "closed."
+- **Inconclusive always escalates to the human**, regardless of the severity
+  otherwise assigned — it never falls into Low/Info batch-approval.
 
 ### S2 — Patch / lint integrity (§12)
 The markdownLint gap: `packages/core/src/broker/lint.ts` uses `matter()` parse
@@ -65,10 +73,13 @@ values can ever be attacker-influenced (reindex from a hostile vault?).
   (`!!js/*`, aliases/billion-laughs) on frontmatter; the `diff` parser on hostile
   patch text; oversized notes into `extract`/`reindex` (parser DoS).
 - **Resource bounds as a class (not just parsers):** the bridge has a
-  `bodyLimit`, but the **agent-facing MCP surface** (the primary attack path) and
-  the CLI have no equivalent. Assess input-size bounds on the write paths — a
-  giant `remember` content, thousands of `sources[]` in a `distill`, a
-  pathological patch. Same DoS family; the npx audience makes it real.
+  `bodyLimit` (`server/src/app.ts:134`), but the **agent-facing MCP surface** —
+  the primary attack path — has none: `memory_remember`/`memory_distill` take
+  bare `z.string()`/`z.array()` with no `.max()` (`mcp-server/src/tools.ts:67,111`).
+  Assess input-size bounds on the MCP write paths — a giant `remember` content,
+  thousands of `sources[]` in a `distill`, a pathological patch. (The CLI has no
+  free-content write command — write-content ops are MCP-only — so this is scoped
+  to MCP, not the CLI.) Same DoS family; the npx audience makes it real.
 
 ### S5 — Bridge re-skim under new surfaces
 Token/origin auth was tight at v0.2 — re-verify nothing since (conflicts routes,
@@ -89,6 +100,22 @@ Across everything added since the original zone tests: recall filters, staleness
 output, and the new `--json` step results. Any surface that could reveal
 excluded-zone content or paths.
 
+### S8 — Obsidian plugin: token handling + XSS-defense invariant (the "store" surface)
+The plugin (`packages/obsidian-plugin`) is the surface the opening line names as
+the publishing trigger, and it renders **agent-produced, vault-derived content**
+(diffs, notes, provenance, conflict details) inside Obsidian. Two properties to
+re-verify hold across the views added since v0.2 (`activity.ts`, `approvals.ts`,
+the conflicts tab):
+- **Token hygiene (client side):** the plugin holds the bridge bearer token
+  (`bridgeClient.ts`) — confirm it is never persisted via `saveData`, logged, or
+  written into a fixture; it should live only in memory / app-support.
+- **XSS-defense invariant:** `render.ts` states `innerHTML`/`insertAdjacentHTML`/
+  `outerHTML` are never used — only `textContent`/`createEl({text})` — and
+  `test/bundlePurity.test.ts` guards it. Verify every vault-derived string in the
+  view files routes through `textContent`/`createEl({text})`, never markup
+  interpolation, and that `bundlePurity.test.ts` still passes. A hostile
+  diff/note that reached `innerHTML` would be script execution inside Obsidian.
+
 ---
 
 ## Method
@@ -107,20 +134,38 @@ excluded-zone content or paths.
 
 ## Severity rubric & the disposition gate
 
-**Severity:** Critical / High / Medium / Low / Info, each with a one-line
-rationale. A finding is only **Critical/High** if its exploit scenario is
-concrete (and, for S1, PoC-demonstrated).
+**Severity — calibrated by (exploitability × impact), one criterion per tier so
+8 parallel investigators rank consistently:**
+- **Critical** — remote/agent-triggerable with no human step, leads to silent
+  data loss, containment escape (write/read outside the vault), or code execution.
+- **High** — concrete exploit exists but needs a precondition (a specific vault
+  shape, a race won under load, an approval); same impact classes as Critical.
+  For S1, High/Critical **requires a PoC** (per the negative-control method).
+- **Medium** — real weakness with a plausible but not-yet-demonstrated exploit,
+  or a DoS/availability issue, or a defense-in-depth gap on a path currently
+  guarded elsewhere.
+- **Low** — hardening / uniformity gap with no concrete exploit today (e.g. the
+  S3 unguarded read while `path` is journal-sourced).
+- **Info** — observation, no security consequence on its own.
 
 **Per-finding record fields:**
-`title · location (file:line) · description · exploit scenario / PoC result ·
-severity + rationale · recommended disposition (fix / accept-with-rationale) ·
-[after fix] outcome`.
+`ID (stable, e.g. VL-SEC-S1-01) · title · location (file:line) · description ·
+exploit scenario / PoC result · severity + rationale · recommended disposition
+(fix / accept-with-rationale) · [after fix] outcome`. The **stable ID** is the
+cross-reference key from the fix-batch plan and commit messages — it survives
+refactors that move the `file:line`.
 
 **Disposition gate has a severity floor (so sign-off stays meaningful):**
 - **Medium-and-up** → escalated to the human for **explicit fix/accept sign-off**.
 - **Low / Info** → carry a **recommended disposition** the human can
   **batch-approve or spot-check**. Info noise never competes with real risk for
   attention.
+- **Aggregation pass (before batching):** at findings-doc assembly, group related
+  Low/Info findings by shared surface or attack path (e.g. the S3 unguarded read
+  + any path-influence finding), and **promote the cluster to Medium** — i.e.
+  into the explicit-sign-off tier — if the *combined* risk is real. A severity
+  floor that reviews Lows only in isolation would miss risk that only exists in
+  aggregate; this pass is what closes that hole.
 
 **Accept-with-rationale requires an expiry condition (live record, not a
 snapshot):** every accepted risk names the **condition under which it stops being
@@ -141,8 +186,10 @@ docs). Sortable by severity; each finding carries the fields above.
 1. **Investigate** — parallel investigators per WU → structured findings; High/
    Critical adversarially verified; S1 PoCs (with negative controls) run.
 2. **Findings doc** assembled, severity-ranked.
-3. **Disposition gate** — Medium+ to the human for fix/accept sign-off (each
-   accept with an expiry condition); Low/Info batch-approved.
+3. **Disposition gate** — assembly runs the aggregation pass first (related Low/
+   Info clusters promoted to Medium if combined risk is real); then Medium+ (and
+   any **inconclusive** S1 result) go to the human for fix/accept sign-off (each
+   accept with an expiry condition); remaining Low/Info batch-approved.
 4. **Fix batch** — a `writing-plans` cycle over the fix-dispositioned items, then
    subagent-driven execution with two-stage review; each fix re-verified, and
    **S1 fixes re-run the kept PoC harness to prove closure** (both controls).
