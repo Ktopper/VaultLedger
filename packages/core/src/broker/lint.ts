@@ -222,7 +222,29 @@ function normalizeLedger(data: Record<string, unknown>): unknown {
  * set on it, so silently rewriting/removing it drops a belief from every
  * comparison — exactly the evasion this guard exists to stop. `tags` is
  * intentionally excluded: it is descriptive metadata that gates no behavior.
- * A non-string entity normalizes to `null` so "no entity" is comparable. */
+ * A non-string entity normalizes to `null` so "no entity" is comparable.
+ *
+ * VL-SEC-S2-04 — THE BOUNDARY IS INTENTIONAL, NOT AN OVERSIGHT: every OTHER
+ * frontmatter key (`deadline:`, `priority:`, any agent-defined custom key,
+ * `tags` per above) is deliberately UNGOVERNED. This is the fact-update
+ * model: an agent must be free to revise facts in its own memory's
+ * frontmatter (e.g. correcting a `deadline:`) WITHOUT triggering an approval
+ * requirement. The tempting-looking "fix" of widening this slice to cover
+ * all frontmatter would silently break that model — every routine fact edit
+ * would start demanding human approval. So do NOT add keys here to close a
+ * hypothetical gap unless a REAL governance/decision path (an approval-bypass
+ * gate, the entity comparison-set membership, or a status-transition decision
+ * — see `contradiction/matcher.ts`'s `DefaultEntityMatcher`, `memory/store.ts`'s
+ * `flipFrontmatterStatus`, `broker/undo.ts`'s status-from-ledger derivation)
+ * is found to key off that key. As of this writing, an audit of every
+ * frontmatter-parsing call site in `packages/core/src` confirms nothing does:
+ * the only OTHER frontmatter reads are `tags` (memory/reindex.ts, stored but
+ * never used for gating) and the intentionally-broad, NON-gating fact
+ * extraction in `contradiction/extract.ts` (feeds contradiction/staleness
+ * ADVISORY conflict detection, not approval decisions). See
+ * `governedSlice.driftInvariant` in lint.test.ts, which locks this fact down:
+ * it fails if a future change makes `governedProvenanceChanged` sensitive to
+ * some field other than `ledger`/`entity` without a matching update here. */
 function governedSlice(data: Record<string, unknown>): unknown {
   return {
     ledger: normalizeLedger(data),

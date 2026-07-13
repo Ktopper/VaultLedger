@@ -136,3 +136,71 @@ describe("governedProvenanceChanged", () => {
     expect(governedProvenanceChanged(base, after)).toBe(false);
   });
 });
+
+describe("governedSlice boundary (VL-SEC-S2-04 drift invariant)", () => {
+  // Locks the fact/governance boundary documented on `governedSlice` in
+  // lint.ts: the guard is deliberately narrow (only `ledger:` + top-level
+  // `entity`) so an agent can freely revise facts in its own memory's
+  // frontmatter without triggering an approval requirement. This is a REAL
+  // assertion, not a tautology against the implementation -- it drives the
+  // full parse+compare pipeline (governedProvenanceChanged) with a table of
+  // representative non-ledger/entity mutations (different key names, value
+  // types, additions, removals, and even top-level keys that LOOK
+  // governance-related) and asserts every one of them is a no-op for the
+  // guard. If a future change makes governance sensitive to any of these
+  // (e.g. someone starts reading a top-level `status`/`supersedes`, or the
+  // `deadline`/`priority`/custom-key fact-update model regresses), one of
+  // these cases flips to `true` and this test fails, forcing an explicit
+  // update to `governedSlice` (and its doc comment) rather than a silent
+  // widening or a silent gap.
+  const base =
+    "---\nledger:\n  status: working\n  supersedes: null\nentity: alice\ntitle: X\n---\n\nBody text.\n";
+
+  const nonGovernedMutations: Array<[name: string, after: string]> = [
+    ["a string fact key changes", base.replace("title: X", "title: Y")],
+    [
+      "a date-shaped fact is added",
+      base.replace("title: X", "title: X\ndeadline: 2026-08-15"),
+    ],
+    ["a numeric fact is added", base.replace("title: X", "title: X\npriority: 3")],
+    ["a boolean fact is added", base.replace("title: X", "title: X\narchived: false")],
+    [
+      "a nested/object custom key is added",
+      base.replace("title: X", "title: X\ncustom:\n  nested: value\n  list:\n    - a\n    - b"),
+    ],
+    ["an array fact is added", base.replace("title: X", "title: X\nwatchers:\n  - bob\n  - carol")],
+    ["a fact key is removed entirely", base.replace("title: X\n", "")],
+    // Canary: top-level keys that SHARE A NAME with governed sub-fields of
+    // `ledger:` but live OUTSIDE it must not be mistaken for the governed
+    // ones -- only `data.ledger.status`/`data.ledger.supersedes` are
+    // governed, never a same-named top-level key.
+    [
+      "a top-level `status` key (NOT inside ledger) is added",
+      base.replace("title: X", "title: X\nstatus: draft"),
+    ],
+    [
+      "a top-level `supersedes` key (NOT inside ledger) is added",
+      base.replace("title: X", "title: X\nsupersedes: mem_999"),
+    ],
+  ];
+
+  test.each(nonGovernedMutations)("does NOT flag when %s", (_name, after) => {
+    expect(governedProvenanceChanged(base, after)).toBe(false);
+  });
+
+  // Control: mirrors the same style of mutation but on an ACTUALLY governed
+  // field, proving the table above isn't vacuously passing (e.g. because
+  // governedProvenanceChanged always returned false for some unrelated
+  // reason).
+  const governedMutations: Array<[name: string, after: string]> = [
+    [
+      "ledger.status changes",
+      base.replace("status: working", "status: canonical"),
+    ],
+    ["top-level entity changes", base.replace("entity: alice", "entity: bob")],
+  ];
+
+  test.each(governedMutations)("DOES flag when %s (control)", (_name, after) => {
+    expect(governedProvenanceChanged(base, after)).toBe(true);
+  });
+});
