@@ -9,7 +9,7 @@
   "dependencies": {
     "@vaultledger/core": "workspace:*",
     "fastify": "^5.0.0",
-    "diff": "^7.0.0",
+    "diff": "^8.0.3",
     "gray-matter": "^4.0.3"
   },
   "devDependencies": {

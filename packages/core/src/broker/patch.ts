@@ -1,13 +1,18 @@
-import { applyPatch as diffApply, parsePatch, type Hunk } from "diff";
+import { applyPatch as diffApply, parsePatch, type StructuredPatchHunk } from "diff";
 import { BrokerError } from "../errors.js";
 
 /** Signature jsdiff's `applyPatch` calls per matchable hunk line — matches
- * `ApplyPatchOptions["compareLine"]` from `@types/diff`. Declared locally so
- * `deriveHunkLandings` doesn't need a broader import. */
+ * `ApplyPatchOptions["compareLine"]` from diff@8's own bundled types (diff@8
+ * ships its own `.d.ts`, so `@types/diff` is no longer consulted). `operation`
+ * widened from `"-" | " "` to `string` to match diff@8's own (looser)
+ * `compareLine` signature — jsdiff still only ever calls it with `"-"`/`" "`
+ * in practice, but the declared type is now wider, so ours must be at least
+ * as wide to remain assignable. Declared locally so `deriveHunkLandings`
+ * doesn't need a broader import. */
 type CompareLine = (
   lineNumber: number,
   line: string,
-  operation: "-" | " ",
+  operation: string,
   patchContent: string,
 ) => boolean;
 
@@ -18,7 +23,7 @@ type CompareLine = (
  * at end of file` marker line (leading `\`) matches neither branch and is
  * likewise skipped. See diff@7's `lib/patch/apply.js`.
  */
-function countMatchableLines(hunk: Hunk): number {
+function countMatchableLines(hunk: StructuredPatchHunk): number {
   let n = 0;
   for (const l of hunk.lines) {
     const op = l.length > 0 ? l[0] : " ";
@@ -54,7 +59,7 @@ function countMatchableLines(hunk: Hunk): number {
  * reached — e.g. an earlier hunk failed to apply at all).
  */
 function deriveHunkLandings(
-  hunks: readonly Hunk[],
+  hunks: readonly StructuredPatchHunk[],
   apply: (compareLine: CompareLine) => string | false,
 ): { result: string | false; landings: (number | null)[] } {
   const landings: (number | null)[] = new Array(hunks.length).fill(null);
