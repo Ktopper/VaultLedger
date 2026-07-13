@@ -70,7 +70,7 @@ describe("ttl sweep", () => {
     const journal = new Journal(db);
     const { now: clockNow, genId } = makeClock();
     const broker = new Broker({ vaultRoot, git, journal, manifest: MANIFEST, now: clockNow, genId });
-    const store = new MemoryStore({ broker, journal, now: clockNow, genId, vaultRoot });
+    const store = new MemoryStore({ broker, journal, now: clockNow, genId, vaultRoot, manifest: MANIFEST });
     return { store, journal, vaultRoot, clockNow, genId };
   }
 

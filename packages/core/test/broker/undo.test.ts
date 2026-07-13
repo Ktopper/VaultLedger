@@ -89,7 +89,7 @@ describe("undo", () => {
     const journal = new Journal(db);
     const { now, genId } = makeClock();
     const broker = new Broker({ vaultRoot, git, journal, manifest: MANIFEST, now, genId });
-    const store = new MemoryStore({ broker, journal, now, genId, vaultRoot });
+    const store = new MemoryStore({ broker, journal, now, genId, vaultRoot, manifest: MANIFEST });
     return { store, journal, git, vaultRoot, now, genId };
   }
 
@@ -439,7 +439,7 @@ describe("undo", () => {
     expect(bytesAfterUndo).toBe(preReviseBytes);
 
     // (b) recall STILL returns the memory — it did NOT vanish.
-    expect(recall(journal, {}, now).map((r) => r.id)).toContain(id);
+    expect(recall(journal, {}, now, MANIFEST).map((r) => r.id)).toContain(id);
 
     // (c) the memory row status is re-derived from the file's frontmatter
     // (still 'scratch' — the revise never touched status).
@@ -461,13 +461,13 @@ describe("undo", () => {
       reason: "seed",
       session: "s1",
     });
-    expect(recall(journal, {}, now).map((r) => r.id)).toContain(id);
+    expect(recall(journal, {}, now, MANIFEST).map((r) => r.id)).toContain(id);
 
     await undoTransaction({ git, journal, now, genId }, txnId);
 
     expect(await git.fileAtHead(path)).toBeNull();
     expect(journal.getMemory(id)!.status).toBe("reverted");
-    expect(recall(journal, {}, now).map((r) => r.id)).not.toContain(id);
+    expect(recall(journal, {}, now, MANIFEST).map((r) => r.id)).not.toContain(id);
   });
 
   test("undoing a CREATE transaction hides its open conflict via the both-sides-live filter (no proactive moot)", async () => {
@@ -577,7 +577,7 @@ describe("undo", () => {
     expect(onDisk.data.ledger.status).toBe("scratch");
     // ...and the memory row is re-derived from the file, not blindly reverted.
     expect(journal.getMemory(id)!.status).toBe("scratch");
-    expect(recall(journal, {}, now).map((r) => r.id)).toContain(id);
+    expect(recall(journal, {}, now, MANIFEST).map((r) => r.id)).toContain(id);
   });
 
   test("undoing a distill's CREATE transaction removes its memory_relations edges (no dangling edges)", async () => {

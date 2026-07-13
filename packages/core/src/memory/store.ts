@@ -9,6 +9,7 @@ import { BrokerError } from "../errors.js";
 import { checkContradictions } from "../contradiction/check.js";
 import { checkSourceStaleness, flagCitingDistillations } from "../contradiction/staleness.js";
 import type { Journal, MemoryRow } from "../journal/journal.js";
+import type { PermissionsManifest } from "../schemas/manifest.js";
 import type { Confidence, MemoryStatus } from "../schemas/provenance.js";
 
 type ConfidenceValue = z.infer<typeof Confidence>;
@@ -39,6 +40,11 @@ export interface MemoryStoreOptions {
   genId: (prefix: string) => string;
   /** Absolute path to the vault root (needed to hashFile the current note). */
   vaultRoot: string;
+  /** The vault's current permissions manifest (VL-SEC-S3-01/S7-02) — threaded
+   * straight into every `checkContradictions` call this store makes
+   * (remember/distill/revise), which requires it to containment/zone-gate
+   * the memory-file reads it performs post-commit. */
+  manifest: PermissionsManifest;
   /** Vault-relative directory new memory notes are created under. */
   agentDir?: string;
 }
@@ -214,6 +220,7 @@ export class MemoryStore {
   private readonly now: () => string;
   private readonly genId: (prefix: string) => string;
   private readonly vaultRoot: string;
+  private readonly manifest: PermissionsManifest;
   private readonly agentDir: string;
 
   constructor(opts: MemoryStoreOptions) {
@@ -222,6 +229,7 @@ export class MemoryStore {
     this.now = opts.now;
     this.genId = opts.genId;
     this.vaultRoot = opts.vaultRoot;
+    this.manifest = opts.manifest;
     this.agentDir = opts.agentDir ?? DEFAULT_AGENT_DIR;
   }
 
@@ -318,7 +326,13 @@ export class MemoryStore {
     // it reads the just-written file back off disk. Lock-free and
     // self-swallowing; see checkContradictions' own doc comment.
     checkContradictions(
-      { journal: this.journal, vaultRoot: this.vaultRoot, now: this.now, genId: this.genId },
+      {
+        journal: this.journal,
+        vaultRoot: this.vaultRoot,
+        manifest: this.manifest,
+        now: this.now,
+        genId: this.genId,
+      },
       id,
     );
 
@@ -460,7 +474,13 @@ export class MemoryStore {
     // Post-commit, non-blocking contradiction check (design v0.3a §5) — see
     // the matching call in `remember` for rationale.
     checkContradictions(
-      { journal: this.journal, vaultRoot: this.vaultRoot, now: this.now, genId: this.genId },
+      {
+        journal: this.journal,
+        vaultRoot: this.vaultRoot,
+        manifest: this.manifest,
+        now: this.now,
+        genId: this.genId,
+      },
       id,
     );
 
@@ -561,7 +581,13 @@ export class MemoryStore {
     // only propose_edit re-queues), so by here the patch is committed on disk
     // and the check reads the just-written note.
     checkContradictions(
-      { journal: this.journal, vaultRoot: this.vaultRoot, now: this.now, genId: this.genId },
+      {
+        journal: this.journal,
+        vaultRoot: this.vaultRoot,
+        manifest: this.manifest,
+        now: this.now,
+        genId: this.genId,
+      },
       input.id,
     );
 

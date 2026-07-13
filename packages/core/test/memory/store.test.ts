@@ -72,7 +72,7 @@ describe("MemoryStore", () => {
     const journal = new Journal(db);
     const { now, genId } = makeClock();
     const broker = new Broker({ vaultRoot, git, journal, manifest: MANIFEST, now, genId });
-    const store = new MemoryStore({ broker, journal, now, genId, vaultRoot });
+    const store = new MemoryStore({ broker, journal, now, genId, vaultRoot, manifest: MANIFEST });
     return { store, broker, journal, vaultRoot, git, now, genId };
   }
 
@@ -171,7 +171,7 @@ describe("MemoryStore", () => {
     });
     // Sanity: the memory is recallable and its file exists before undo.
     expect(existsSync(join(vaultRoot, path))).toBe(true);
-    expect(recall(journal, { entity: "alice" }, now).map((r) => r.id)).toContain(id);
+    expect(recall(journal, { entity: "alice" }, now, MANIFEST).map((r) => r.id)).toContain(id);
 
     await undoTransaction({ git, journal, now, genId }, txnId);
 
@@ -179,7 +179,7 @@ describe("MemoryStore", () => {
     expect(await git.fileAtHead(path)).toBeNull();
     // ...and the memory row is now 'reverted', so recall no longer returns it.
     expect(journal.getMemory(id)!.status).toBe("reverted");
-    expect(recall(journal, { entity: "alice" }, now).map((r) => r.id)).not.toContain(id);
+    expect(recall(journal, { entity: "alice" }, now, MANIFEST).map((r) => r.id)).not.toContain(id);
   });
 
   test("revise patches the note through the broker", async () => {
@@ -492,7 +492,7 @@ describe("MemoryStore", () => {
 
   test("a held canonical-revise, once approved, lands the patch and marks the approval approved", async () => {
     const { store, broker, journal, vaultRoot, now, genId } = await makeStore();
-    const approvals = new Approvals({ broker, store, journal, now, vaultRoot, genId });
+    const approvals = new Approvals({ broker, store, journal, now, vaultRoot, genId, manifest: MANIFEST });
     const { id, path } = await store.remember({ content: "durable fact 2", reason: "seed", session: "s1" });
     await store.setStatus(id, "canonical", "approved as durable belief", "s1");
 
@@ -513,7 +513,7 @@ describe("MemoryStore", () => {
 
   test("a held canonical-revise, when rejected, leaves the file unchanged and the approval rejected", async () => {
     const { store, broker, journal, vaultRoot, now, genId } = await makeStore();
-    const approvals = new Approvals({ broker, store, journal, now, vaultRoot, genId });
+    const approvals = new Approvals({ broker, store, journal, now, vaultRoot, genId, manifest: MANIFEST });
     const { id, path } = await store.remember({ content: "durable fact 3", reason: "seed", session: "s1" });
     await store.setStatus(id, "canonical", "approved as durable belief", "s1");
 

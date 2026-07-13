@@ -222,7 +222,12 @@ export function buildBridge(ctx: VaultContext, token: string): FastifyInstance {
 
   app.get("/memories", async (req: FastifyRequest) => {
     const query = req.query as { entity?: string; status?: string; tag?: string };
-    return recall(ctx.journal, { entity: query.entity, status: query.status, tag: query.tag }, ctx.now);
+    return recall(
+      ctx.journal,
+      { entity: query.entity, status: query.status, tag: query.tag },
+      ctx.now,
+      ctx.manifest,
+    );
   });
 
   app.get("/staleness", async () => {

@@ -66,7 +66,7 @@ describe("auditMemories", () => {
     const journal = new Journal(db);
     const { now, genId } = makeClock();
     const broker = new Broker({ vaultRoot, git, journal, manifest: MANIFEST, now, genId });
-    const store = new MemoryStore({ broker, journal, now, genId, vaultRoot });
+    const store = new MemoryStore({ broker, journal, now, genId, vaultRoot, manifest: MANIFEST });
     return { journal, git, broker, store, vaultRoot, now, genId };
   }
 
@@ -256,7 +256,7 @@ describe("auditMemories", () => {
 
     // Wipe: a brand-new, empty journal, rebuilt purely from disk + git.
     const freshJournal = new Journal(openJournal(":memory:"));
-    await reindex({ vaultRoot, git, journal: freshJournal, now, genId });
+    await reindex({ vaultRoot, git, journal: freshJournal, manifest: MANIFEST, now, genId });
 
     // The reverted source's file is gone, so reindex never recreates a row
     // for it -- its journal row is now entirely MISSING (not merely

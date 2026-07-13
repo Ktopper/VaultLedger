@@ -163,7 +163,7 @@ export function buildTools(ctx: ServerContext): ToolDef[] {
           // journal-indexed (exact matches); there is no free-text search in
           // v0.1, so there is deliberately no `query` param.
           const filters: RecallFilters = { entity, tag, status, since, limit };
-          const memories = recall(ctx.journal, filters, ctx.now);
+          const memories = recall(ctx.journal, filters, ctx.now, ctx.manifest);
           return { memories };
         }),
     },

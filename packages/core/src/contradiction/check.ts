@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { assertContainedAndReadable } from "../broker/containment.js";
 import type { Journal } from "../journal/journal.js";
+import type { PermissionsManifest } from "../schemas/manifest.js";
 import type { ContradictionDetector } from "./detector.js";
 import { HeuristicDetector } from "./detector.js";
 import type { EntityMatcher } from "./matcher.js";
@@ -10,6 +11,20 @@ import { conflictValueHash } from "./valueHash.js";
 export interface CheckContradictionsDeps {
   journal: Journal;
   vaultRoot: string;
+  /**
+   * The vault's current permissions manifest (VL-SEC-S3-01/S3-03,
+   * VL-SEC-S7-02). REQUIRED — a `memories.path` read here MUST go through
+   * `assertContainedAndReadable` (containment + excluded-zone gate) rather
+   * than a raw `readFileSync(join(vaultRoot, path))`, the same boundary
+   * every other in-process vault reader honors. This is the ONLY thing that
+   * stands between a hostile/excluded `path` reaching the journal (a
+   * producer bug, direct DB tampering, or a future regression) and its
+   * content being read and embedded verbatim into `conflicts.detail`, a
+   * column surfaced to `ledger conflicts`/`GET /conflicts`. Deliberately
+   * NOT optional: an omitted manifest here would silently reopen the leak
+   * this fix closes (see WU-4).
+   */
+  manifest: PermissionsManifest;
   now: () => string;
   genId: (prefix: string) => string;
   matcher?: EntityMatcher;
@@ -27,7 +42,7 @@ export interface CheckContradictionsDeps {
  */
 export function checkContradictions(deps: CheckContradictionsDeps, memId: string): void {
   try {
-    const { journal, vaultRoot, now, genId } = deps;
+    const { journal, vaultRoot, manifest, now, genId } = deps;
     const mem = journal.getMemory(memId);
     if (!mem) return;
 
@@ -37,12 +52,12 @@ export function checkContradictions(deps: CheckContradictionsDeps, memId: string
     const peers = matcher.comparisonSet(mem, journal);
     if (peers.length === 0) return;
 
-    const memText = readFileSync(join(vaultRoot, mem.path), "utf8");
+    const memText = readFileSync(assertContainedAndReadable(vaultRoot, manifest, mem.path), "utf8");
 
     for (const peer of peers) {
       let peerText: string;
       try {
-        peerText = readFileSync(join(vaultRoot, peer.path), "utf8");
+        peerText = readFileSync(assertContainedAndReadable(vaultRoot, manifest, peer.path), "utf8");
       } catch (err) {
         // Unreadable peer file: skip just this peer, keep checking the rest.
         console.error(`checkContradictions: could not read peer ${peer.id} (${peer.path}):`, err);

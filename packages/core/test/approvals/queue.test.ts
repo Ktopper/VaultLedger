@@ -69,8 +69,8 @@ describe("Approvals", () => {
     const journal = new Journal(db);
     const { now, genId } = makeClock();
     const broker = new Broker({ vaultRoot, git, journal, manifest: MANIFEST, now, genId });
-    const store = new MemoryStore({ broker, journal, now, genId, vaultRoot });
-    const approvals = new Approvals({ broker, store, journal, now, vaultRoot, genId });
+    const store = new MemoryStore({ broker, journal, now, genId, vaultRoot, manifest: MANIFEST });
+    const approvals = new Approvals({ broker, store, journal, now, vaultRoot, genId, manifest: MANIFEST });
     return { approvals, broker, store, journal, git, vaultRoot, now, genId };
   }
 
@@ -414,6 +414,74 @@ describe("Approvals", () => {
     expect(open[0]!.kind).toBe("value-conflict");
     expect(open[0]!.fact_key).toBe("deadline");
     expect([open[0]!.memory_a, open[0]!.memory_b].sort()).toEqual([a.id, b.id].sort());
+  });
+
+  // VL-SEC-S7-02 (queue.ts call site): dispatchApply's post-commit
+  // checkContradictions hook (the "OTHER" content-changing revise surface,
+  // alongside MemoryStore.revise's own call — see dispatchApply's doc
+  // comment) MUST route its peer-file read through the same
+  // containment/zone gate as every other checkContradictions call site.
+  // Without `manifest` threaded into ApprovalsOptions this call site would
+  // stay a live route to the excluded-content leak even after check.ts,
+  // store.ts, and reindex.ts are all fixed -- `ledger approve` reaching a
+  // canonical-revise is exactly the path this test exercises.
+  test("VL-SEC-S7-02: an approved canonical revise's post-commit contradiction check does not leak an excluded-zone peer's content into conflicts.detail", async () => {
+    const { approvals, store, journal, vaultRoot, git } = await makeHarness();
+
+    // The legitimate canonical belief that will be revised via the queue.
+    const source = await store.remember({
+      content: "deadline: 2026-08-15",
+      entity: "nova",
+      reason: "seed",
+      session: "s1",
+    });
+    await store.setStatus(source.id, "canonical", "durable", "s1");
+
+    // A same-entity, live "peer" whose path resolves to the manifest's
+    // excluded zone (Private/**) -- simulating either a hostile/forged path
+    // reaching the journal, or an excluded note that slipped past a future
+    // producer regression. The file genuinely exists and genuinely
+    // contradicts the source's deadline, so the ONLY thing standing between
+    // this and a content leak is the containment/zone gate, not an ENOENT.
+    const secretRelPath = "Private/secret.md";
+    await seedTrustedNote(git, vaultRoot, secretRelPath, "deadline: 1999-01-01\nssn: 555-11-2222\n");
+    journal.insertMemory({
+      id: "mem_excluded_peer",
+      path: secretRelPath,
+      entity: "nova",
+      status: "working",
+      confidence: "medium",
+      created: "2026-01-01T00:00:00.000Z",
+      source: "human-import",
+      supersedes: null,
+      expires: null,
+      last_referenced: null,
+    });
+
+    // Canonical revise, queued then approved -- lands via dispatchApply,
+    // NOT store.revise (see EXECUTION CONTRACT on MemoryStore.revise).
+    const before = readFileSync(join(vaultRoot, source.path), "utf8");
+    const after = before.replace("deadline: 2026-08-15", "deadline: 2026-09-01");
+    const patchText = createPatch(source.path, before, after);
+    const queued = await store.revise({ id: source.id, patch: patchText, reason: "revise", session: "s1" });
+    const approvalId = (queued as { queued: true; approvalId: string }).approvalId;
+
+    const result = await approvals.approve(approvalId);
+    expect(result).toEqual({ applied: true });
+
+    // The excluded peer's secret content must never appear anywhere in the
+    // journal's conflicts (the surface `ledger conflicts`/`GET /conflicts`
+    // reads).
+    const allConflicts = journal.listConflicts();
+    for (const c of allConflicts) {
+      expect(c.detail ?? "").not.toContain("555-11-2222");
+      expect(c.detail ?? "").not.toContain("1999-01-01");
+    }
+    // No conflict row should even reference the excluded peer's id -- the
+    // read was refused before any comparison against it could happen.
+    expect(allConflicts.some((c) => c.memory_a === "mem_excluded_peer" || c.memory_b === "mem_excluded_peer")).toBe(
+      false,
+    );
   });
 
   test("reject() on a held canonical-revise leaves the file unchanged and the approval rejected", async () => {

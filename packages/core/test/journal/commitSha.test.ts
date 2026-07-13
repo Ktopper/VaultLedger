@@ -7,6 +7,19 @@ import { openJournal } from "../../src/journal/db.js";
 import { Journal, type TransactionRow } from "../../src/journal/journal.js";
 import { LedgerGit, formatMessage } from "../../src/broker/git.js";
 import { reindex } from "../../src/memory/reindex.js";
+import type { PermissionsManifest } from "../../src/schemas/manifest.js";
+
+const MANIFEST: PermissionsManifest = {
+  version: 1,
+  mode: "assisted",
+  zones: {
+    agent: ["Agent/**"],
+    scratch: ["Agent/Scratch/**"],
+    excluded: ["Private/**"],
+    trusted: ["**"],
+  },
+  overrides: [],
+};
 
 function makeClock(): { now: () => string; genId: (prefix: string) => string } {
   let tick = 0;
@@ -129,8 +142,8 @@ describe("UNIQUE(commit_sha) partial index", () => {
     vi.spyOn(journalB, "hasCommit").mockReturnValue(false);
 
     const { now, genId } = makeClock();
-    const resultA = await reindex({ vaultRoot, git, journal: journalA, now, genId });
-    const resultB = await reindex({ vaultRoot, git, journal: journalB, now, genId });
+    const resultA = await reindex({ vaultRoot, git, journal: journalA, manifest: MANIFEST, now, genId });
+    const resultB = await reindex({ vaultRoot, git, journal: journalB, manifest: MANIFEST, now, genId });
 
     // Both passes believed the commit needed repair, but only one row landed.
     expect(resultA.transactions).toBe(1);

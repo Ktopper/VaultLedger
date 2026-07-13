@@ -8,9 +8,22 @@ import { openJournal } from "../../src/journal/db.js";
 import { Journal, type MemoryRow } from "../../src/journal/journal.js";
 import { checkContradictions } from "../../src/contradiction/check.js";
 import { conflictValueHash } from "../../src/contradiction/valueHash.js";
+import type { PermissionsManifest } from "../../src/schemas/manifest.js";
 // Note: this file previously imported `hashBytes` directly to assert the
 // backfill hash; it now asserts against `conflictValueHash` (the single
 // hashing helper shared by the migration and the live check.ts path).
+
+const MANIFEST: PermissionsManifest = {
+  version: 1,
+  mode: "assisted",
+  zones: {
+    agent: ["Agent/**"],
+    scratch: ["Agent/Scratch/**"],
+    excluded: ["Private/**"],
+    trusted: ["**"],
+  },
+  overrides: [],
+};
 
 function memRow(overrides: Partial<MemoryRow> = {}): MemoryRow {
   return {
@@ -234,7 +247,7 @@ describe("conflicts.value_hash migration (dismiss-once dedup-key fix)", () => {
     journal.insertMemory(memRow({ id: "mem_b", path: "mem_b.md", entity: "nova", status: "canonical" }));
 
     const { now, genId } = makeClock();
-    checkContradictions({ journal, vaultRoot: dir, now, genId }, "mem_b");
+    checkContradictions({ journal, vaultRoot: dir, manifest: MANIFEST, now, genId }, "mem_b");
 
     // The dismissal must HOLD: no new open row, and the only conflict row is
     // still the migrated dismissed one.

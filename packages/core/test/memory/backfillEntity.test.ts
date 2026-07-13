@@ -163,7 +163,7 @@ describe("backfillEntity", () => {
     // A FULL rebuild (fresh, empty journal) must now recover the entity
     // purely from the file, without any journal-only fallback.
     const freshJournal = new Journal(openJournal(":memory:"));
-    await reindex({ vaultRoot, git, journal: freshJournal, now, genId });
+    await reindex({ vaultRoot, git, journal: freshJournal, manifest: MANIFEST, now, genId });
     expect(freshJournal.getMemory("mem_legacy")!.entity).toBe("nova");
   });
 

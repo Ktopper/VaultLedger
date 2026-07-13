@@ -1,7 +1,20 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { openJournal } from "../../src/journal/db.js";
 import { Journal, type MemoryRow } from "../../src/journal/journal.js";
 import { recall } from "../../src/recall/recall.js";
+import type { PermissionsManifest } from "../../src/schemas/manifest.js";
+
+const MANIFEST: PermissionsManifest = {
+  version: 1,
+  mode: "assisted",
+  zones: {
+    agent: ["Agent/**"],
+    scratch: ["Agent/Scratch/**"],
+    excluded: ["Private/**"],
+    trusted: ["**"],
+  },
+  overrides: [],
+};
 
 function seed(journal: Journal, row: MemoryRow, tags: string[] = []): void {
   journal.insertMemory(row);
@@ -33,7 +46,7 @@ describe("recall", () => {
     seed(journal, baseRow({ id: "m1", entity: "alice" }));
     seed(journal, baseRow({ id: "m2", entity: "bob" }));
 
-    const results = recall(journal, { entity: "alice" }, () => "2026-01-02T00:00:00.000Z");
+    const results = recall(journal, { entity: "alice" }, () => "2026-01-02T00:00:00.000Z", MANIFEST);
     expect(results).toHaveLength(1);
     expect(results[0]!.id).toBe("m1");
   });
@@ -43,7 +56,7 @@ describe("recall", () => {
     seed(journal, baseRow({ id: "m1" }), ["project-x", "important"]);
     seed(journal, baseRow({ id: "m2" }), ["other"]);
 
-    const results = recall(journal, { tag: "project-x" }, () => "2026-01-02T00:00:00.000Z");
+    const results = recall(journal, { tag: "project-x" }, () => "2026-01-02T00:00:00.000Z", MANIFEST);
     expect(results).toHaveLength(1);
     expect(results[0]!.id).toBe("m1");
     expect(results[0]!.tags.sort()).toEqual(["important", "project-x"]);
@@ -54,7 +67,7 @@ describe("recall", () => {
     seed(journal, baseRow({ id: "m1", status: "canonical" }));
     seed(journal, baseRow({ id: "m2", status: "working" }));
 
-    const results = recall(journal, { status: "canonical" }, () => "2026-01-02T00:00:00.000Z");
+    const results = recall(journal, { status: "canonical" }, () => "2026-01-02T00:00:00.000Z", MANIFEST);
     expect(results).toHaveLength(1);
     expect(results[0]!.id).toBe("m1");
   });
@@ -68,6 +81,7 @@ describe("recall", () => {
       journal,
       { since: "2026-01-01T00:00:00.000Z" },
       () => "2026-06-02T00:00:00.000Z",
+      MANIFEST,
     );
     expect(results.map((r) => r.id)).toEqual(["new"]);
   });
@@ -78,7 +92,7 @@ describe("recall", () => {
     seed(journal, baseRow({ id: "m2", created: "2026-01-02T00:00:00.000Z" }));
     seed(journal, baseRow({ id: "m3", created: "2026-01-03T00:00:00.000Z" }));
 
-    const results = recall(journal, { limit: 2 }, () => "2026-01-04T00:00:00.000Z");
+    const results = recall(journal, { limit: 2 }, () => "2026-01-04T00:00:00.000Z", MANIFEST);
     expect(results).toHaveLength(2);
   });
 
@@ -88,7 +102,7 @@ describe("recall", () => {
     seed(journal, baseRow({ id: "forgotten", status: "forgotten" }));
     seed(journal, baseRow({ id: "reverted", status: "reverted" }));
 
-    const results = recall(journal, {}, () => "2026-01-02T00:00:00.000Z");
+    const results = recall(journal, {}, () => "2026-01-02T00:00:00.000Z", MANIFEST);
     expect(results.map((r) => r.id).sort()).toEqual(["working"]);
   });
 
@@ -97,7 +111,7 @@ describe("recall", () => {
     seed(journal, baseRow({ id: "working", status: "working" }));
     seed(journal, baseRow({ id: "retired", status: "retired" }));
 
-    const results = recall(journal, {}, () => "2026-01-02T00:00:00.000Z");
+    const results = recall(journal, {}, () => "2026-01-02T00:00:00.000Z", MANIFEST);
     expect(results.map((r) => r.id).sort()).toEqual(["working"]);
   });
 
@@ -106,7 +120,7 @@ describe("recall", () => {
     seed(journal, baseRow({ id: "retired", status: "retired" }));
     seed(journal, baseRow({ id: "working", status: "working" }));
 
-    const results = recall(journal, { status: "retired" }, () => "2026-01-02T00:00:00.000Z");
+    const results = recall(journal, { status: "retired" }, () => "2026-01-02T00:00:00.000Z", MANIFEST);
     expect(results.map((r) => r.id)).toEqual(["retired"]);
   });
 
@@ -115,7 +129,7 @@ describe("recall", () => {
     seed(journal, baseRow({ id: "forgotten", status: "forgotten" }));
     seed(journal, baseRow({ id: "working", status: "working" }));
 
-    const results = recall(journal, { status: "forgotten" }, () => "2026-01-02T00:00:00.000Z");
+    const results = recall(journal, { status: "forgotten" }, () => "2026-01-02T00:00:00.000Z", MANIFEST);
     expect(results.map((r) => r.id)).toEqual(["forgotten"]);
   });
 
@@ -133,7 +147,7 @@ describe("recall", () => {
       }),
     );
 
-    const [result] = recall(journal, { entity: "alice" }, () => "2026-01-02T00:00:00.000Z");
+    const [result] = recall(journal, { entity: "alice" }, () => "2026-01-02T00:00:00.000Z", MANIFEST);
     expect(result).toMatchObject({
       id: "m1",
       path: "Agent/Memory/m1.md",
@@ -153,8 +167,54 @@ describe("recall", () => {
     seed(journal, baseRow({ id: "m1" }));
     expect(journal.getMemory("m1")!.last_referenced).toBeNull();
 
-    recall(journal, { entity: undefined }, () => "2026-03-15T12:00:00.000Z");
+    recall(journal, { entity: undefined }, () => "2026-03-15T12:00:00.000Z", MANIFEST);
 
     expect(journal.getMemory("m1")!.last_referenced).toBe("2026-03-15T12:00:00.000Z");
+  });
+
+  // -------------------------------------------------------------------
+  // VL-SEC-S7-05: defense-in-depth zone re-check. recall() must not trust
+  // the journal is zone-clean by construction -- it re-resolves each row's
+  // path against the manifest and filters out anything that now resolves to
+  // `excluded`, independent of whatever gate the producer (reindex/store)
+  // applied. This is what still catches a leak if a FUTURE producer
+  // regresses, even after reindex.ts/check.ts are fixed.
+  // -------------------------------------------------------------------
+
+  test("VL-SEC-S7-05: a journal row whose path resolves to the excluded zone is filtered out of recall's results", () => {
+    const journal = makeJournal();
+    seed(journal, baseRow({ id: "m1", path: "Private/secret.md", entity: "alice" }));
+    seed(journal, baseRow({ id: "m2", path: "Agent/Memory/m2.md", entity: "alice" }));
+
+    const results = recall(journal, {}, () => "2026-01-02T00:00:00.000Z", MANIFEST);
+
+    expect(results.map((r) => r.id)).toEqual(["m2"]);
+  });
+
+  test("VL-SEC-S7-05: an excluded-zone row is filtered even under an explicit status filter (not just the default view)", () => {
+    const journal = makeJournal();
+    seed(journal, baseRow({ id: "m1", path: "Private/secret.md", entity: "alice", status: "canonical" }));
+    seed(journal, baseRow({ id: "m2", path: "Agent/Memory/m2.md", entity: "alice", status: "canonical" }));
+
+    const results = recall(journal, { status: "canonical" }, () => "2026-01-02T00:00:00.000Z", MANIFEST);
+
+    expect(results.map((r) => r.id)).toEqual(["m2"]);
+  });
+
+  test("VL-SEC-S7-05: filtering an excluded-zone row logs an integrity violation and does not touch its last_referenced", () => {
+    const journal = makeJournal();
+    seed(journal, baseRow({ id: "m1", path: "Private/secret.md", entity: "alice" }));
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      recall(journal, {}, () => "2026-01-02T00:00:00.000Z", MANIFEST);
+    } finally {
+      expect(errorSpy).toHaveBeenCalled();
+      errorSpy.mockRestore();
+    }
+
+    // Filtered rows are never "touched" -- recall() never returned them, so
+    // it must not have updated last_referenced either.
+    expect(journal.getMemory("m1")!.last_referenced).toBeNull();
   });
 });

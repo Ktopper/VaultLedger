@@ -123,7 +123,7 @@ describe("openVault", () => {
     });
     expect(remembered.id).toBeDefined();
 
-    const found = recall(ctx.journal, {}, now);
+    const found = recall(ctx.journal, {}, now, ctx.manifest);
     expect(found.some((m) => m.id === remembered.id)).toBe(true);
 
     const closeSpy = vi.spyOn(ctx.db, "close");
