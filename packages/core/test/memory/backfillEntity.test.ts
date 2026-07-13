@@ -9,6 +9,7 @@ import { openJournal } from "../../src/journal/db.js";
 import { reindex } from "../../src/memory/reindex.js";
 import { Broker } from "../../src/broker/broker.js";
 import { backfillEntity } from "../../src/memory/backfillEntity.js";
+import { UNSAFE_NO_LOCK } from "../../src/concurrency/lock.js";
 import type { PermissionsManifest } from "../../src/schemas/manifest.js";
 
 const MANIFEST: PermissionsManifest = {
@@ -63,7 +64,15 @@ describe("backfillEntity", () => {
     const db = openJournal(":memory:");
     const journal = new Journal(db);
     const { now, genId } = makeClock();
-    const broker = new Broker({ vaultRoot, git, journal, manifest: MANIFEST, now, genId });
+    const broker = new Broker({
+      vaultRoot,
+      git,
+      journal,
+      manifest: MANIFEST,
+      now,
+      genId,
+      lockDir: UNSAFE_NO_LOCK,
+    });
     return { journal, git, broker, vaultRoot, now, genId };
   }
 

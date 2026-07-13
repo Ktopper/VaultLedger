@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createPatch } from "diff";
 import { Broker } from "../../src/broker/broker.js";
+import { UNSAFE_NO_LOCK } from "../../src/concurrency/lock.js";
 import { LedgerGit } from "../../src/broker/git.js";
 import { Journal } from "../../src/journal/journal.js";
 import { openJournal } from "../../src/journal/db.js";
@@ -120,6 +121,7 @@ describe("Broker write-path symlink containment (VL-SEC-S1-02)", () => {
       journal: seedJournal,
       manifest: MANIFEST,
       ...makeClock(0),
+      lockDir: UNSAFE_NO_LOCK,
     });
     await seedBroker.apply({
       op: "create",
@@ -147,6 +149,7 @@ describe("Broker write-path symlink containment (VL-SEC-S1-02)", () => {
       journal,
       manifest: MANIFEST,
       ...makeClock(100),
+      lockDir: UNSAFE_NO_LOCK,
     });
 
     const original = "line1\n";
@@ -192,7 +195,14 @@ describe("Broker write-path symlink containment (VL-SEC-S1-02)", () => {
     const git = new LedgerGit(vaultRoot);
     await git.init();
     const journal = new Journal(openJournal(":memory:"));
-    const broker = new Broker({ vaultRoot, git, journal, manifest: MANIFEST, ...makeClock() });
+    const broker = new Broker({
+      vaultRoot,
+      git,
+      journal,
+      manifest: MANIFEST,
+      ...makeClock(),
+      lockDir: UNSAFE_NO_LOCK,
+    });
 
     const patch = createPatch("x.md", original, original + "tampered\n");
     let thrown: unknown;
@@ -220,7 +230,14 @@ describe("Broker write-path symlink containment (VL-SEC-S1-02)", () => {
     const git = new LedgerGit(vaultRoot);
     await git.init();
     const journal = new Journal(openJournal(":memory:"));
-    const broker = new Broker({ vaultRoot, git, journal, manifest: MANIFEST, ...makeClock() });
+    const broker = new Broker({
+      vaultRoot,
+      git,
+      journal,
+      manifest: MANIFEST,
+      ...makeClock(),
+      lockDir: UNSAFE_NO_LOCK,
+    });
 
     const relPath = "Agent/Memory/normal.md";
     await broker.apply({

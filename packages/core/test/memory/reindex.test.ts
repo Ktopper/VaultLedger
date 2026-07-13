@@ -9,6 +9,7 @@ import { openJournal } from "../../src/journal/db.js";
 import { recall } from "../../src/recall/recall.js";
 import { reindex, ensureJournal } from "../../src/memory/reindex.js";
 import { Broker } from "../../src/broker/broker.js";
+import { UNSAFE_NO_LOCK } from "../../src/concurrency/lock.js";
 import { MemoryStore } from "../../src/memory/store.js";
 import { Approvals } from "../../src/approvals/queue.js";
 import type { PermissionsManifest } from "../../src/schemas/manifest.js";
@@ -211,7 +212,15 @@ describe("reindex", () => {
 
   test("a canonical promotion survives a reindex into a fresh empty journal (status is durable in the file)", async () => {
     const { journal, git, vaultRoot, now, genId } = await makeHarness();
-    const broker = new Broker({ vaultRoot, git, journal, manifest: MANIFEST, now, genId });
+    const broker = new Broker({
+      vaultRoot,
+      git,
+      journal,
+      manifest: MANIFEST,
+      now,
+      genId,
+      lockDir: UNSAFE_NO_LOCK,
+    });
     const store = new MemoryStore({ broker, journal, now, genId, vaultRoot, manifest: MANIFEST });
     const approvals = new Approvals({ broker, store, journal, now, vaultRoot, genId, manifest: MANIFEST });
 
@@ -302,7 +311,15 @@ describe("reindex", () => {
 
   test("incremental reindex flags an out-of-band canonical elevation, but still adopts it", async () => {
     const { journal, git, vaultRoot, now, genId } = await makeHarness();
-    const broker = new Broker({ vaultRoot, git, journal, manifest: MANIFEST, now, genId });
+    const broker = new Broker({
+      vaultRoot,
+      git,
+      journal,
+      manifest: MANIFEST,
+      now,
+      genId,
+      lockDir: UNSAFE_NO_LOCK,
+    });
     const store = new MemoryStore({ broker, journal, now, genId, vaultRoot, manifest: MANIFEST });
 
     const { id, path } = await store.remember({ content: "x", reason: "seed", session: "s1" });
@@ -333,7 +350,15 @@ describe("reindex", () => {
 
   test("an already-canonical row that stays canonical is NOT flagged", async () => {
     const { journal, git, vaultRoot, now, genId } = await makeHarness();
-    const broker = new Broker({ vaultRoot, git, journal, manifest: MANIFEST, now, genId });
+    const broker = new Broker({
+      vaultRoot,
+      git,
+      journal,
+      manifest: MANIFEST,
+      now,
+      genId,
+      lockDir: UNSAFE_NO_LOCK,
+    });
     const store = new MemoryStore({ broker, journal, now, genId, vaultRoot, manifest: MANIFEST });
     const approvals = new Approvals({ broker, store, journal, now, vaultRoot, genId, manifest: MANIFEST });
 
@@ -438,7 +463,15 @@ describe("reindex", () => {
 
   test("round-trip: a memory remembered by the store survives a FULL journal rebuild with its entity intact", async () => {
     const { journal, git, vaultRoot, now, genId } = await makeHarness();
-    const broker = new Broker({ vaultRoot, git, journal, manifest: MANIFEST, now, genId });
+    const broker = new Broker({
+      vaultRoot,
+      git,
+      journal,
+      manifest: MANIFEST,
+      now,
+      genId,
+      lockDir: UNSAFE_NO_LOCK,
+    });
     const store = new MemoryStore({ broker, journal, now, genId, vaultRoot, manifest: MANIFEST });
 
     const { id } = await store.remember({

@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, existsSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Broker } from "../../src/broker/broker.js";
+import { UNSAFE_NO_LOCK } from "../../src/concurrency/lock.js";
 import { LedgerGit } from "../../src/broker/git.js";
 import { Journal } from "../../src/journal/journal.js";
 import { openJournal } from "../../src/journal/db.js";
@@ -69,7 +70,15 @@ describe("ttl sweep", () => {
     const db = openJournal(":memory:");
     const journal = new Journal(db);
     const { now: clockNow, genId } = makeClock();
-    const broker = new Broker({ vaultRoot, git, journal, manifest: MANIFEST, now: clockNow, genId });
+    const broker = new Broker({
+      vaultRoot,
+      git,
+      journal,
+      manifest: MANIFEST,
+      now: clockNow,
+      genId,
+      lockDir: UNSAFE_NO_LOCK,
+    });
     const store = new MemoryStore({ broker, journal, now: clockNow, genId, vaultRoot, manifest: MANIFEST });
     return { store, journal, vaultRoot, clockNow, genId };
   }

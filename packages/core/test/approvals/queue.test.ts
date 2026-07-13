@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { createPatch } from "diff";
 import { Broker } from "../../src/broker/broker.js";
+import { UNSAFE_NO_LOCK } from "../../src/concurrency/lock.js";
 import { LedgerGit } from "../../src/broker/git.js";
 import { Journal } from "../../src/journal/journal.js";
 import { openJournal } from "../../src/journal/db.js";
@@ -68,7 +69,15 @@ describe("Approvals", () => {
     const db = openJournal(":memory:");
     const journal = new Journal(db);
     const { now, genId } = makeClock();
-    const broker = new Broker({ vaultRoot, git, journal, manifest: MANIFEST, now, genId });
+    const broker = new Broker({
+      vaultRoot,
+      git,
+      journal,
+      manifest: MANIFEST,
+      now,
+      genId,
+      lockDir: UNSAFE_NO_LOCK,
+    });
     const store = new MemoryStore({ broker, journal, now, genId, vaultRoot, manifest: MANIFEST });
     const approvals = new Approvals({ broker, store, journal, now, vaultRoot, genId, manifest: MANIFEST });
     return { approvals, broker, store, journal, git, vaultRoot, now, genId };

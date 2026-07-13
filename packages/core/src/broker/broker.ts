@@ -10,7 +10,7 @@ import { applyPatch } from "./patch.js";
 import { assertStructurePreserved, governedProvenanceChanged } from "./lint.js";
 import { assertContainedAndReadable, writeContainedFile } from "./containment.js";
 import { formatMessage, type LedgerGit } from "./git.js";
-import { withVaultLock } from "../concurrency/lock.js";
+import { UNSAFE_NO_LOCK, withVaultLock, type LockDirOption } from "../concurrency/lock.js";
 
 const DEFAULT_PATCH_THRESHOLD = 0.5;
 
@@ -41,13 +41,15 @@ export interface BrokerOptions {
   now: () => string;
   genId: (prefix: string) => string;
   patchThreshold?: number;
-  /** When set, every mutating broker operation (apply's create/revise/
-   * propose_edit and archive) acquires the shared cross-process vault lock
-   * rooted at this directory (see concurrency/lock.ts) before running its
-   * body. Opt-in: unset (the v0.1 default) leaves behavior byte-for-byte
-   * unchanged — no lock acquired, no lockfile created — so every existing
-   * single-process caller/test is unaffected. */
-  lockDir?: string;
+  /** Every mutating broker operation (apply's create/revise/propose_edit and
+   * archive) acquires the shared cross-process vault lock rooted at this
+   * directory (see concurrency/lock.ts) before running its body. REQUIRED
+   * (VL-SEC-S1-01): an embedder must either pass a real lock directory or
+   * the explicit `UNSAFE_NO_LOCK` sentinel — a Broker can no longer be
+   * constructed unlocked by silent omission. Every real host (CLI, MCP
+   * server, `ledger serve`) passes a real `lockDir` from `vaultLockDir`;
+   * `UNSAFE_NO_LOCK` is for same-process, single-writer tests only. */
+  lockDir: LockDirOption;
 }
 
 type CreateOp = Extract<ProposedOperation, { op: "create" }>;
@@ -82,7 +84,7 @@ export class Broker {
     this.now = opts.now;
     this.genId = opts.genId;
     this.patchThreshold = opts.patchThreshold ?? DEFAULT_PATCH_THRESHOLD;
-    this.lockDir = opts.lockDir;
+    this.lockDir = opts.lockDir === UNSAFE_NO_LOCK ? undefined : opts.lockDir;
   }
 
   async apply(
@@ -309,9 +311,10 @@ export class Broker {
       throw new BrokerError("NOT_FOUND", `target not found: ${op.path}`);
     }
 
-    // v0.1 TOCTOU gap: the file could change on disk between this hash read
-    // and the writeFileSync below. Acceptable for v0.1 (single-writer broker);
-    // a future version may hold a lock or re-check under the git commit.
+    // VL-SEC-S1-01: this hash read and the write below are covered by the
+    // caller-held vault lock (see apply()'s withVaultLock wrap) when a real
+    // lockDir was supplied, closing the check-write TOCTOU across processes;
+    // see writeContainedFile below for the same-window symlink-swap defense.
     const computed = hashFile(abs);
     if (computed !== expectedHash) {
       throw new BrokerError(

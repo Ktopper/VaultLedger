@@ -16,8 +16,5 @@
     "@vaultledger/server": "workspace:*",
     "@vaultledger/mcp-server": "workspace:*",
     "@vaultledger/obsidian-plugin": "workspace:*"
-  },
-  "devDependencies": {
-    "@types/diff": "^6.0.0"
   }
 }

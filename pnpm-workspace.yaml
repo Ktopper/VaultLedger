@@ -3,3 +3,10 @@ packages:
 allowBuilds:
   better-sqlite3: true
   esbuild: true
+# VL-SEC-S4-06 (dev-dep audit): vitest 3.2.7's declared dependency range
+# (^5.0.0 || ^6.0.0 || ^7.0.0-0) resolves to vite@5.4.21 by default, which is
+# still vulnerable (GHSA-fx2h-pf6j-xcff / GHSA-4w7w-66w2-5vf9 / GHSA-v6wh-96g9
+# -6wx3, all patched >=6.4.2/6.4.3). Force the transitive vite up to the
+# patched 6.x line -- dev-only test tooling, never shipped in any bin.
+overrides:
+  vite: "^6.4.3"

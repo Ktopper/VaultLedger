@@ -8,6 +8,7 @@ import { Journal, type ApprovalRow, type TransactionRow } from "../../src/journa
 import { openJournal } from "../../src/journal/db.js";
 import { reconcile } from "../../src/broker/reconcile.js";
 import { Broker } from "../../src/broker/broker.js";
+import { UNSAFE_NO_LOCK } from "../../src/concurrency/lock.js";
 import { MemoryStore } from "../../src/memory/store.js";
 import { Approvals } from "../../src/approvals/queue.js";
 import { hashFile } from "../../src/broker/hash.js";
@@ -363,7 +364,7 @@ describe("reconcile: closes stale pending approvals (approve->apply crash gap)",
       },
       overrides: [],
     });
-    const broker = new Broker({ vaultRoot, git, journal, manifest, now, genId });
+    const broker = new Broker({ vaultRoot, git, journal, manifest, now, genId, lockDir: UNSAFE_NO_LOCK });
     const store = new MemoryStore({ broker, journal, now, genId, vaultRoot, manifest });
     const approvals = new Approvals({ broker, store, journal, now, vaultRoot, genId, manifest });
 

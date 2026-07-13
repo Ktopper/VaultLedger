@@ -18,6 +18,7 @@ import { Journal } from "../../src/journal/journal.js";
 import { openJournal } from "../../src/journal/db.js";
 import { hashBytes } from "../../src/broker/hash.js";
 import { BrokerError } from "../../src/errors.js";
+import { UNSAFE_NO_LOCK } from "../../src/concurrency/lock.js";
 import type { PermissionsManifest } from "../../src/schemas/manifest.js";
 
 const MANIFEST: PermissionsManifest = {
@@ -70,7 +71,7 @@ describe("Broker", () => {
     const db = openJournal(":memory:");
     const journal = new Journal(db);
     const { now, genId } = makeClock();
-    const broker = new Broker({ vaultRoot, git, journal, manifest, now, genId });
+    const broker = new Broker({ vaultRoot, git, journal, manifest, now, genId, lockDir: UNSAFE_NO_LOCK });
     return { broker, journal, git, vaultRoot };
   }
 
