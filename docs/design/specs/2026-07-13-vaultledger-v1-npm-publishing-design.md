@@ -59,9 +59,12 @@ scope-permission error regardless of `--access public`.
 
 `packages/cli/package.json` lists `"@vaultledger/obsidian-plugin":
 "workspace:*"` under `dependencies` (added in v0.4 so `installPlugin` could
-resolve the plugin package's built `manifest.json` + `main.js`). A private,
-never-published package in `dependencies` makes `@vaultledger/cli`
-unpublishable — npm cannot resolve it at install time.
+resolve the plugin package's built `manifest.json` + `main.js`). This doesn't
+block the publish command itself (pnpm packs `@vaultledger/cli` without
+complaint), but it ships a **broken package**: the packed manifest lists
+`@vaultledger/obsidian-plugin@0.4.0` in `dependencies`, which was never
+published, so every consumer's `npm install @vaultledger/cli` 404s. That's the
+failure to prevent.
 
 **Change:** move the entry from `dependencies` → `devDependencies`.
 
@@ -173,7 +176,15 @@ never be reused even after unpublish, and unpublish itself is policy-limited
 check happens **before** the first irreversible command, and the irreversible
 command is run by (or explicitly authorized by) Kris.
 
-1. **Clean build:** `pnpm install` → `pnpm build` (fresh `dist/` everywhere).
+1. **Clean build + full gate:** `pnpm install` → `pnpm build` (fresh `dist/`
+   everywhere) → `pnpm -w lint` → **`pnpm -r test`**. The test run is
+   load-bearing here, not ceremony: WU-1's new publishability-guard test (cli
+   `dependencies` contains no private workspace package) is the ONLY check that
+   catches a re-introduced private runtime dep *before* the irreversible
+   publish — neither `pnpm pack` nor `pnpm publish --dry-run` refuses or warns on
+   a private `@vaultledger/obsidian-plugin` still sitting in `dependencies`
+   (verified: dry-run succeeds silently; the breakage only surfaces later as a
+   consumer-side `npm install` 404). So the suite must be green before step 2.
 2. **Pack + inspect (mechanical, per package):** `pnpm -r --filter '!@vaultledger/obsidian-plugin' pack`
    into a scratch dir, then list each tarball (`tar -tzf`) and assert:
    `dist/` present with `.js`/`.d.ts`/maps; `bin/<name>.mjs` present where
@@ -186,10 +197,17 @@ command is run by (or explicitly authorized by) Kris.
    root (confirms auth flow, tag, access, and per-package skip of the private
    plugin) — expected to fail only at the auth step until step 4.
 4. **Human gate:** Kris creates the `vaultledger` npm org (see prerequisite),
-   runs `npm login` (2FA), then either runs
-   `pnpm -r publish --access public` himself or explicitly authorizes running
-   it against his logged-in session. Nothing before this step has touched the
-   registry.
+   runs `npm login` (2FA), then publishes. **Publish in explicit dependency
+   order so `cli` is last** — `pnpm --filter @vaultledger/core publish
+   --access public`, then `server`, then `mcp-server`, then `cli` — rather than
+   relying on `pnpm -r publish`, whose topo-sort is confused by the dev-only
+   cli↔server / cli↔mcp-server cycle and empirically publishes `cli` *before*
+   its runtime siblings. (Verified `pnpm -r publish` doesn't error, but an
+   interrupted run — OTP timeout, network blip — could leave a published `cli`
+   referencing not-yet-published `server`/`mcp-server`, a window a consumer
+   `npm install` would hit as a 404.) Explicit order removes that window.
+   Kris runs these (or explicitly authorizes running them against his
+   logged-in session). Nothing before this step has touched the registry.
 5. **Post-publish smoke (clean environment):** from an empty temp dir with no
    workspace on the path:
    - `npx @vaultledger/cli@0.4.0 --help` → command list renders;
