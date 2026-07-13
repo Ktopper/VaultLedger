@@ -1,7 +1,8 @@
 # VaultLedger v1.0 — npm publishing (first publish) — design
 
 **Date:** 2026-07-13
-**Status:** Approved (brainstorm) — pending spec-review
+**Status:** Spec-reviewed (adversarial pass 2026-07-13; one blocker + two
+should-fixes found and folded in below)
 **Context:** Second track of the v1.0 push (after v0.4 onboarding). The
 2026-07-12 security skim cleared external distribution; this cycle makes
 `npx @vaultledger/cli setup <vault>` and `npx -p @vaultledger/mcp-server
@@ -12,17 +13,22 @@ automation (CI publish, provenance, changesets) is deferred to a follow-up. This
 is a **careful manual first publish**: hardening + one human-gated
 `pnpm -r publish`, with every irreversible step preceded by a mechanical check.
 
-Baseline: `main` @ `c55b24c` (post security-skim), working from the relocated
-non-iCloud checkout `~/dev/VaultLedger`. Version published: **0.4.0** as-is — a
-pre-1.0 first publish doesn't need a bump, and re-versioning would touch every
-inter-package range for no reader benefit.
+Baseline: `main` @ `c55b24c` (post security-skim), **published from the
+relocated non-iCloud checkout `~/dev/VaultLedger`** — the old
+`~/Documents/.../VaultLedger` working copy is retired this session and must
+never be used to publish (it's iCloud-synced, which caused the duplicate-file
+and dematerialization problems; the fresh clone is the only sanctioned publish
+source). Version published: **0.4.0** as-is — a pre-1.0 first publish doesn't
+need a bump, and re-versioning would touch every inter-package range for no
+reader benefit.
 
-**Premise note (verified 2026-07-13 against `~/dev/VaultLedger`):** the repo was
-relocated out of iCloud this session. The iCloud-materialized duplicate bin
-files (`bin/ledger 2.mjs`, etc.) that motivated some of the packaging defenses
-below **no longer exist** in the fresh clone — those measures are retained as
-**precautionary hygiene** (cost nothing; guard against recurrence if the tree
-ever re-syncs), not as fixes for a live problem.
+**Premise note (verified 2026-07-13 against `~/dev/VaultLedger`):** the
+iCloud-materialized duplicate bin files (`bin/ledger 2.mjs`, etc.) that motivated
+the packaging defenses below **do not exist in this fresh clone** — they were an
+artifact of the old iCloud tree. Those measures (explicit bin-file `files`
+entries, the WU-3 `" 2."` hard-fail) are retained as **precautionary hygiene**,
+not fixes for a live problem, since `files` entries and packlist behavior are
+worth getting right regardless.
 
 ---
 
@@ -64,14 +70,20 @@ block the publish command itself (pnpm packs `@vaultledger/cli` without
 complaint), but it ships a **broken package**: the packed manifest lists
 `@vaultledger/obsidian-plugin@0.4.0` in `dependencies`, which was never
 published, so every consumer's `npm install @vaultledger/cli` 404s. That's the
-failure to prevent.
+failure to prevent. (Note the WU-4.1 test run is what catches a regression here
+before the irreversible publish — pack/dry-run don't refuse it.)
 
 **Change:** move the entry from `dependencies` → `devDependencies`.
 
 - **Monorepo users keep `--install-plugin`:** devDependencies are installed in
   the workspace, so the plugin symlink under `node_modules/@vaultledger/` is
   present exactly as before; `installPlugin`'s resolution is unchanged for
-  anyone running from a clone.
+  anyone running from a clone. One accepted cosmetic consequence: pnpm rewrites
+  `workspace:*` in devDependencies too, so the *published* cli manifest carries
+  `devDependencies: { "@vaultledger/obsidian-plugin": "0.4.0" }` — a package
+  that doesn't exist on npm. Harmless to consumers (registry installs never
+  install a dependency's devDeps); noted here so nobody later reads it as a
+  publish bug.
 - **npm-installed users degrade gracefully:** an `npm install @vaultledger/cli`
   does not pull devDependencies, so the plugin package is absent.
   `installPlugin` already has a not-found path; today its message points at the
@@ -108,15 +120,21 @@ Every publishable `package.json` gains:
   - cli: `["dist", "bin/ledger.mjs"]`
   - mcp-server: `["dist", "bin/vaultledger-mcp.mjs"]`
 
-  Two deliberate choices. First, **bin files are listed individually, not as
-  the `bin/` directory** — precautionary against the iCloud-duplicate pattern
-  (`bin/ledger 2.mjs`): `files` entries override ignore rules in npm-packlist,
-  so `"files": ["bin"]` would ship any such duplicate if the tree ever
-  re-syncs; naming the exact file can't. (The `bin`-field target is
-  force-included by npm anyway; the explicit entry documents intent.) Second,
-  **no `tsbuildinfo` handling is needed** — verified that `tsc -b` writes
-  `tsconfig.tsbuildinfo` at each package *root*, never under `dist/`, so a
-  `["dist", …]` allowlist already excludes it. (`files` is inclusion-only; a
+  Two deliberate choices here. First, **bin files are listed individually, not
+  as the `bin/` directory** — precautionary against the iCloud-duplicate pattern
+  (`bin/ledger 2.mjs`), which does NOT exist in the relocated clone but did in
+  the old iCloud tree. The reasoning still holds and is worth encoding: the
+  `* [0-9].*` quarantine patterns live only in the **monorepo root**
+  `.gitignore`, and packing a workspace package consults ignore files inside
+  that package's own directory only — so the root gitignore never participates
+  in packlist. `"files": ["bin"]` (or no `files` field) would ship any such
+  duplicate if the tree ever re-syncs; naming the exact file can't. The
+  corollary is load-bearing: **gitignore must never be assumed to protect
+  tarball contents** anywhere, including under `dist/`. (The `bin`-field target
+  is force-included by npm anyway; the explicit entry documents intent.)
+  Second, **no `tsbuildinfo` handling is needed** — verified that `tsc -b`
+  writes `tsconfig.tsbuildinfo` at each package *root*, never under `dist/`, so
+  a `["dist", …]` allowlist already excludes it. (`files` is inclusion-only; a
   `!`-negation would be both unnecessary here and unreliably honored by npm, so
   none is used.) `package.json`, `README.md`, and `LICENSE` are always included
   by npm regardless of `files`.
@@ -130,8 +148,8 @@ Every publishable `package.json` gains:
 
 **Per-package `LICENSE`:** npm auto-includes `LICENSE` only from the package's
 own directory — the root file does not ride into workspace tarballs. Copy the
-root `LICENSE` (confirmed present) verbatim into each of the four package dirs
-(committed copies; no build-time copy step to go stale or get skipped).
+root `LICENSE` verbatim into each of the four package dirs (committed copies;
+no build-time copy step to go stale or get skipped).
 
 **Per-package `README.md`:** only `obsidian-plugin` has one today; the four
 published packages would have blank npm pages. Each gets a short README —
@@ -154,8 +172,8 @@ Make the mistake structurally impossible rather than checklist-dependent:
   2. if the package declares a `bin`, every bin target exists;
   3. **no iCloud-duplicate artifacts** — fail if any file matching
      `/ [0-9]+(\.|$)/` exists under `dist/` or `bin/` (the pattern the repo's
-     `.gitignore` already quarantines; here it hard-fails, not just ignored —
-     precautionary, since the fresh clone has none today);
+     `.gitignore` already quarantines; here it must hard-fail, not just be
+     ignored);
   4. `dist/index.js` is newer than the newest file under `src/` (staleness
      check — a cheap mtime comparison, advisory-grade but catches the
      "edited after last build" case).
@@ -165,6 +183,10 @@ Make the mistake structurally impossible rather than checklist-dependent:
   is fine because publishing only ever happens from the workspace this cycle.
 - The guard is checked by a unit test that runs the script against a fixture
   with a planted `ledger 2.mjs` and asserts a non-zero exit.
+- Caveat: an `ignore-scripts=true` in any effective `.npmrc` would silently
+  skip `prepack` under pnpm. The runbook's step 0 includes
+  `pnpm config get ignore-scripts` (must be false/unset) so the guard is known
+  to be armed.
 
 ---
 
@@ -176,39 +198,49 @@ never be reused even after unpublish, and unpublish itself is policy-limited
 check happens **before** the first irreversible command, and the irreversible
 command is run by (or explicitly authorized by) Kris.
 
-1. **Clean build + full gate:** `pnpm install` → `pnpm build` (fresh `dist/`
-   everywhere) → `pnpm -w lint` → **`pnpm -r test`**. The test run is
-   load-bearing here, not ceremony: WU-1's new publishability-guard test (cli
-   `dependencies` contains no private workspace package) is the ONLY check that
-   catches a re-introduced private runtime dep *before* the irreversible
-   publish — neither `pnpm pack` nor `pnpm publish --dry-run` refuses or warns on
-   a private `@vaultledger/obsidian-plugin` still sitting in `dependencies`
-   (verified: dry-run succeeds silently; the breakage only surfaces later as a
-   consumer-side `npm install` 404). So the suite must be green before step 2.
-2. **Pack + inspect (mechanical, per package):** `pnpm -r --filter '!@vaultledger/obsidian-plugin' pack`
-   into a scratch dir, then list each tarball (`tar -tzf`) and assert:
-   `dist/` present with `.js`/`.d.ts`/maps; `bin/<name>.mjs` present where
+0. **Preconditions:** all WU-1/WU-2/WU-3 edits (plus the four LICENSE copies
+   and READMEs) **committed on `main`, working tree clean** — `pnpm publish`
+   (including `--dry-run`) enforces a clean tree and a `main`/`master` branch
+   by default (`ERR_PNPM_GIT_UNCLEAN` / `ERR_PNPM_ACTIVE_BRANCH`), and that
+   guard stays on (never `--no-git-checks`). Also:
+   `pnpm config get ignore-scripts` is false/unset (arms the WU-3 guard), and
+   the scratch dir for step 2 lives **outside the repo** (untracked tarballs
+   inside it would dirty the tree and fail the git check).
+1. **Clean build:** `pnpm install` → `pnpm build` (fresh `dist/` everywhere).
+2. **Pack + inspect (mechanical, per package):** `pnpm pack` has no
+   recursive/filter form (pnpm#4351) — pack each package explicitly:
+   `pnpm -r --filter '!@vaultledger/obsidian-plugin' exec pnpm pack
+   --pack-destination "$SCRATCH"` (or a four-line `for` loop over the package
+   dirs). Then list each tarball (`tar -tzf`) and assert: `dist/` present with
+   `.js`/`.d.ts` and maps (the base tsconfig emits `sourceMap` +
+   `declarationMap`, so maps are expected); `bin/<name>.mjs` present where
    declared; `LICENSE` + `README.md` present; **absent:** `src/`, `test/`,
    `tsconfig*`, `*.tsbuildinfo`, any `" 2."`-pattern file, anything matching
    `.env*`. Also extract each packed `package.json` and assert every
-   `@vaultledger/*` range reads `0.4.0` — i.e. the `workspace:*` rewrite
-   actually happened.
-3. **Dry-run the real thing:** `pnpm -r publish --dry-run` from the workspace
-   root (confirms auth flow, tag, access, and per-package skip of the private
-   plugin) — expected to fail only at the auth step until step 4.
-4. **Human gate:** Kris creates the `vaultledger` npm org (see prerequisite),
-   runs `npm login` (2FA), then publishes. **Publish in explicit dependency
-   order so `cli` is last** — `pnpm --filter @vaultledger/core publish
-   --access public`, then `server`, then `mcp-server`, then `cli` — rather than
-   relying on `pnpm -r publish`, whose topo-sort is confused by the dev-only
-   cli↔server / cli↔mcp-server cycle and empirically publishes `cli` *before*
-   its runtime siblings. (Verified `pnpm -r publish` doesn't error, but an
-   interrupted run — OTP timeout, network blip — could leave a published `cli`
-   referencing not-yet-published `server`/`mcp-server`, a window a consumer
-   `npm install` would hit as a 404.) Explicit order removes that window.
-   Kris runs these (or explicitly authorizes running them against his
-   logged-in session). Nothing before this step has touched the registry.
-5. **Post-publish smoke (clean environment):** from an empty temp dir with no
+   `@vaultledger/*` range reads `0.4.0` — pnpm applies the `workspace:*`
+   rewrite on `pack` as well as `publish`, so this inspection is
+   representative of the real publish.
+3. **Dry-run:** `pnpm -r publish --dry-run` from the workspace root. Scope of
+   proof: packing, tag, and the per-package skip of the private plugin (and
+   the private root) **only** — `publish --dry-run` never contacts the
+   registry and does not require login (npm removed the dry-run auth check;
+   npm/cli#2445), so it proves nothing about auth, org, or access.
+4. **Registry-side preflight (first registry contact, still reversible):**
+   Kris creates the `vaultledger` npm org (see prerequisite), runs
+   `npm login` (2FA), then `npm whoami` and `npm org ls vaultledger` to prove
+   the session and scope rights actually exist — without this, the first auth
+   test would be the irreversible publish itself.
+5. **Human gate — the publish, canary-first:** publish `@vaultledger/core`
+   alone, verify it on the registry (`npm view @vaultledger/core@0.4.0`), then
+   publish the remaining three via `pnpm -r publish --access public` — the
+   recursive publish skips versions already on the registry, so the canary
+   isn't re-attempted. Kris runs these himself or explicitly authorizes each.
+   2FA note: with auth-and-writes 2FA each upload wants a valid OTP and a TOTP
+   window can lapse mid-run, leaving a partial set — this is *recoverable by
+   re-running the same command* (already-published versions are skipped), and
+   is exactly why the canary+skip shape is used rather than one all-or-nothing
+   run.
+6. **Post-publish smoke (clean environment):** from an empty temp dir with no
    workspace on the path:
    - `npx @vaultledger/cli@0.4.0 --help` → command list renders;
    - `npx @vaultledger/cli@0.4.0 setup <fresh-temp-vault>` → full v0.4 flow:
@@ -219,11 +251,15 @@ command is run by (or explicitly authorized by) Kris.
      changes the context of;
    - `--install-plugin` on the same vault → the new WU-1 degraded message, not
      a crash.
-6. **Record:** append the published versions + tarball listings to this doc's
+7. **Record:** append the published versions + tarball listings to this doc's
    directory as a short release note (`docs/design/specs/2026-07-13-v040-npm-release-notes.md`).
 
-If step 5 fails, the fix ships as **0.4.1** — never an unpublish/republish of
-0.4.0.
+If step 6 fails on an already-published package, recover **forward**: run
+`npm deprecate @vaultledger/<pkg>@0.4.0 "broken — use 0.4.1"` so the registry
+warns anyone who installs it, then ship the fix as **0.4.1**. Never
+unpublish/republish 0.4.0 — a version number can't be reused on npm even after
+unpublish, so a clean re-do of the same version is impossible; deprecate-then-
+supersede is the only real recovery.
 
 ---
 
@@ -270,8 +306,9 @@ bundle-purity guard are all confirmed inert to this track and untouched.
 | Risk | Mitigation |
 |---|---|
 | Irreversible publish of a broken tarball | pack-and-inspect (WU-4.2) + prepack guard (WU-3) both run before the human gate; version-forward (0.4.1) policy, never unpublish |
-| iCloud duplicate files leak into tarballs | none in the fresh clone today; explicit bin-file `files` entries + prepack hard-fail on the `" 2."` pattern are precautionary against re-sync; tarball inspection re-checks |
+| iCloud duplicate files leak into tarballs | none in the relocated clone today; explicit bin-file `files` entries + prepack `" 2."` hard-fail are precautionary against re-sync; tarball inspection re-checks |
 | `workspace:*` reaches the registry | publish via `pnpm` only; WU-4.2 asserts rewritten ranges in the packed manifests |
-| Scope not owned at publish time | org creation is a named blocking prerequisite, before the runbook starts |
+| Scope not owned at publish time | org creation is a named blocking prerequisite, and WU-4.4 proves session + scope rights (`npm whoami`, `npm org ls`) before anything irreversible |
+| Partial publish mid-run (2FA OTP lapse) | canary-first publish + rerun-safe recursive publish (already-published versions skipped) |
 | npm-installed `ledger setup` resolves repo paths | v0.4 built `resolveMcpServerEntry` packaging-safe; WU-4.5 proves it from a clean temp dir before declaring done |
 | Native dep (`better-sqlite3`) install friction | prebuilds cover common platforms; documented pnpm-10 approve-builds note; `engines: node>=20` |
