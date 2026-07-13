@@ -332,7 +332,25 @@ export class Broker {
     // reach) must not be able to silently rewrite them (self-promote to
     // canonical, fake a supersedes lineage, or drop a belief from every
     // same-entity comparison set by rewriting/removing entity).
-    if (!approved && governedProvenanceChanged(before, after)) {
+    //
+    // VL-SEC-S2-03: bare `approved` is NOT a sound discriminator for skipping
+    // this guard -- `approved:true` is set by TWO distinct kinds of caller:
+    // (1) internal privileged status flips (flipFrontmatterStatus in
+    // store.ts, backfillEntity.ts, and this file's own test fixtures), which
+    // pass approved:true WITHOUT an approvalId, and (2) the generic
+    // human-approved-via-queue path (Approvals.dispatchApply, queue.ts),
+    // which is the ONLY caller that passes approvalId ALONGSIDE approved:true
+    // -- approvalId is server-`genId`'d, never sourced from agent/human JSON,
+    // so its presence is an unforgeable signal of which caller this is. Only
+    // (1) may bypass the guard: a generically-approved revise's patch text is
+    // exactly the untrusted, potentially-lying input VL-SEC-S2-01 guards
+    // against (a hunk whose declared position and actual landing differ), and
+    // the human approving it has no way to independently verify the diff
+    // they were shown matches its actual effect. Skipping the guard there
+    // would let an approved "body wording tweak" silently rewrite
+    // ledger.status/supersedes/entity underneath the approving human.
+    const internal = approved && approvalId == null;
+    if (!internal && governedProvenanceChanged(before, after)) {
       throw new BrokerError(
         "LEDGER_GUARD",
         `revise may not change governed provenance without approval — the ledger: block (status/supersedes) and the top-level entity are governed (use promote/forget/setStatus): ${op.path}`,

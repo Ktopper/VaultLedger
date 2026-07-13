@@ -994,6 +994,51 @@ describe("Broker", () => {
   });
 
   // -------------------------------------------------------------------
+  // VL-SEC-S2-03: `approved:true` alone must not bypass the ledger guard —
+  // only the INTERNAL discriminator (approved:true WITHOUT an approvalId)
+  // may. `approvalId` is server-genId'd, never agent/human JSON, so it
+  // reliably distinguishes internal privileged flips (flipFrontmatterStatus,
+  // backfillEntity, and the "legit flip path unblocked" test just above —
+  // all pass approved:true with no approvalId) from the generic
+  // human-approved-via-queue path (Approvals.dispatchApply, the ONLY caller
+  // that passes approvalId alongside approved:true).
+  // -------------------------------------------------------------------
+  test("VL-SEC-S2-03: revise passed { approved: true, approvalId } (the generic approved-via-queue shape) that flips ledger.status is REJECTED, not silently applied", async () => {
+    const { broker, journal, vaultRoot } = await makeBroker();
+    await createAgentFile(broker, "Agent/Memory/lg8.md", LEDGER_NOTE);
+
+    const flipped = LEDGER_NOTE.replace("status: working", "status: canonical");
+    const patchText = createPatch("lg8.md", LEDGER_NOTE, flipped);
+    const expectedHash = hashBytes(Buffer.from(LEDGER_NOTE, "utf8"));
+
+    let thrown: unknown;
+    try {
+      await broker.apply(
+        {
+          op: "revise",
+          path: "Agent/Memory/lg8.md",
+          expected_hash: expectedHash,
+          patch: patchText,
+          reason: "approved promotion via queue",
+          session: "s1",
+        },
+        // This is EXACTLY the shape Approvals.dispatchApply (queue.ts) calls
+        // broker.apply with: approved:true PLUS a real approvalId — the
+        // generic human-approved-via-queue path, distinct from an internal
+        // privileged flip (which never sets approvalId).
+        { approved: true, approvalId: "apr_test_1" },
+      );
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(BrokerError);
+    expect((thrown as BrokerError).code).toBe("LEDGER_GUARD");
+
+    expect(readFileSync(join(vaultRoot, "Agent/Memory/lg8.md"), "utf8")).toBe(LEDGER_NOTE);
+    expect(journal.listTransactions({}).some((t) => t.op === "revise")).toBe(false);
+  });
+
+  // -------------------------------------------------------------------
   // security: .ledger is the security policy itself and must never be
   // agent-writable, even if a (malicious or misconfigured) manifest tries
   // to make "**" trusted (fix 1).
