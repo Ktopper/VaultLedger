@@ -44,9 +44,6 @@ importers:
       '@vaultledger/mcp-server':
         specifier: workspace:*
         version: link:../mcp-server
-      '@vaultledger/obsidian-plugin':
-        specifier: workspace:*
-        version: link:../obsidian-plugin
       '@vaultledger/server':
         specifier: workspace:*
         version: link:../server
@@ -59,6 +56,10 @@ importers:
       yaml:
         specifier: ^2.5.0
         version: 2.9.0
+    devDependencies:
+      '@vaultledger/obsidian-plugin':
+        specifier: workspace:*
+        version: link:../obsidian-plugin
 
   packages/core:
     dependencies:

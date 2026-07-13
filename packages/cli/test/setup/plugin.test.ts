@@ -89,7 +89,7 @@ describe("installPlugin — guards via injectable resolveRoot", () => {
     const result = await installPlugin(vaultDir, () => null);
 
     expect(result.state).toBe("failed");
-    expect(result.detail).toContain("not found");
+    expect(result.detail).toMatch(/Obsidian community|github\.com\/Ktopper\/VaultLedger\/releases/);
     expect(existsSync(destDir(vaultDir))).toBe(false);
   });
 
