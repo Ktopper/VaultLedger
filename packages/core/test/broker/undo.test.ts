@@ -12,6 +12,7 @@ import { openJournal } from "../../src/journal/db.js";
 import { hashBytes } from "../../src/broker/hash.js";
 import { BrokerError } from "../../src/errors.js";
 import { undoSession, undoTransaction } from "../../src/broker/undo.js";
+import { UNSAFE_NO_LOCK } from "../../src/concurrency/lock.js";
 import { MemoryStore } from "../../src/memory/store.js";
 import { recall } from "../../src/recall/recall.js";
 import { Conflicts } from "../../src/conflicts/queue.js";
@@ -69,7 +70,15 @@ describe("undo", () => {
     const db = openJournal(":memory:");
     const journal = new Journal(db);
     const { now, genId } = makeClock();
-    const broker = new Broker({ vaultRoot, git, journal, manifest: MANIFEST, now, genId });
+    const broker = new Broker({
+      vaultRoot,
+      git,
+      journal,
+      manifest: MANIFEST,
+      now,
+      genId,
+      lockDir: UNSAFE_NO_LOCK,
+    });
     return { broker, journal, git, vaultRoot, now, genId };
   }
 
@@ -88,8 +97,16 @@ describe("undo", () => {
     const db = openJournal(":memory:");
     const journal = new Journal(db);
     const { now, genId } = makeClock();
-    const broker = new Broker({ vaultRoot, git, journal, manifest: MANIFEST, now, genId });
-    const store = new MemoryStore({ broker, journal, now, genId, vaultRoot });
+    const broker = new Broker({
+      vaultRoot,
+      git,
+      journal,
+      manifest: MANIFEST,
+      now,
+      genId,
+      lockDir: UNSAFE_NO_LOCK,
+    });
+    const store = new MemoryStore({ broker, journal, now, genId, vaultRoot, manifest: MANIFEST });
     return { store, journal, git, vaultRoot, now, genId };
   }
 
@@ -126,7 +143,7 @@ describe("undo", () => {
     // Undo MUST restore the pre-edit note, never delete the user's file or lose
     // its original bytes. Before the baseline fix, revert of the edit commit
     // (the file's first-ever git appearance) DELETED the note.
-    await undoTransaction({ git, journal, now, genId }, reviseResult.txnId!);
+    await undoTransaction({ git, journal, now, genId, lockDir: UNSAFE_NO_LOCK }, reviseResult.txnId!);
     expect(existsSync(join(vaultRoot, rel))).toBe(true);
     expect(readFileSync(join(vaultRoot, rel), "utf8")).toBe(original);
   });
@@ -157,7 +174,7 @@ describe("undo", () => {
     const reviseTxnBefore = journal.getTransaction(reviseResult.txnId!)!;
 
     const { revertSha, revertTxnId } = await undoTransaction(
-      { git, journal, now, genId },
+      { git, journal, now, genId, lockDir: UNSAFE_NO_LOCK },
       reviseResult.txnId!,
     );
 
@@ -235,7 +252,7 @@ describe("undo", () => {
     // the ux_transactions_commit unique index).
     journal.setTransactionMemoryId(reviseResult.txnId!, "mem_2");
 
-    await undoTransaction({ git, journal, now, genId }, reviseResult.txnId!);
+    await undoTransaction({ git, journal, now, genId, lockDir: UNSAFE_NO_LOCK }, reviseResult.txnId!);
 
     // The file at HEAD is back to "a\nb\nc\n" — real content, but no `ledger:`
     // frontmatter block to parse a status out of. Status must stay exactly
@@ -265,11 +282,11 @@ describe("undo", () => {
     });
     if (!reviseResult.ok || "queued" in reviseResult) throw new Error("expected applied");
 
-    await undoTransaction({ git, journal, now, genId }, reviseResult.txnId!);
+    await undoTransaction({ git, journal, now, genId, lockDir: UNSAFE_NO_LOCK }, reviseResult.txnId!);
 
     let thrown: unknown;
     try {
-      await undoTransaction({ git, journal, now, genId }, reviseResult.txnId!);
+      await undoTransaction({ git, journal, now, genId, lockDir: UNSAFE_NO_LOCK }, reviseResult.txnId!);
     } catch (e) {
       thrown = e;
     }
@@ -281,7 +298,7 @@ describe("undo", () => {
     const { journal, git, now, genId } = await makeHarness();
     let thrown: unknown;
     try {
-      await undoTransaction({ git, journal, now, genId }, "txn_does_not_exist");
+      await undoTransaction({ git, journal, now, genId, lockDir: UNSAFE_NO_LOCK }, "txn_does_not_exist");
     } catch (e) {
       thrown = e;
     }
@@ -309,7 +326,7 @@ describe("undo", () => {
 
     let thrown: unknown;
     try {
-      await undoTransaction({ git, journal, now, genId }, txnId);
+      await undoTransaction({ git, journal, now, genId, lockDir: UNSAFE_NO_LOCK }, txnId);
     } catch (e) {
       thrown = e;
     }
@@ -350,7 +367,7 @@ describe("undo", () => {
 
     let thrown: unknown;
     try {
-      await undoTransaction({ git, journal, now, genId }, createResult.txnId!);
+      await undoTransaction({ git, journal, now, genId, lockDir: UNSAFE_NO_LOCK }, createResult.txnId!);
     } catch (e) {
       thrown = e;
     }
@@ -390,7 +407,7 @@ describe("undo", () => {
       throw new Error("expected applied");
     }
 
-    const results = await undoSession({ git, journal, now, genId }, "session-x");
+    const results = await undoSession({ git, journal, now, genId, lockDir: UNSAFE_NO_LOCK }, "session-x");
     expect(results.map((r) => r.txnId).sort()).toEqual([r1.txnId, r2.txnId].sort());
 
     expect(journal.getTransaction(r1.txnId!)!.status).toBe("reverted");
@@ -432,14 +449,14 @@ describe("undo", () => {
       .find((t) => t.op === "revise" && t.memory_id === id);
     expect(reviseTxn).toBeDefined();
 
-    const { revertTxnId } = await undoTransaction({ git, journal, now, genId }, reviseTxn!.id);
+    const { revertTxnId } = await undoTransaction({ git, journal, now, genId, lockDir: UNSAFE_NO_LOCK }, reviseTxn!.id);
 
     // (a) file bytes restored to the exact pre-revise content.
     const bytesAfterUndo = readFileSync(join(vaultRoot, path), "utf8");
     expect(bytesAfterUndo).toBe(preReviseBytes);
 
     // (b) recall STILL returns the memory — it did NOT vanish.
-    expect(recall(journal, {}, now).map((r) => r.id)).toContain(id);
+    expect(recall(journal, {}, now, MANIFEST).map((r) => r.id)).toContain(id);
 
     // (c) the memory row status is re-derived from the file's frontmatter
     // (still 'scratch' — the revise never touched status).
@@ -461,13 +478,13 @@ describe("undo", () => {
       reason: "seed",
       session: "s1",
     });
-    expect(recall(journal, {}, now).map((r) => r.id)).toContain(id);
+    expect(recall(journal, {}, now, MANIFEST).map((r) => r.id)).toContain(id);
 
-    await undoTransaction({ git, journal, now, genId }, txnId);
+    await undoTransaction({ git, journal, now, genId, lockDir: UNSAFE_NO_LOCK }, txnId);
 
     expect(await git.fileAtHead(path)).toBeNull();
     expect(journal.getMemory(id)!.status).toBe("reverted");
-    expect(recall(journal, {}, now).map((r) => r.id)).not.toContain(id);
+    expect(recall(journal, {}, now, MANIFEST).map((r) => r.id)).not.toContain(id);
   });
 
   test("undoing a CREATE transaction hides its open conflict via the both-sides-live filter (no proactive moot)", async () => {
@@ -493,7 +510,7 @@ describe("undo", () => {
     expect(openBefore).toHaveLength(1);
     const conflictId = openBefore[0]!.id;
 
-    await undoTransaction({ git, journal, now, genId }, b.txnId);
+    await undoTransaction({ git, journal, now, genId, lockDir: UNSAFE_NO_LOCK }, b.txnId);
 
     expect(journal.getMemory(b.id)!.status).toBe("reverted");
     // The raw journal row's OWN state is untouched (still 'open' — undo no
@@ -542,7 +559,7 @@ describe("undo", () => {
       .find((t) => t.memory_id === a.id && t.op === "revise");
     expect(reviseTxn).toBeDefined();
 
-    await undoTransaction({ git, journal, now, genId }, reviseTxn!.id);
+    await undoTransaction({ git, journal, now, genId, lockDir: UNSAFE_NO_LOCK }, reviseTxn!.id);
 
     // A is still live (the revise-undo restores content, not status).
     expect(journal.getMemory(a.id)!.status).toBe("working");
@@ -570,14 +587,14 @@ describe("undo", () => {
       .find((t) => t.op === "revise" && t.memory_id === id);
     expect(promoteTxn).toBeDefined();
 
-    await undoTransaction({ git, journal, now, genId }, promoteTxn!.id);
+    await undoTransaction({ git, journal, now, genId, lockDir: UNSAFE_NO_LOCK }, promoteTxn!.id);
 
     // Git reverted the frontmatter status flip back to 'scratch'...
     const onDisk = matter(readFileSync(join(vaultRoot, path), "utf8"));
     expect(onDisk.data.ledger.status).toBe("scratch");
     // ...and the memory row is re-derived from the file, not blindly reverted.
     expect(journal.getMemory(id)!.status).toBe("scratch");
-    expect(recall(journal, {}, now).map((r) => r.id)).toContain(id);
+    expect(recall(journal, {}, now, MANIFEST).map((r) => r.id)).toContain(id);
   });
 
   test("undoing a distill's CREATE transaction removes its memory_relations edges (no dangling edges)", async () => {
@@ -604,7 +621,7 @@ describe("undo", () => {
     });
     expect(journal.getRelationsForMemory(distilled.id)).toHaveLength(2);
 
-    await undoTransaction({ git, journal, now, genId }, distilled.txnId);
+    await undoTransaction({ git, journal, now, genId, lockDir: UNSAFE_NO_LOCK }, distilled.txnId);
 
     expect(journal.getRelationsForMemory(distilled.id)).toHaveLength(0);
     expect(journal.getMemory(distilled.id)!.status).toBe("reverted");
@@ -621,7 +638,7 @@ describe("undo", () => {
     });
     expect(journal.getRelationsForMemory(id)).toHaveLength(0);
 
-    await undoTransaction({ git, journal, now, genId }, txnId);
+    await undoTransaction({ git, journal, now, genId, lockDir: UNSAFE_NO_LOCK }, txnId);
 
     expect(journal.getRelationsForMemory(id)).toHaveLength(0);
   });

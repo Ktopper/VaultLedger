@@ -82,24 +82,129 @@ export function assertStructurePreserved(before: string, after: string): void {
 }
 
 /**
- * Canonicalize an arbitrary JSON-ish value so two values that differ only in
- * object-key order compare equal via JSON.stringify: object keys are sorted
- * recursively; array order IS significant (reordering array elements is a
- * real change) so arrays are walked element-wise but not reordered.
+ * Deep-equality over an arbitrary JSON-ish value pair, where object-key
+ * order is insignificant (two objects that differ only in key order compare
+ * equal) and array order IS significant (reordering array elements is a
+ * real change).
+ *
+ * VL-SEC-S4-03: js-yaml (via gray-matter) resolves YAML anchors/aliases
+ * (`*name`) as shared object REFERENCES, not copies -- a document using the
+ * same anchored array/map at several keys parses in near-constant time. The
+ * original implementation built a fresh, fully-materialized canonical COPY
+ * of the whole tree (`value.map(canonicalize)` / per-key rebuild, no
+ * memoization) and then `JSON.stringify`'d it for comparison. Both steps
+ * independently re-walk every shared reference from scratch every time it's
+ * encountered, turning reference sharing into an EXPONENTIAL blowup (a
+ * depth-N fan-out of breadth-B anchors visits ~B^N nodes): a ~600-byte
+ * hostile `ledger:` block is enough to OOM-crash the process, and this runs
+ * synchronously on every unapproved `memory_revise` (governedProvenanceChanged).
+ *
+ * IMPORTANT: memoizing the copy-then-stringify step alone is NOT sufficient
+ * -- even if the recursive COPY is memoized by input identity (so it isn't
+ * re-allocated on every visit), the resulting copy still has the exact same
+ * exponential fan-out SHAPE, and `JSON.stringify` has no concept of shared
+ * references: it walks every logical position in that shape and re-emits
+ * text for it, so serializing it is still exponential regardless of how
+ * cheaply the copy itself was produced. The only way to avoid that is to
+ * never build a full copy or stringify anything at all -- compare `before`
+ * and `after` PAIRWISE, node by node, and memoize by the (nodeA, nodeB) PAIR
+ * so a shared sub-structure that's compared more than once is only ever
+ * actually walked once.
+ *
+ * `canonicalEqual` memoizes three ways, all keyed by object IDENTITY (a
+ * `WeakMap<object, WeakSet<object>>` from the `a`-side node to the set of
+ * `b`-side nodes it's been paired with):
+ *   - `trueCache` / `falseCache`: once a pair has been fully compared and
+ *     resolved, every later encounter of the SAME pair reuses that result
+ *     instead of re-walking -- this collapses the fan-out DAG case from
+ *     exponential back down to linear in the number of DISTINCT node pairs.
+ *   - `inProgress`: marks a pair as "currently being compared", checked
+ *     BEFORE recursing into it. Required for correctness, not just speed: a
+ *     completed-cache ALONE is not enough for a genuinely CYCLIC anchor
+ *     (`&a {self: *a}`) on either side -- that pair's cache entry isn't
+ *     written until its own recursive call returns, so re-entering it from
+ *     inside its own subtree would recurse forever (stack overflow) before
+ *     ever reaching the cache. Re-entering an in-progress pair is treated as
+ *     equal (the two structures are self-consistent along every cycle
+ *     reachable so far); any real difference elsewhere in the pair's
+ *     comparison still fails it via a different branch.
+ *
+ * A top-level shape mismatch (different key sets, different array lengths,
+ * a primitive vs. an object) short-circuits immediately without ever
+ * recursing into either side's deep structure.
+ *
+ * KNOWN, INTENTIONAL divergences from the old canonicalize+JSON.stringify
+ * comparator (both unreachable/fail-safe here, called out so a future reader
+ * knows they're deliberate, not bugs): (1) an explicit JS `undefined`-valued
+ * key participates in the key-set comparison here whereas JSON.stringify
+ * dropped it — moot because YAML/gray-matter never produces an `undefined`
+ * value (absent keys simply don't exist; `~`/`null` parse to JS `null`);
+ * (2) `NaN` compares UNequal to itself (`a === b` is false for NaN), so a
+ * governed field that were somehow NaN reads as "changed" — strictly safer
+ * (fails toward requiring approval), and again unreachable since YAML has no
+ * bare NaN scalar in a governed field today.
  */
-function canonicalize(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map(canonicalize);
+function canonicalEqualInner(
+  a: unknown,
+  b: unknown,
+  inProgress: WeakMap<object, WeakSet<object>>,
+  trueCache: WeakMap<object, WeakSet<object>>,
+  falseCache: WeakMap<object, WeakSet<object>>,
+): boolean {
+  if (a === b) return true;
+  if (a === null || b === null || typeof a !== "object" || typeof b !== "object") {
+    return false; // a === b already handled identical primitives/null above
   }
-  if (value !== null && typeof value === "object") {
-    const sortedKeys = Object.keys(value as Record<string, unknown>).sort();
-    const out: Record<string, unknown> = {};
-    for (const key of sortedKeys) {
-      out[key] = canonicalize((value as Record<string, unknown>)[key]);
-    }
-    return out;
+  const objA = a as object;
+  const objB = b as object;
+
+  if (trueCache.get(objA)?.has(objB)) return true;
+  if (falseCache.get(objA)?.has(objB)) return false;
+  if (inProgress.get(objA)?.has(objB)) return true; // cyclic re-entry: consistent so far
+
+  let inSet = inProgress.get(objA);
+  if (inSet === undefined) {
+    inSet = new WeakSet();
+    inProgress.set(objA, inSet);
   }
-  return value;
+  inSet.add(objB);
+
+  const arrayA = Array.isArray(a);
+  const arrayB = Array.isArray(b);
+  let result: boolean;
+  if (arrayA !== arrayB) {
+    result = false;
+  } else if (arrayA && arrayB) {
+    const arrA = a as unknown[];
+    const arrB = b as unknown[];
+    result =
+      arrA.length === arrB.length &&
+      arrA.every((v, i) => canonicalEqualInner(v, arrB[i], inProgress, trueCache, falseCache));
+  } else {
+    const recA = a as Record<string, unknown>;
+    const recB = b as Record<string, unknown>;
+    const keysA = Object.keys(recA).sort();
+    const keysB = Object.keys(recB).sort();
+    result =
+      keysA.length === keysB.length &&
+      keysA.every((k, i) => k === keysB[i]) &&
+      keysA.every((k) => canonicalEqualInner(recA[k], recB[k], inProgress, trueCache, falseCache));
+  }
+
+  inSet.delete(objB);
+  const cache = result ? trueCache : falseCache;
+  let cacheSet = cache.get(objA);
+  if (cacheSet === undefined) {
+    cacheSet = new WeakSet();
+    cache.set(objA, cacheSet);
+  }
+  cacheSet.add(objB);
+
+  return result;
+}
+
+function canonicalEqual(a: unknown, b: unknown): boolean {
+  return canonicalEqualInner(a, b, new WeakMap(), new WeakMap(), new WeakMap());
 }
 
 /** Extract the `ledger` frontmatter field from a parsed gray-matter data
@@ -117,7 +222,29 @@ function normalizeLedger(data: Record<string, unknown>): unknown {
  * set on it, so silently rewriting/removing it drops a belief from every
  * comparison — exactly the evasion this guard exists to stop. `tags` is
  * intentionally excluded: it is descriptive metadata that gates no behavior.
- * A non-string entity normalizes to `null` so "no entity" is comparable. */
+ * A non-string entity normalizes to `null` so "no entity" is comparable.
+ *
+ * VL-SEC-S2-04 — THE BOUNDARY IS INTENTIONAL, NOT AN OVERSIGHT: every OTHER
+ * frontmatter key (`deadline:`, `priority:`, any agent-defined custom key,
+ * `tags` per above) is deliberately UNGOVERNED. This is the fact-update
+ * model: an agent must be free to revise facts in its own memory's
+ * frontmatter (e.g. correcting a `deadline:`) WITHOUT triggering an approval
+ * requirement. The tempting-looking "fix" of widening this slice to cover
+ * all frontmatter would silently break that model — every routine fact edit
+ * would start demanding human approval. So do NOT add keys here to close a
+ * hypothetical gap unless a REAL governance/decision path (an approval-bypass
+ * gate, the entity comparison-set membership, or a status-transition decision
+ * — see `contradiction/matcher.ts`'s `DefaultEntityMatcher`, `memory/store.ts`'s
+ * `flipFrontmatterStatus`, `broker/undo.ts`'s status-from-ledger derivation)
+ * is found to key off that key. As of this writing, an audit of every
+ * frontmatter-parsing call site in `packages/core/src` confirms nothing does:
+ * the only OTHER frontmatter reads are `tags` (memory/reindex.ts, stored but
+ * never used for gating) and the intentionally-broad, NON-gating fact
+ * extraction in `contradiction/extract.ts` (feeds contradiction/staleness
+ * ADVISORY conflict detection, not approval decisions). See
+ * `governedSlice.driftInvariant` in lint.test.ts, which locks this fact down:
+ * it fails if a future change makes `governedProvenanceChanged` sensitive to
+ * some field other than `ledger`/`entity` without a matching update here. */
 function governedSlice(data: Record<string, unknown>): unknown {
   return {
     ledger: normalizeLedger(data),
@@ -162,5 +289,5 @@ export function governedProvenanceChanged(before: string, after: string): boolea
   } catch {
     return true;
   }
-  return JSON.stringify(canonicalize(beforeSlice)) !== JSON.stringify(canonicalize(afterSlice));
+  return !canonicalEqual(beforeSlice, afterSlice);
 }

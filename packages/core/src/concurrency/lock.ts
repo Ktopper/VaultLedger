@@ -37,3 +37,17 @@ export async function withVaultLock<T>(lockDir: string, fn: () => Promise<T>): P
 }
 
 export const LOCK_CONFIG = LOCK_OPTS;
+
+/**
+ * Explicit opt-out sentinel for `Broker`'s and undo's `lockDir` (VL-SEC-S1-01).
+ * `lockDir` is a REQUIRED option on both — an embedder must either pass a
+ * real lock directory or this sentinel, so constructing an unlocked broker
+ * against a shared vault can never happen by silent omission. Reserved for
+ * same-process, single-writer callers (most unit tests) that don't need
+ * cross-process locking; every real host (CLI, MCP server, `ledger serve`)
+ * always passes a real `lockDir` from `vaultLockDir`.
+ */
+export const UNSAFE_NO_LOCK = "unsafe-no-lock" as const;
+
+/** A real lock directory, or the explicit `UNSAFE_NO_LOCK` opt-out. */
+export type LockDirOption = string | typeof UNSAFE_NO_LOCK;

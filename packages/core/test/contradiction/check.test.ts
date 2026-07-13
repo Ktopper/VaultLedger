@@ -6,6 +6,19 @@ import matter from "gray-matter";
 import { openJournal } from "../../src/journal/db.js";
 import { Journal, type MemoryRow } from "../../src/journal/journal.js";
 import { checkContradictions } from "../../src/contradiction/check.js";
+import type { PermissionsManifest } from "../../src/schemas/manifest.js";
+
+const MANIFEST: PermissionsManifest = {
+  version: 1,
+  mode: "assisted",
+  zones: {
+    agent: ["Agent/**"],
+    scratch: ["Agent/Scratch/**"],
+    excluded: ["Private/**"],
+    trusted: ["**"],
+  },
+  overrides: [],
+};
 
 function makeClock(): { now: () => string; genId: (prefix: string) => string } {
   let tick = 0;
@@ -70,7 +83,7 @@ describe("checkContradictions", () => {
     writeNote(vaultRoot, "mem_b.md", "scratch", { deadline: "2026-09-01" });
     journal.insertMemory(memRow({ id: "mem_b", path: "mem_b.md", entity: "nova", status: "scratch" }));
 
-    checkContradictions({ journal, vaultRoot, now, genId }, "mem_b");
+    checkContradictions({ journal, vaultRoot, manifest: MANIFEST, now, genId }, "mem_b");
 
     const open = journal.listConflicts("open");
     expect(open).toHaveLength(1);
@@ -93,8 +106,8 @@ describe("checkContradictions", () => {
     // fact_key, value_hash) unique key must collapse them to a single
     // conflict row (detail is built in id-sorted order, so both directions
     // hash to the same value_hash).
-    checkContradictions({ journal, vaultRoot, now, genId }, "mem_b");
-    checkContradictions({ journal, vaultRoot, now, genId }, "mem_a");
+    checkContradictions({ journal, vaultRoot, manifest: MANIFEST, now, genId }, "mem_b");
+    checkContradictions({ journal, vaultRoot, manifest: MANIFEST, now, genId }, "mem_a");
 
     const open = journal.listConflicts("open");
     expect(open).toHaveLength(1);
@@ -116,7 +129,7 @@ describe("checkContradictions", () => {
       memRow({ id: "mem_b", path: "mem_b.md", entity: "nova", status: "working", supersedes: "mem_a" }),
     );
 
-    checkContradictions({ journal, vaultRoot, now, genId }, "mem_b");
+    checkContradictions({ journal, vaultRoot, manifest: MANIFEST, now, genId }, "mem_b");
 
     expect(journal.listConflicts("open")).toHaveLength(0);
   });
@@ -130,7 +143,7 @@ describe("checkContradictions", () => {
     writeNote(vaultRoot, "mem_b.md", "scratch", { deadline: "2026-09-01", owner: "Bob" });
     journal.insertMemory(memRow({ id: "mem_b", path: "mem_b.md", entity: "nova", status: "scratch" }));
 
-    checkContradictions({ journal, vaultRoot, now, genId }, "mem_b");
+    checkContradictions({ journal, vaultRoot, manifest: MANIFEST, now, genId }, "mem_b");
 
     const open = journal.listConflicts("open");
     expect(open).toHaveLength(2);
@@ -142,13 +155,13 @@ describe("checkContradictions", () => {
 
     journal.insertMemory(memRow({ id: "mem_missing", path: "does-not-exist.md", entity: "nova", status: "canonical" }));
 
-    expect(() => checkContradictions({ journal, vaultRoot, now, genId }, "mem_missing")).not.toThrow();
+    expect(() => checkContradictions({ journal, vaultRoot, manifest: MANIFEST, now, genId }, "mem_missing")).not.toThrow();
     expect(journal.listConflicts("open")).toHaveLength(0);
   });
 
   test("unknown memory id: returns without error", () => {
     const { journal, vaultRoot, now, genId } = setup();
-    expect(() => checkContradictions({ journal, vaultRoot, now, genId }, "nope")).not.toThrow();
+    expect(() => checkContradictions({ journal, vaultRoot, manifest: MANIFEST, now, genId }, "nope")).not.toThrow();
   });
 
   test("re-running after the peer's file becomes unreadable does not abort other peers", () => {
@@ -162,7 +175,7 @@ describe("checkContradictions", () => {
     writeNote(vaultRoot, "mem_b.md", "scratch", { deadline: "2026-09-01" });
     journal.insertMemory(memRow({ id: "mem_b", path: "mem_b.md", entity: "nova", status: "scratch" }));
 
-    expect(() => checkContradictions({ journal, vaultRoot, now, genId }, "mem_b")).not.toThrow();
+    expect(() => checkContradictions({ journal, vaultRoot, manifest: MANIFEST, now, genId }, "mem_b")).not.toThrow();
     const open = journal.listConflicts("open");
     expect(open).toHaveLength(1);
     expect([open[0]!.memory_a, open[0]!.memory_b].sort()).toEqual(["mem_a", "mem_b"]);
@@ -177,7 +190,7 @@ describe("checkContradictions", () => {
     writeNote(vaultRoot, "mem_b.md", "scratch", { deadline: "2026-09-01" });
     journal.insertMemory(memRow({ id: "mem_b", path: "mem_b.md", entity: "nova", status: "scratch" }));
 
-    checkContradictions({ journal, vaultRoot, now, genId }, "mem_b");
+    checkContradictions({ journal, vaultRoot, manifest: MANIFEST, now, genId }, "mem_b");
     const firstOpen = journal.listConflicts("open");
     expect(firstOpen).toHaveLength(1);
     journal.setConflictState(firstOpen[0]!.id, "dismissed");
@@ -187,7 +200,7 @@ describe("checkContradictions", () => {
     // value. Before the fix this collided on (pair_lo, pair_hi, kind,
     // fact_key) and was silently dropped by ON CONFLICT DO NOTHING.
     writeNote(vaultRoot, "mem_b.md", "scratch", { deadline: "2026-12-01" });
-    checkContradictions({ journal, vaultRoot, now, genId }, "mem_b");
+    checkContradictions({ journal, vaultRoot, manifest: MANIFEST, now, genId }, "mem_b");
 
     const open = journal.listConflicts("open");
     expect(open).toHaveLength(1);
@@ -209,9 +222,9 @@ describe("checkContradictions", () => {
     writeNote(vaultRoot, "mem_b.md", "scratch", { deadline: "2026-09-01" });
     journal.insertMemory(memRow({ id: "mem_b", path: "mem_b.md", entity: "nova", status: "scratch" }));
 
-    checkContradictions({ journal, vaultRoot, now, genId }, "mem_b");
-    checkContradictions({ journal, vaultRoot, now, genId }, "mem_b");
-    checkContradictions({ journal, vaultRoot, now, genId }, "mem_a");
+    checkContradictions({ journal, vaultRoot, manifest: MANIFEST, now, genId }, "mem_b");
+    checkContradictions({ journal, vaultRoot, manifest: MANIFEST, now, genId }, "mem_b");
+    checkContradictions({ journal, vaultRoot, manifest: MANIFEST, now, genId }, "mem_a");
 
     expect(journal.listConflicts("open")).toHaveLength(1);
   });
@@ -229,14 +242,14 @@ describe("checkContradictions", () => {
     writeBody("mem_b.md", "scratch", "The project is not active");
     journal.insertMemory(memRow({ id: "mem_b", path: "mem_b.md", entity: "nova", status: "scratch" }));
 
-    checkContradictions({ journal, vaultRoot, now, genId }, "mem_b");
+    checkContradictions({ journal, vaultRoot, manifest: MANIFEST, now, genId }, "mem_b");
     const firstOpen = journal.listConflicts("open");
     expect(firstOpen).toHaveLength(1);
     expect(firstOpen[0]!.value_hash).toBeTruthy();
 
     // Re-detecting the SAME statement pair (from the other direction) must
     // still dedup to ONE row.
-    checkContradictions({ journal, vaultRoot, now, genId }, "mem_a");
+    checkContradictions({ journal, vaultRoot, manifest: MANIFEST, now, genId }, "mem_a");
     expect(journal.listConflicts("open")).toHaveLength(1);
 
     // A genuinely DIFFERENT negation-conflict (different subject/object) on
@@ -244,7 +257,7 @@ describe("checkContradictions", () => {
     // value_hash — proving the negation-conflict hash isn't a constant.
     writeBody("mem_a.md", "canonical", "The project is active\nThe build is green");
     writeBody("mem_b.md", "scratch", "The project is not active\nThe build is not green");
-    checkContradictions({ journal, vaultRoot, now, genId }, "mem_b");
+    checkContradictions({ journal, vaultRoot, manifest: MANIFEST, now, genId }, "mem_b");
 
     const open = journal.listConflicts("open");
     expect(open).toHaveLength(2);
@@ -263,7 +276,7 @@ describe("checkContradictions", () => {
     writeNote(vaultRoot, "mem_zzz.md", "scratch", { deadline: "2026-09-01" });
     journal.insertMemory(memRow({ id: "mem_zzz", path: "mem_zzz.md", entity: "nova", status: "scratch" }));
 
-    checkContradictions({ journal, vaultRoot, now, genId }, "mem_zzz");
+    checkContradictions({ journal, vaultRoot, manifest: MANIFEST, now, genId }, "mem_zzz");
     const open = journal.listConflicts("open");
     expect(open).toHaveLength(1);
     const c = open[0]!;

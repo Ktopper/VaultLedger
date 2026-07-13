@@ -10,14 +10,11 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
     "commander": "^12.1.0",
-    "diff": "^7.0.0",
+    "diff": "^8.0.3",
     "yaml": "^2.5.0",
     "@vaultledger/core": "workspace:*",
     "@vaultledger/server": "workspace:*",
     "@vaultledger/mcp-server": "workspace:*",
     "@vaultledger/obsidian-plugin": "workspace:*"
-  },
-  "devDependencies": {
-    "@types/diff": "^6.0.0"
   }
 }

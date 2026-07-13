@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createPatch } from "diff";
-import { undoSession } from "@vaultledger/core";
+import { undoSession, UNSAFE_NO_LOCK } from "@vaultledger/core";
 import { loadServerContext, type ServerContext } from "../src/context.js";
 import { createServer } from "../src/index.js";
 import { makeTestVault, type TestVault } from "./helpers.js";
@@ -96,7 +96,7 @@ describe("MCP server integration: remember -> recall -> revise -> undo", () => {
     // (it tries to delete a file a later commit modified), so this order
     // matters and is exactly what core's undoSession guarantees.
     const reverted = await undoSession(
-      { git: ctx.git, journal: ctx.journal, now: ctx.now, genId: ctx.genId },
+      { git: ctx.git, journal: ctx.journal, now: ctx.now, genId: ctx.genId, lockDir: UNSAFE_NO_LOCK },
       "mcp-e2e-session",
     );
     expect(reverted.length).toBe(2);

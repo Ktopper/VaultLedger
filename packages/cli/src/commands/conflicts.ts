@@ -89,7 +89,13 @@ export async function conflictsCommand(
         // side is dead) that the both-sides-live view will always hide.
         if (DEAD_STATUSES.has(mem.status)) continue;
         checkContradictions(
-          { journal: ctx.journal, vaultRoot: ctx.vaultRoot, now: ctx.now, genId: ctx.genId },
+          {
+            journal: ctx.journal,
+            vaultRoot: ctx.vaultRoot,
+            manifest: ctx.manifest,
+            now: ctx.now,
+            genId: ctx.genId,
+          },
           mem.id,
         );
       }

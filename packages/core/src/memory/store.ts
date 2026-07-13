@@ -4,11 +4,13 @@ import matter from "gray-matter";
 import { createPatch } from "diff";
 import type { z } from "zod";
 import { Broker } from "../broker/broker.js";
+import { assertContainedAndReadable } from "../broker/containment.js";
 import { hashFile } from "../broker/hash.js";
 import { BrokerError } from "../errors.js";
 import { checkContradictions } from "../contradiction/check.js";
 import { checkSourceStaleness, flagCitingDistillations } from "../contradiction/staleness.js";
 import type { Journal, MemoryRow } from "../journal/journal.js";
+import type { PermissionsManifest } from "../schemas/manifest.js";
 import type { Confidence, MemoryStatus } from "../schemas/provenance.js";
 
 type ConfidenceValue = z.infer<typeof Confidence>;
@@ -39,6 +41,11 @@ export interface MemoryStoreOptions {
   genId: (prefix: string) => string;
   /** Absolute path to the vault root (needed to hashFile the current note). */
   vaultRoot: string;
+  /** The vault's current permissions manifest (VL-SEC-S3-01/S7-02) — threaded
+   * straight into every `checkContradictions` call this store makes
+   * (remember/distill/revise), which requires it to containment/zone-gate
+   * the memory-file reads it performs post-commit. */
+  manifest: PermissionsManifest;
   /** Vault-relative directory new memory notes are created under. */
   agentDir?: string;
 }
@@ -214,6 +221,7 @@ export class MemoryStore {
   private readonly now: () => string;
   private readonly genId: (prefix: string) => string;
   private readonly vaultRoot: string;
+  private readonly manifest: PermissionsManifest;
   private readonly agentDir: string;
 
   constructor(opts: MemoryStoreOptions) {
@@ -222,6 +230,7 @@ export class MemoryStore {
     this.now = opts.now;
     this.genId = opts.genId;
     this.vaultRoot = opts.vaultRoot;
+    this.manifest = opts.manifest;
     this.agentDir = opts.agentDir ?? DEFAULT_AGENT_DIR;
   }
 
@@ -318,7 +327,13 @@ export class MemoryStore {
     // it reads the just-written file back off disk. Lock-free and
     // self-swallowing; see checkContradictions' own doc comment.
     checkContradictions(
-      { journal: this.journal, vaultRoot: this.vaultRoot, now: this.now, genId: this.genId },
+      {
+        journal: this.journal,
+        vaultRoot: this.vaultRoot,
+        manifest: this.manifest,
+        now: this.now,
+        genId: this.genId,
+      },
       id,
     );
 
@@ -460,7 +475,13 @@ export class MemoryStore {
     // Post-commit, non-blocking contradiction check (design v0.3a §5) — see
     // the matching call in `remember` for rationale.
     checkContradictions(
-      { journal: this.journal, vaultRoot: this.vaultRoot, now: this.now, genId: this.genId },
+      {
+        journal: this.journal,
+        vaultRoot: this.vaultRoot,
+        manifest: this.manifest,
+        now: this.now,
+        genId: this.genId,
+      },
       id,
     );
 
@@ -535,8 +556,23 @@ export class MemoryStore {
     }
 
     // Pre-image for the source-linked staleness fact-diff (design v0.3b-2)
-    // -- MUST be read BEFORE broker.apply below mutates the file.
-    const beforeContent = readFileSync(join(this.vaultRoot, mem.path), "utf8");
+    // -- MUST be read BEFORE broker.apply below mutates the file. Routed
+    // through the shared containment/zone gate (never a raw
+    // readFileSync(join(...)), same boundary every other in-process vault
+    // reader honors) AND made non-blocking to match its sibling after-read
+    // below (previously this was the file's one unguarded, throw-on-failure
+    // pre-image): a containment or read failure here just skips the staleness
+    // hook, it must NEVER abort the about-to-commit revise — broker.apply is
+    // the authoritative fail-closed gate for the write itself.
+    let beforeContent: string | null = null;
+    try {
+      beforeContent = readFileSync(
+        assertContainedAndReadable(this.vaultRoot, this.manifest, mem.path),
+        "utf8",
+      );
+    } catch (err) {
+      console.error(`revise: could not read staleness pre-image for ${input.id}:`, err);
+    }
 
     const result = await this.broker.apply(
       {
@@ -561,7 +597,13 @@ export class MemoryStore {
     // only propose_edit re-queues), so by here the patch is committed on disk
     // and the check reads the just-written note.
     checkContradictions(
-      { journal: this.journal, vaultRoot: this.vaultRoot, now: this.now, genId: this.genId },
+      {
+        journal: this.journal,
+        vaultRoot: this.vaultRoot,
+        manifest: this.manifest,
+        now: this.now,
+        genId: this.genId,
+      },
       input.id,
     );
 
@@ -575,16 +617,19 @@ export class MemoryStore {
     // The read+hash of the after-content is INSIDE this try so a file-unreadable
     // race in the sub-ms window after the commit can never fail the (already
     // committed) write — the non-blocking contract covers the arg evaluation,
-    // not just the helper body.
-    try {
-      checkSourceStaleness(
-        { journal: this.journal, now: this.now, genId: this.genId },
-        input.id,
-        beforeContent,
-        readFileSync(join(this.vaultRoot, mem.path), "utf8"),
-      );
-    } catch (err) {
-      console.error(`revise: source-linked staleness failed for ${input.id}:`, err);
+    // not just the helper body. Skipped entirely if the pre-image read above
+    // failed (beforeContent === null): a fact-diff needs both sides.
+    if (beforeContent !== null) {
+      try {
+        checkSourceStaleness(
+          { journal: this.journal, now: this.now, genId: this.genId },
+          input.id,
+          beforeContent,
+          readFileSync(assertContainedAndReadable(this.vaultRoot, this.manifest, mem.path), "utf8"),
+        );
+      } catch (err) {
+        console.error(`revise: source-linked staleness failed for ${input.id}:`, err);
+      }
     }
 
     return { revised: true, id: input.id };
@@ -932,7 +977,12 @@ export class MemoryStore {
     session: string,
     extra?: Record<string, unknown>,
   ): Promise<void> {
-    const abs = join(this.vaultRoot, mem.path);
+    // Gate the read through the shared containment/zone boundary (not a raw
+    // readFileSync(join(...))) so a memory whose path is excluded/traversal
+    // is refused HERE rather than relying on the later broker.apply to
+    // fail-closed. `assertContainedAndReadable` returns the same verified
+    // absolute path we then hashFile below.
+    const abs = assertContainedAndReadable(this.vaultRoot, this.manifest, mem.path);
     const before = readFileSync(abs, "utf8");
     const parsed = matter(before);
     const currentLedger =

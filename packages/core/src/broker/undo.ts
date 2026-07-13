@@ -1,7 +1,7 @@
 import matter from "gray-matter";
 import { BrokerError } from "../errors.js";
 import type { Journal, TransactionRow } from "../journal/journal.js";
-import { withVaultLock } from "../concurrency/lock.js";
+import { UNSAFE_NO_LOCK, withVaultLock, type LockDirOption } from "../concurrency/lock.js";
 import type { LedgerGit } from "./git.js";
 
 export interface UndoDeps {
@@ -9,10 +9,11 @@ export interface UndoDeps {
   journal: Journal;
   now: () => string;
   genId: (prefix: string) => string;
-  /** When set, acquires the shared cross-process vault lock (see
-   * concurrency/lock.ts) around the undo. Opt-in: unset leaves behavior
-   * unchanged for existing single-process callers/tests. */
-  lockDir?: string;
+  /** Acquires the shared cross-process vault lock (see concurrency/lock.ts)
+   * around the undo. REQUIRED (VL-SEC-S1-01): pass a real lock directory, or
+   * the explicit `UNSAFE_NO_LOCK` sentinel for same-process, single-writer
+   * tests that don't need cross-process locking. */
+  lockDir: LockDirOption;
 }
 
 /**
@@ -34,7 +35,7 @@ export async function undoTransaction(
   deps: UndoDeps,
   txnId: string,
 ): Promise<{ revertSha: string; revertTxnId: string }> {
-  if (deps.lockDir !== undefined) {
+  if (deps.lockDir !== UNSAFE_NO_LOCK) {
     return withVaultLock(deps.lockDir, () => runUndoTransaction(deps, txnId));
   }
   return runUndoTransaction(deps, txnId);
@@ -193,7 +194,7 @@ export async function undoSession(
     }
     return results;
   };
-  if (deps.lockDir !== undefined) {
+  if (deps.lockDir !== UNSAFE_NO_LOCK) {
     return withVaultLock(deps.lockDir, run);
   }
   return run();

@@ -8,6 +8,7 @@ import { Journal } from "../../src/journal/journal.js";
 import { openJournal } from "../../src/journal/db.js";
 import { MemoryStore } from "../../src/memory/store.js";
 import { undoTransaction } from "../../src/broker/undo.js";
+import { UNSAFE_NO_LOCK } from "../../src/concurrency/lock.js";
 import { reindex } from "../../src/memory/reindex.js";
 import { auditMemories } from "../../src/memory/auditMemories.js";
 import type { PermissionsManifest } from "../../src/schemas/manifest.js";
@@ -65,8 +66,16 @@ describe("auditMemories", () => {
     const db = openJournal(":memory:");
     const journal = new Journal(db);
     const { now, genId } = makeClock();
-    const broker = new Broker({ vaultRoot, git, journal, manifest: MANIFEST, now, genId });
-    const store = new MemoryStore({ broker, journal, now, genId, vaultRoot });
+    const broker = new Broker({
+      vaultRoot,
+      git,
+      journal,
+      manifest: MANIFEST,
+      now,
+      genId,
+      lockDir: UNSAFE_NO_LOCK,
+    });
+    const store = new MemoryStore({ broker, journal, now, genId, vaultRoot, manifest: MANIFEST });
     return { journal, git, broker, store, vaultRoot, now, genId };
   }
 
@@ -93,7 +102,7 @@ describe("auditMemories", () => {
     // The source dies AFTER the citation: undo its create. Event-driven
     // detection (which only runs on retire/forget/revise of the source
     // itself) never sees this.
-    await undoTransaction({ git, journal, now, genId }, s.txnId);
+    await undoTransaction({ git, journal, now, genId, lockDir: UNSAFE_NO_LOCK }, s.txnId);
     expect(journal.getMemory(s.id)!.status).toBe("reverted");
 
     const result = auditMemories({ journal, vaultRoot, now, genId });
@@ -143,7 +152,7 @@ describe("auditMemories", () => {
     const d = await store.distill({ content: "summary", sources: [s.id], reason: "sum", session: "s1" });
     // Source dead WITHOUT firing the retire/forget event (undo is scan-only);
     // the d->s edge survives (undo of s removes only s's own outgoing edges).
-    await undoTransaction({ git, journal, now, genId }, s.txnId);
+    await undoTransaction({ git, journal, now, genId, lockDir: UNSAFE_NO_LOCK }, s.txnId);
     // Distillation itself dead (no event: d is cited by nobody).
     await store.forget({ id: d.id, reason: "drop distillation", session: "s1" });
 
@@ -171,7 +180,7 @@ describe("auditMemories", () => {
       reason: "summarize",
       session: "s1",
     });
-    await undoTransaction({ git, journal, now, genId }, s.txnId);
+    await undoTransaction({ git, journal, now, genId, lockDir: UNSAFE_NO_LOCK }, s.txnId);
 
     const first = auditMemories({ journal, vaultRoot, now, genId });
     expect(first.pairs).toEqual([{ distillation: d.id, source: s.id, reason: "reverted" }]);
@@ -252,11 +261,11 @@ describe("auditMemories", () => {
       reason: "summarize",
       session: "s1",
     });
-    await undoTransaction({ git, journal, now, genId }, s.txnId);
+    await undoTransaction({ git, journal, now, genId, lockDir: UNSAFE_NO_LOCK }, s.txnId);
 
     // Wipe: a brand-new, empty journal, rebuilt purely from disk + git.
     const freshJournal = new Journal(openJournal(":memory:"));
-    await reindex({ vaultRoot, git, journal: freshJournal, now, genId });
+    await reindex({ vaultRoot, git, journal: freshJournal, manifest: MANIFEST, now, genId });
 
     // The reverted source's file is gone, so reindex never recreates a row
     // for it -- its journal row is now entirely MISSING (not merely

@@ -8,6 +8,7 @@ import {
   Conflicts,
   findStale,
   recall,
+  redactExcludedZones,
   undoSession,
   undoTransaction,
   type RejectionCode,
@@ -45,6 +46,13 @@ const BROKER_ERROR_STATUS: Record<RejectionCode, number> = {
   // caller input error about the request's shape, not a state conflict --
   // same family as INVALID_TRANSITION.
   INVALID_SOURCE: 422,
+  // scanVault's self-check (VL-SEC-S7-03 fix): thrown only from `ledger
+  // init`/`setup` (CLI-side, not reachable through any server route today)
+  // when the proposed manifest would fail to exclude a detected Private
+  // folder. Included here only for Record<RejectionCode, number>
+  // exhaustiveness -- 500 because it signals an internal invariant the tool
+  // failed to uphold, not a client-caused rejection.
+  INVARIANT_VIOLATION: 500,
 };
 
 const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
@@ -189,7 +197,12 @@ export function buildBridge(ctx: VaultContext, token: string): FastifyInstance {
 
   app.get("/status", async () => {
     return {
-      zones: ctx.manifest.zones,
+      // Agent-facing (the MCP-connected agent reaches this over the
+      // token-authed loopback bridge): redact excluded-zone globs
+      // (VL-SEC-S7-04) — see redactExcludedZones' doc comment. The
+      // obsidian-plugin review UI (bridgeClient.status()) does not display
+      // zones.excluded anywhere, so this doesn't regress its legitimate use.
+      zones: redactExcludedZones(ctx.manifest.zones),
       mode: ctx.manifest.mode,
       pendingApprovals: ctx.approvals.list().length,
       recentTransactions: ctx.journal.listTransactions({ limit: 10 }),
@@ -215,7 +228,12 @@ export function buildBridge(ctx: VaultContext, token: string): FastifyInstance {
 
   app.get("/memories", async (req: FastifyRequest) => {
     const query = req.query as { entity?: string; status?: string; tag?: string };
-    return recall(ctx.journal, { entity: query.entity, status: query.status, tag: query.tag }, ctx.now);
+    return recall(
+      ctx.journal,
+      { entity: query.entity, status: query.status, tag: query.tag },
+      ctx.now,
+      ctx.manifest,
+    );
   });
 
   app.get("/staleness", async () => {

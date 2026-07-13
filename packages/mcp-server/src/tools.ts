@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { BrokerError, Confidence, recall, type RecallFilters } from "@vaultledger/core";
+import { BrokerError, Confidence, recall, redactExcludedZones, type RecallFilters } from "@vaultledger/core";
 import type { ServerContext } from "./context.js";
 
 /** Structured error shape every tool handler returns instead of throwing.
@@ -30,6 +30,59 @@ function brokerError(e: BrokerError): ToolResult {
   return { error: e.toRejection() };
 }
 
+/**
+ * VL-SEC-S4-05: before this fix, `content`/`patch`/`sources`/`tags`/`reason`
+ * (and every other free-text/array MCP input) were bare `z.string()`/
+ * `z.array()` with no `.max()` anywhere. A giant `content`/`patch`
+ * permanently bloats the vault's git history (every governed mutation is
+ * committed and never garbage-collected); a `sources`/`tags` array with
+ * millions of entries blocks the synchronous SQLite journal writer (each
+ * element becomes its own row/write inside the broker's lock); a
+ * pathological `vault_propose_edit` patch DEFERS a crash to approval time --
+ * a human clicking "approve" would trigger the broker's parse/apply path on
+ * an already-known-hostile string. These constants bound every free-text/
+ * array MCP input at the zod layer, before any of that work happens.
+ *
+ * `TEXT_MAX_BYTES` mirrors the bridge's own `BODY_LIMIT_BYTES` precedent
+ * (packages/server/src/app.ts) -- 16 KiB comfortably covers a real note body
+ * or a real unified-diff patch for a single-note edit.
+ */
+const TEXT_MAX_BYTES = 16 * 1024;
+
+/** A UTF-8 BYTE-count bound for the large free-text fields (content/patch),
+ * as opposed to zod's `.max()` which counts UTF-16 code units (JS
+ * `String.length`). This matters because git history bloat and the bridge's
+ * `BODY_LIMIT_BYTES` are both measured in BYTES: a `.max(16384)` char cap
+ * would let `"中".repeat(16384)` (49 KiB UTF-8) or an emoji-heavy body (~2x)
+ * through despite the "16 KiB" name. `Buffer.byteLength(s, "utf8")` is the
+ * exact byte length git will store, so this makes the cap mean what it says
+ * and stay consistent with the bridge's real byte bound. The small
+ * identifier/reason/tag fields keep their char-count `.max()` — those are
+ * generous headroom, not a tight fit, so UTF-16-vs-byte drift is immaterial
+ * there. */
+function byteCappedText(limit: number, field: string) {
+  return z
+    .string()
+    .min(1)
+    .refine((s) => Buffer.byteLength(s, "utf8") <= limit, {
+      message: `${field} exceeds ${limit} bytes (UTF-8)`,
+    });
+}
+/** A `reason` is a short human-readable justification, not note content --
+ * capped far below TEXT_MAX_BYTES. */
+const REASON_MAX_LENGTH = 2_000;
+/** Identifiers (memory ids, content hashes, entity names) are short by
+ * construction; this is generous headroom, not a tight fit. */
+const ID_MAX_LENGTH = 256;
+/** A vault-relative path can legitimately be longer than a bare id. */
+const PATH_MAX_LENGTH = 1_024;
+/** A single tag or source-citation string. */
+const TAG_MAX_LENGTH = 128;
+/** Element-count cap on arrays -- unbounded `sources`/`tags` arrays block
+ * the synchronous SQLite journal writer (each element becomes its own row/
+ * write inside the broker's lock). */
+const ARRAY_MAX_ITEMS = 100;
+
 function internalError(e: unknown): ToolResult {
   return {
     error: {
@@ -54,63 +107,65 @@ async function guarded(fn: () => Promise<ToolResult>): Promise<ToolResult> {
 
 const RecallInput = z
   .object({
-    entity: z.string().optional(),
-    tag: z.string().optional(),
+    entity: z.string().max(ID_MAX_LENGTH).optional(),
+    tag: z.string().max(TAG_MAX_LENGTH).optional(),
     status: z.enum(["scratch", "working", "canonical", "forgotten", "reverted"]).optional(),
-    since: z.string().optional(),
+    since: z.string().max(64).optional(),
     limit: z.number().int().positive().optional(),
   })
   .strict();
 
 const RememberInput = z
   .object({
-    content: z.string().min(1),
-    entity: z.string().optional(),
-    reason: z.string().min(1),
-    tags: z.array(z.string()).optional(),
+    content: byteCappedText(TEXT_MAX_BYTES, "content"),
+    entity: z.string().max(ID_MAX_LENGTH).optional(),
+    reason: z.string().min(1).max(REASON_MAX_LENGTH),
+    tags: z.array(z.string().min(1).max(TAG_MAX_LENGTH)).max(ARRAY_MAX_ITEMS).optional(),
     confidence: Confidence.optional(),
     /** Id of the memory this new one supersedes (an updated belief). Forwarded
      * to MemoryStore.remember so the contradiction matcher's lineage
      * exclusion actually fires for agent-authored updates. */
-    supersedes: z.string().optional(),
+    supersedes: z.string().max(ID_MAX_LENGTH).optional(),
   })
   .strict();
 
 const ReviseInput = z
   .object({
-    id: z.string().min(1),
-    patch: z.string().min(1),
-    reason: z.string().min(1),
+    id: z.string().min(1).max(ID_MAX_LENGTH),
+    patch: byteCappedText(TEXT_MAX_BYTES, "patch"),
+    reason: z.string().min(1).max(REASON_MAX_LENGTH),
   })
   .strict();
 
 const PromoteInput = z
   .object({
-    id: z.string().min(1),
+    id: z.string().min(1).max(ID_MAX_LENGTH),
     target_status: z.enum(["working", "canonical"]),
-    reason: z.string().min(1),
+    reason: z.string().min(1).max(REASON_MAX_LENGTH),
   })
   .strict();
 
 const ForgetInput = z
   .object({
-    id: z.string().min(1),
-    reason: z.string().min(1),
+    id: z.string().min(1).max(ID_MAX_LENGTH),
+    reason: z.string().min(1).max(REASON_MAX_LENGTH),
   })
   .strict();
 
 const DistillInput = z
   .object({
-    content: z.string().min(1),
+    content: byteCappedText(TEXT_MAX_BYTES, "content"),
     // Not `.min(1)` at the zod layer on purpose: an empty `sources` array is
     // a semantic rejection (INVALID_SOURCE — "a distillation must cite at
     // least one source"), not a shape violation, so it's left to
     // `store.distill` to reject uniformly with everyone else's structured
     // BrokerError result rather than surfacing as a generic INVALID_ARGS
-    // here.
-    sources: z.array(z.string().min(1)),
-    reason: z.string().min(1),
-    entity: z.string().optional(),
+    // here. The `.max(ARRAY_MAX_ITEMS)` element-count cap IS a shape bound,
+    // so it stays at the zod layer (VL-SEC-S4-05): an over-limit array must
+    // be rejected before the store does one existence lookup per source.
+    sources: z.array(z.string().min(1).max(ID_MAX_LENGTH)).max(ARRAY_MAX_ITEMS),
+    reason: z.string().min(1).max(REASON_MAX_LENGTH),
+    entity: z.string().max(ID_MAX_LENGTH).optional(),
     confidence: Confidence.optional(),
     score: z.number().optional(),
   })
@@ -118,18 +173,18 @@ const DistillInput = z
 
 const RetireInput = z
   .object({
-    id: z.string().min(1),
-    reason: z.string().min(1),
-    superseded_by: z.string().optional(),
+    id: z.string().min(1).max(ID_MAX_LENGTH),
+    reason: z.string().min(1).max(REASON_MAX_LENGTH),
+    superseded_by: z.string().max(ID_MAX_LENGTH).optional(),
   })
   .strict();
 
 const ProposeEditInput = z
   .object({
-    path: z.string().min(1),
-    patch: z.string().min(1),
-    reason: z.string().min(1),
-    expected_hash: z.string().min(1),
+    path: z.string().min(1).max(PATH_MAX_LENGTH),
+    patch: byteCappedText(TEXT_MAX_BYTES, "patch"),
+    reason: z.string().min(1).max(REASON_MAX_LENGTH),
+    expected_hash: z.string().min(1).max(ID_MAX_LENGTH),
   })
   .strict();
 
@@ -163,7 +218,7 @@ export function buildTools(ctx: ServerContext): ToolDef[] {
           // journal-indexed (exact matches); there is no free-text search in
           // v0.1, so there is deliberately no `query` param.
           const filters: RecallFilters = { entity, tag, status, since, limit };
-          const memories = recall(ctx.journal, filters, ctx.now);
+          const memories = recall(ctx.journal, filters, ctx.now, ctx.manifest);
           return { memories };
         }),
     },
@@ -329,7 +384,11 @@ export function buildTools(ctx: ServerContext): ToolDef[] {
           const parsed = LedgerStatusInput.safeParse(rawArgs ?? {});
           if (!parsed.success) return invalidArgs(parsed.error.message);
           return {
-            zones: ctx.manifest.zones,
+            // Agent-facing: redact excluded-zone globs (VL-SEC-S7-04) —
+            // returning them verbatim would tell the agent exactly what
+            // (and, for a file-targeted override, precisely which file) is
+            // hidden from it. The human-facing CLI `status` keeps them.
+            zones: redactExcludedZones(ctx.manifest.zones),
             pendingApprovals: ctx.approvals.list(),
             recentTransactions: ctx.journal.listTransactions({ limit: 10 }),
           };

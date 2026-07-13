@@ -13,6 +13,7 @@ import { BrokerError } from "../../src/errors.js";
 import { MemoryStore } from "../../src/memory/store.js";
 import { recall } from "../../src/recall/recall.js";
 import { undoTransaction } from "../../src/broker/undo.js";
+import { UNSAFE_NO_LOCK } from "../../src/concurrency/lock.js";
 import { Conflicts } from "../../src/conflicts/queue.js";
 import { Approvals } from "../../src/approvals/queue.js";
 import { staleSourceDetail } from "../../src/contradiction/staleness.js";
@@ -71,8 +72,16 @@ describe("MemoryStore", () => {
     const db = openJournal(":memory:");
     const journal = new Journal(db);
     const { now, genId } = makeClock();
-    const broker = new Broker({ vaultRoot, git, journal, manifest: MANIFEST, now, genId });
-    const store = new MemoryStore({ broker, journal, now, genId, vaultRoot });
+    const broker = new Broker({
+      vaultRoot,
+      git,
+      journal,
+      manifest: MANIFEST,
+      now,
+      genId,
+      lockDir: UNSAFE_NO_LOCK,
+    });
+    const store = new MemoryStore({ broker, journal, now, genId, vaultRoot, manifest: MANIFEST });
     return { store, broker, journal, vaultRoot, git, now, genId };
   }
 
@@ -171,15 +180,15 @@ describe("MemoryStore", () => {
     });
     // Sanity: the memory is recallable and its file exists before undo.
     expect(existsSync(join(vaultRoot, path))).toBe(true);
-    expect(recall(journal, { entity: "alice" }, now).map((r) => r.id)).toContain(id);
+    expect(recall(journal, { entity: "alice" }, now, MANIFEST).map((r) => r.id)).toContain(id);
 
-    await undoTransaction({ git, journal, now, genId }, txnId);
+    await undoTransaction({ git, journal, now, genId, lockDir: UNSAFE_NO_LOCK }, txnId);
 
     // File is gone at HEAD (create reverted)...
     expect(await git.fileAtHead(path)).toBeNull();
     // ...and the memory row is now 'reverted', so recall no longer returns it.
     expect(journal.getMemory(id)!.status).toBe("reverted");
-    expect(recall(journal, { entity: "alice" }, now).map((r) => r.id)).not.toContain(id);
+    expect(recall(journal, { entity: "alice" }, now, MANIFEST).map((r) => r.id)).not.toContain(id);
   });
 
   test("revise patches the note through the broker", async () => {
@@ -492,7 +501,7 @@ describe("MemoryStore", () => {
 
   test("a held canonical-revise, once approved, lands the patch and marks the approval approved", async () => {
     const { store, broker, journal, vaultRoot, now, genId } = await makeStore();
-    const approvals = new Approvals({ broker, store, journal, now, vaultRoot, genId });
+    const approvals = new Approvals({ broker, store, journal, now, vaultRoot, genId, manifest: MANIFEST });
     const { id, path } = await store.remember({ content: "durable fact 2", reason: "seed", session: "s1" });
     await store.setStatus(id, "canonical", "approved as durable belief", "s1");
 
@@ -513,7 +522,7 @@ describe("MemoryStore", () => {
 
   test("a held canonical-revise, when rejected, leaves the file unchanged and the approval rejected", async () => {
     const { store, broker, journal, vaultRoot, now, genId } = await makeStore();
-    const approvals = new Approvals({ broker, store, journal, now, vaultRoot, genId });
+    const approvals = new Approvals({ broker, store, journal, now, vaultRoot, genId, manifest: MANIFEST });
     const { id, path } = await store.remember({ content: "durable fact 3", reason: "seed", session: "s1" });
     await store.setStatus(id, "canonical", "approved as durable belief", "s1");
 
@@ -974,7 +983,7 @@ describe("MemoryStore", () => {
       // Undo the create so the source becomes `reverted` — git revert DELETES
       // its file from the vault, but the journal row survives with
       // status="reverted", so getMemory still returns it.
-      await undoTransaction({ git, journal, now, genId }, a.txnId);
+      await undoTransaction({ git, journal, now, genId, lockDir: UNSAFE_NO_LOCK }, a.txnId);
       expect(journal.getMemory(a.id)!.status).toBe("reverted");
 
       const before = journal.listTransactions({});
@@ -1159,7 +1168,7 @@ describe("MemoryStore", () => {
     test("reverted -> retire is an unsupported transition", async () => {
       const { store, journal, git, now, genId } = await makeStore();
       const { id, txnId } = await store.remember({ content: "undone fact", reason: "seed", session: "s1" });
-      await undoTransaction({ git, journal, now, genId }, txnId);
+      await undoTransaction({ git, journal, now, genId, lockDir: UNSAFE_NO_LOCK }, txnId);
       expect(journal.getMemory(id)!.status).toBe("reverted");
 
       let thrown: unknown;
@@ -1227,7 +1236,7 @@ describe("MemoryStore", () => {
       // remember -> undo its create. git revert DELETES the file; the journal
       // row survives with status="reverted", so getMemory still returns it.
       const gone = await store.remember({ content: "will be reverted", reason: "seed", session: "s1" });
-      await undoTransaction({ git, journal, now, genId }, gone.txnId);
+      await undoTransaction({ git, journal, now, genId, lockDir: UNSAFE_NO_LOCK }, gone.txnId);
       expect(journal.getMemory(gone.id)!.status).toBe("reverted");
 
       const { id, path } = await store.remember({ content: "working fact", reason: "seed", session: "s1" });
@@ -1246,7 +1255,7 @@ describe("MemoryStore", () => {
     test("superseded_by pointing at a reverted memory does not even queue when the retiree is canonical", async () => {
       const { store, journal, git, now, genId } = await makeStore();
       const gone = await store.remember({ content: "will be reverted", reason: "seed", session: "s1" });
-      await undoTransaction({ git, journal, now, genId }, gone.txnId);
+      await undoTransaction({ git, journal, now, genId, lockDir: UNSAFE_NO_LOCK }, gone.txnId);
       expect(journal.getMemory(gone.id)!.status).toBe("reverted");
 
       const { id } = await store.remember({ content: "canonical fact", reason: "seed", session: "s1" });

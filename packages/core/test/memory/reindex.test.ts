@@ -9,6 +9,7 @@ import { openJournal } from "../../src/journal/db.js";
 import { recall } from "../../src/recall/recall.js";
 import { reindex, ensureJournal } from "../../src/memory/reindex.js";
 import { Broker } from "../../src/broker/broker.js";
+import { UNSAFE_NO_LOCK } from "../../src/concurrency/lock.js";
 import { MemoryStore } from "../../src/memory/store.js";
 import { Approvals } from "../../src/approvals/queue.js";
 import type { PermissionsManifest } from "../../src/schemas/manifest.js";
@@ -137,7 +138,7 @@ describe("reindex", () => {
       };
     })();
 
-    const result = await reindex({ vaultRoot, git, journal, now, genId: genId2 });
+    const result = await reindex({ vaultRoot, git, journal, manifest: MANIFEST, now, genId: genId2 });
 
     expect(result.memories).toBe(2);
     expect(result.transactions).toBeGreaterThanOrEqual(2);
@@ -157,7 +158,7 @@ describe("reindex", () => {
     expect(memB!.status).toBe("scratch");
     expect(memB!.entity).toBe("bob");
 
-    const recalled = recall(journal, {}, now).map((r) => r.id);
+    const recalled = recall(journal, {}, now, MANIFEST).map((r) => r.id);
     expect(recalled).toContain("mem_a");
     expect(recalled).toContain("mem_b");
   });
@@ -174,11 +175,11 @@ describe("reindex", () => {
       body: "Carol likes tea.",
     });
 
-    const first = await reindex({ vaultRoot, git, journal, now, genId });
+    const first = await reindex({ vaultRoot, git, journal, manifest: MANIFEST, now, genId });
     expect(first.memories).toBe(1);
     expect(first.transactions).toBeGreaterThanOrEqual(1);
 
-    const second = await reindex({ vaultRoot, git, journal, now, genId });
+    const second = await reindex({ vaultRoot, git, journal, manifest: MANIFEST, now, genId });
     expect(second.memories).toBe(1);
     // No new commits appeared since the first run, so nothing new to insert.
     expect(second.transactions).toBe(0);
@@ -201,19 +202,27 @@ describe("reindex", () => {
       body: "Dana's note.",
     });
 
-    const healed = await ensureJournal({ vaultRoot, git, journal, now, genId });
+    const healed = await ensureJournal({ vaultRoot, git, journal, manifest: MANIFEST, now, genId });
     expect(healed).toBe(true);
     expect(journal.getMemory("mem_heal")).not.toBeNull();
 
-    const second = await ensureJournal({ vaultRoot, git, journal, now, genId });
+    const second = await ensureJournal({ vaultRoot, git, journal, manifest: MANIFEST, now, genId });
     expect(second).toBe(false);
   });
 
   test("a canonical promotion survives a reindex into a fresh empty journal (status is durable in the file)", async () => {
     const { journal, git, vaultRoot, now, genId } = await makeHarness();
-    const broker = new Broker({ vaultRoot, git, journal, manifest: MANIFEST, now, genId });
-    const store = new MemoryStore({ broker, journal, now, genId, vaultRoot });
-    const approvals = new Approvals({ broker, store, journal, now, vaultRoot, genId });
+    const broker = new Broker({
+      vaultRoot,
+      git,
+      journal,
+      manifest: MANIFEST,
+      now,
+      genId,
+      lockDir: UNSAFE_NO_LOCK,
+    });
+    const store = new MemoryStore({ broker, journal, now, genId, vaultRoot, manifest: MANIFEST });
+    const approvals = new Approvals({ broker, store, journal, now, vaultRoot, genId, manifest: MANIFEST });
 
     const { id } = await store.remember({ content: "canonical truth", reason: "seed", session: "s1" });
     await store.promote({ id, target_status: "working", reason: "confirmed", session: "s1" });
@@ -225,7 +234,7 @@ describe("reindex", () => {
     const freshJournal = new Journal(openJournal(":memory:"));
     expect(freshJournal.getMemory(id)).toBeNull();
 
-    const result = await reindex({ vaultRoot, git, journal: freshJournal, now, genId });
+    const result = await reindex({ vaultRoot, git, journal: freshJournal, manifest: MANIFEST, now, genId });
     expect(result.memories).toBe(1);
     // The canonical status was recovered purely from the file frontmatter.
     expect(freshJournal.getMemory(id)!.status).toBe("canonical");
@@ -254,7 +263,7 @@ describe("reindex", () => {
     );
     await git.commitFile(badRel, formatMessage({ op: "create", basename: "broken.md", session: "s1" }));
 
-    const result = await reindex({ vaultRoot, git, journal, now, genId });
+    const result = await reindex({ vaultRoot, git, journal, manifest: MANIFEST, now, genId });
     expect(result.memories).toBe(1);
     expect(result.skipped).toContain(badRel);
     expect(journal.getMemory("mem_good")).not.toBeNull();
@@ -285,7 +294,7 @@ describe("reindex", () => {
     await git.commitFile("Agent/Memory/aaa.md", formatMessage({ op: "create", basename: "aaa.md", session: "s1" }));
     await git.commitFile("Agent/Memory/zzz.md", formatMessage({ op: "create", basename: "zzz.md", session: "s1" }));
 
-    const result = await reindex({ vaultRoot, git, journal, now, genId });
+    const result = await reindex({ vaultRoot, git, journal, manifest: MANIFEST, now, genId });
     expect(result.memories).toBe(1);
     expect(result.conflicts.length).toBe(1);
     // Exactly one row for mem_dup, and it kept the first-walked file's entity.
@@ -302,8 +311,16 @@ describe("reindex", () => {
 
   test("incremental reindex flags an out-of-band canonical elevation, but still adopts it", async () => {
     const { journal, git, vaultRoot, now, genId } = await makeHarness();
-    const broker = new Broker({ vaultRoot, git, journal, manifest: MANIFEST, now, genId });
-    const store = new MemoryStore({ broker, journal, now, genId, vaultRoot });
+    const broker = new Broker({
+      vaultRoot,
+      git,
+      journal,
+      manifest: MANIFEST,
+      now,
+      genId,
+      lockDir: UNSAFE_NO_LOCK,
+    });
+    const store = new MemoryStore({ broker, journal, now, genId, vaultRoot, manifest: MANIFEST });
 
     const { id, path } = await store.remember({ content: "x", reason: "seed", session: "s1" });
     await store.promote({ id, target_status: "working", reason: "confirmed", session: "s1" });
@@ -323,7 +340,7 @@ describe("reindex", () => {
 
     // The journal row here is the SAME (non-empty, pre-existing) journal
     // used above -- an incremental reindex, not a fresh rebuild.
-    const result = await reindex({ vaultRoot, git, journal, now, genId });
+    const result = await reindex({ vaultRoot, git, journal, manifest: MANIFEST, now, genId });
 
     expect(result.elevatedToCanonical).toContain(path);
     // Reindex must NEVER refuse to adopt a status (the journal is
@@ -333,9 +350,17 @@ describe("reindex", () => {
 
   test("an already-canonical row that stays canonical is NOT flagged", async () => {
     const { journal, git, vaultRoot, now, genId } = await makeHarness();
-    const broker = new Broker({ vaultRoot, git, journal, manifest: MANIFEST, now, genId });
-    const store = new MemoryStore({ broker, journal, now, genId, vaultRoot });
-    const approvals = new Approvals({ broker, store, journal, now, vaultRoot, genId });
+    const broker = new Broker({
+      vaultRoot,
+      git,
+      journal,
+      manifest: MANIFEST,
+      now,
+      genId,
+      lockDir: UNSAFE_NO_LOCK,
+    });
+    const store = new MemoryStore({ broker, journal, now, genId, vaultRoot, manifest: MANIFEST });
+    const approvals = new Approvals({ broker, store, journal, now, vaultRoot, genId, manifest: MANIFEST });
 
     const { id } = await store.remember({ content: "y", reason: "seed", session: "s1" });
     await store.promote({ id, target_status: "working", reason: "confirmed", session: "s1" });
@@ -350,7 +375,7 @@ describe("reindex", () => {
 
     // Incremental reindex over the SAME journal: the row was already
     // canonical before this run, so it must not be (re-)flagged.
-    const result = await reindex({ vaultRoot, git, journal, now, genId });
+    const result = await reindex({ vaultRoot, git, journal, manifest: MANIFEST, now, genId });
     expect(result.elevatedToCanonical).toEqual([]);
   });
 
@@ -368,7 +393,7 @@ describe("reindex", () => {
 
     // Journal starts empty -- there is no prior row to compare against, so a
     // full rebuild must never be noisy about a canonical file.
-    const result = await reindex({ vaultRoot, git, journal, now, genId });
+    const result = await reindex({ vaultRoot, git, journal, manifest: MANIFEST, now, genId });
     expect(result.memories).toBe(1);
     expect(result.elevatedToCanonical).toEqual([]);
   });
@@ -429,7 +454,7 @@ describe("reindex", () => {
       last_referenced: null,
     });
 
-    await reindex({ vaultRoot, git, journal, now, genId });
+    await reindex({ vaultRoot, git, journal, manifest: MANIFEST, now, genId });
 
     // The file declares no entity, but the incremental reindex must NOT wipe
     // the journal's known entity.
@@ -438,8 +463,16 @@ describe("reindex", () => {
 
   test("round-trip: a memory remembered by the store survives a FULL journal rebuild with its entity intact", async () => {
     const { journal, git, vaultRoot, now, genId } = await makeHarness();
-    const broker = new Broker({ vaultRoot, git, journal, manifest: MANIFEST, now, genId });
-    const store = new MemoryStore({ broker, journal, now, genId, vaultRoot });
+    const broker = new Broker({
+      vaultRoot,
+      git,
+      journal,
+      manifest: MANIFEST,
+      now,
+      genId,
+      lockDir: UNSAFE_NO_LOCK,
+    });
+    const store = new MemoryStore({ broker, journal, now, genId, vaultRoot, manifest: MANIFEST });
 
     const { id } = await store.remember({
       content: "Nova's deadline is 2026-08-15.",
@@ -452,7 +485,7 @@ describe("reindex", () => {
 
     // Total journal loss -> rebuild from disk + git into a fresh empty journal.
     const freshJournal = new Journal(openJournal(":memory:"));
-    await reindex({ vaultRoot, git, journal: freshJournal, now, genId });
+    await reindex({ vaultRoot, git, journal: freshJournal, manifest: MANIFEST, now, genId });
 
     // entity (and tags) recovered PURELY from the file, because remember() now
     // writes them into the note's top-level frontmatter.
@@ -473,7 +506,7 @@ describe("reindex", () => {
     // Journal is empty -- no prior row -> entity genuinely unrecoverable. This
     // locks the documented residual: legacy notes need the entity backfilled
     // into their files (or to be re-remembered) to survive a full rebuild.
-    await reindex({ vaultRoot, git, journal, now, genId });
+    await reindex({ vaultRoot, git, journal, manifest: MANIFEST, now, genId });
     expect(journal.getMemory("mem_legacy2")!.entity).toBeNull();
   });
 
@@ -520,7 +553,7 @@ describe("reindex", () => {
       created: now(),
     });
 
-    const result = await reindex({ vaultRoot, git, journal, now, genId });
+    const result = await reindex({ vaultRoot, git, journal, manifest: MANIFEST, now, genId });
     expect(result.memories).toBe(1);
 
     const edges = journal.getRelationsForMemory("mem_distilled");
@@ -537,8 +570,8 @@ describe("reindex", () => {
       created: now(),
     });
 
-    await reindex({ vaultRoot, git, journal, now, genId });
-    await reindex({ vaultRoot, git, journal, now, genId });
+    await reindex({ vaultRoot, git, journal, manifest: MANIFEST, now, genId });
+    await reindex({ vaultRoot, git, journal, manifest: MANIFEST, now, genId });
 
     expect(journal.getRelationsForMemory("mem_distilled2")).toHaveLength(1);
   });
@@ -560,7 +593,7 @@ describe("reindex", () => {
     journal.insertRelation({ memory_id: "mem_plain", source_id: "mem_ghost", kind: "distilled" });
     expect(journal.getRelationsForMemory("mem_plain")).toHaveLength(1);
 
-    await reindex({ vaultRoot, git, journal, now, genId });
+    await reindex({ vaultRoot, git, journal, manifest: MANIFEST, now, genId });
 
     // The edge set must now exactly track the file: no derivation → no edges.
     expect(journal.getRelationsForMemory("mem_plain")).toHaveLength(0);

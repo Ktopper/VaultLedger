@@ -4,7 +4,9 @@ import matter from "gray-matter";
 import type { LedgerGit } from "../broker/git.js";
 import { MESSAGE_RE } from "../broker/reconcile.js";
 import type { Journal, MemoryRow, TransactionRow } from "../journal/journal.js";
+import type { PermissionsManifest } from "../schemas/manifest.js";
 import { MemoryProvenance } from "../schemas/provenance.js";
+import { resolveZone } from "../zones.js";
 
 const DEFAULT_AGENT_DIRS = ["Agent/Memory", "Agent/Archive"];
 
@@ -12,6 +14,16 @@ export interface ReindexOptions {
   vaultRoot: string;
   git: LedgerGit;
   journal: Journal;
+  /** The vault's current permissions manifest (VL-SEC-S7-01). REQUIRED so
+   * the walk below can zone-gate every discovered path: reindex is a
+   * disaster-recovery rebuild that walks fixed directory names on disk, so
+   * without this it would happily upsert a note that lives in (or was
+   * later moved into) an `excluded` zone — e.g. a human-nested `Private/`
+   * folder or a manifest override — straight into the journal, from which
+   * `recall()` would hand it back to the agent. There is no safe default:
+   * every caller (cli/mcp-server/host construction sites) already has the
+   * manifest in scope. */
+  manifest: PermissionsManifest;
   /** Vault-relative dirs (or "<dir>/**" globs) to walk for memory notes.
    * Defaults to Agent/Memory + Agent/Archive. A trailing "/**" or "/*" is
    * stripped so a manifest glob like "Agent/**" can be passed directly. */
@@ -47,6 +59,17 @@ export interface ReindexResult {
    * so flagging would be pure noise on every legitimate canonical note.
    */
   elevatedToCanonical: string[];
+  /**
+   * Vault-relative paths of otherwise-valid memory notes (parseable
+   * frontmatter + `ledger.id`) discovered during the walk that resolve to
+   * the `excluded` zone under the manifest (VL-SEC-S7-01) — e.g. a nested
+   * `Private/**` folder or an `excluded` override living inside
+   * Agent/Memory. These are SKIPPED (never upserted into the journal, never
+   * surfaced via `recall`) and reported here as an integrity signal a human
+   * should investigate (how did an excluded-zone note end up on the
+   * agent-managed walk path?), mirroring `skipped`/`conflicts`.
+   */
+  excludedZone: string[];
 }
 
 interface ParsedMemoryNote {
@@ -199,7 +222,7 @@ function upsertMemory(journal: Journal, note: ParsedMemoryNote): boolean {
  * commit" so the provenance of the repair is distinguishable).
  */
 export async function reindex(opts: ReindexOptions): Promise<ReindexResult> {
-  const { vaultRoot, git, journal, now, genId } = opts;
+  const { vaultRoot, git, journal, manifest, now, genId } = opts;
   const dirs = opts.agentGlobs && opts.agentGlobs.length > 0
     ? opts.agentGlobs.map(globToDir)
     : DEFAULT_AGENT_DIRS;
@@ -208,10 +231,24 @@ export async function reindex(opts: ReindexOptions): Promise<ReindexResult> {
   const skipped: string[] = [];
   const conflicts: string[] = [];
   const elevatedToCanonical: string[] = [];
+  const excludedZone: string[] = [];
   const seenIds = new Set<string>();
   for (const dir of dirs) {
     for (const absPath of walkMarkdownFiles(join(vaultRoot, dir))) {
       const relPath = relative(vaultRoot, absPath).split(sep).join("/");
+
+      // Zone-gate BEFORE parsing (VL-SEC-S7-01): the walk above is a fixed
+      // directory-name walk with no zone awareness of its own — a note
+      // nested under an excluded subfolder (e.g. a manifest override, or a
+      // human-created Private/** folder inside Agent/Memory) must never be
+      // upserted into the journal, from which recall() would hand it
+      // straight back to the agent. Skip-and-report, never throw: a single
+      // excluded note must not abort the disaster-recovery rebuild.
+      if (resolveZone(relPath, manifest) === "excluded") {
+        excludedZone.push(relPath);
+        continue;
+      }
+
       let note: ParsedMemoryNote | null;
       try {
         note = parseMemoryNote(vaultRoot, absPath);
@@ -271,13 +308,16 @@ export async function reindex(opts: ReindexOptions): Promise<ReindexResult> {
     }
   }
 
-  return { memories, transactions, skipped, conflicts, elevatedToCanonical };
+  return { memories, transactions, skipped, conflicts, elevatedToCanonical, excludedZone };
 }
 
 export interface EnsureJournalOptions {
   vaultRoot: string;
   git: LedgerGit;
   journal: Journal;
+  /** See `ReindexOptions.manifest` — required for the same zone-gating
+   * reason; ensureJournal delegates straight into `reindex`. */
+  manifest: PermissionsManifest;
   agentGlobs?: string[];
   now: () => string;
   genId: (prefix: string) => string;

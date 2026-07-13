@@ -1,10 +1,12 @@
-import { basename, join } from "node:path";
+import { basename } from "node:path";
 import { readFileSync } from "node:fs";
 import matter from "gray-matter";
 import { createPatch } from "diff";
 import type { Broker } from "../broker/broker.js";
+import { assertContainedAndReadable } from "../broker/containment.js";
 import { hashFile } from "../broker/hash.js";
 import type { Journal } from "../journal/journal.js";
+import type { PermissionsManifest } from "../schemas/manifest.js";
 
 // v0.1 has no pagination need for a one-shot maintenance backfill — a single
 // generously-sized LIMIT keeps this a plain queryMemories call instead of a
@@ -17,6 +19,14 @@ export interface BackfillEntityDeps {
   journal: Journal;
   /** Absolute path to the vault root (needed to read + hashFile each note). */
   vaultRoot: string;
+  /** The vault's current permissions manifest — the per-note read below is
+   * gated through `assertContainedAndReadable` (containment + excluded-zone)
+   * rather than a raw `readFileSync(join(...))`. Defense-in-depth: this is a
+   * human-run maintenance command today, but its `fileEntity` result reaches
+   * CLI output for a mismatched note, so an excluded note's frontmatter
+   * entity would otherwise be readable/printable — gate it so a future
+   * automation wrapper can't turn that into an agent-reachable disclosure. */
+  manifest: PermissionsManifest;
   now: () => string;
   genId: (prefix: string) => string;
 }
@@ -95,7 +105,7 @@ export async function backfillEntity(
   deps: BackfillEntityDeps,
   opts: BackfillEntityOptions = {},
 ): Promise<BackfillEntityResult> {
-  const { broker, journal, vaultRoot } = deps;
+  const { broker, journal, vaultRoot, manifest } = deps;
   const reason = opts.reason ?? "backfill-entity";
   const session = opts.session ?? "backfill-entity";
 
@@ -108,10 +118,16 @@ export async function backfillEntity(
   for (const mem of rows) {
     if (mem.entity == null) continue; // nothing in the journal to backfill from
 
-    const abs = join(vaultRoot, mem.path);
+    // Gate through the shared containment/zone boundary (not a raw
+    // readFileSync(join(...))): an excluded/traversal path is refused here
+    // and recorded as an error, so its content is never read into memory or
+    // surfaced. `assertContainedAndReadable` returns the same verified
+    // absolute path hashFile uses below on the backfill branch.
+    let abs: string;
     let raw: string;
     let parsed: ReturnType<typeof matter>;
     try {
+      abs = assertContainedAndReadable(vaultRoot, manifest, mem.path);
       raw = readFileSync(abs, "utf8");
       parsed = matter(raw);
     } catch (e) {

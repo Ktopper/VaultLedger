@@ -19,6 +19,7 @@ export async function reindexCommand(
       vaultRoot: ctx.vaultRoot,
       git: ctx.git,
       journal: ctx.journal,
+      manifest: ctx.manifest,
       now: ctx.now,
       genId: ctx.genId,
     });
@@ -29,6 +30,9 @@ export async function reindexCommand(
     );
     for (const s of result.skipped) out(`  skipped: ${s}`);
     for (const c of result.conflicts) out(`  conflict: ${c}`);
+    for (const e of result.excludedZone) {
+      out(`  excluded-zone (not indexed): ${e}`);
+    }
 
     // Belt-and-braces recovery tripwire (v0.3a): flag loudly, never fail --
     // reindex above already adopted the file's canonical status regardless

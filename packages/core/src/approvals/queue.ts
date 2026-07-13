@@ -1,11 +1,13 @@
 import { readFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename } from "node:path";
 import { BrokerError } from "../errors.js";
 import type { Broker } from "../broker/broker.js";
+import { assertContainedAndReadable } from "../broker/containment.js";
 import { checkContradictions } from "../contradiction/check.js";
 import { checkSourceStaleness } from "../contradiction/staleness.js";
 import type { ApprovalRow, Journal } from "../journal/journal.js";
 import type { MemoryStore } from "../memory/store.js";
+import type { PermissionsManifest } from "../schemas/manifest.js";
 import type { ProposedOperation } from "../schemas/operation.js";
 
 export interface ApprovalsOptions {
@@ -18,6 +20,14 @@ export interface ApprovalsOptions {
    * v0.3b-2, dispatchApply's staleness pin — see dispatchApply's doc
    * comment). */
   vaultRoot: string;
+  /** The vault's current permissions manifest (VL-SEC-S7-02) — REQUIRED and
+   * threaded into `checkContradictions` at `dispatchApply`'s post-commit
+   * hook (the approved-canonical-revise path, the OTHER content-changing
+   * revise surface alongside `MemoryStore.revise`'s own immediate-apply
+   * call). Omitting it here would leave `ledger approve` as a live route to
+   * the same excluded-content leak (VL-SEC-S7-02) MemoryStore's own call
+   * sites are gated against — see checkContradictions's doc comment. */
+  manifest: PermissionsManifest;
   genId: (prefix: string) => string;
 }
 
@@ -94,6 +104,7 @@ export class Approvals {
   private readonly journal: Journal;
   private readonly now: () => string;
   private readonly vaultRoot: string;
+  private readonly manifest: PermissionsManifest;
   private readonly genId: (prefix: string) => string;
 
   constructor(opts: ApprovalsOptions) {
@@ -102,6 +113,7 @@ export class Approvals {
     this.journal = opts.journal;
     this.now = opts.now;
     this.vaultRoot = opts.vaultRoot;
+    this.manifest = opts.manifest;
     this.genId = opts.genId;
   }
 
@@ -253,7 +265,10 @@ export class Approvals {
             stalenessTarget = {
               memoryId: candidateId,
               path: op.path,
-              beforeContent: readFileSync(join(this.vaultRoot, op.path), "utf8"),
+              beforeContent: readFileSync(
+                assertContainedAndReadable(this.vaultRoot, this.manifest, op.path),
+                "utf8",
+              ),
             };
           }
         } catch (err) {
@@ -284,11 +299,20 @@ export class Approvals {
       // self-swallowing (a detection failure never fails the committed write).
       if (stalenessTarget !== null) {
         checkContradictions(
-          { journal: this.journal, vaultRoot: this.vaultRoot, now: this.now, genId: this.genId },
+          {
+            journal: this.journal,
+            vaultRoot: this.vaultRoot,
+            manifest: this.manifest,
+            now: this.now,
+            genId: this.genId,
+          },
           stalenessTarget.memoryId,
         );
         try {
-          const afterContent = readFileSync(join(this.vaultRoot, stalenessTarget.path), "utf8");
+          const afterContent = readFileSync(
+            assertContainedAndReadable(this.vaultRoot, this.manifest, stalenessTarget.path),
+            "utf8",
+          );
           checkSourceStaleness(
             { journal: this.journal, now: this.now, genId: this.genId },
             stalenessTarget.memoryId,

@@ -24,6 +24,7 @@ export async function backfillEntityCommand(
       broker: ctx.broker,
       journal: ctx.journal,
       vaultRoot: ctx.vaultRoot,
+      manifest: ctx.manifest,
       now: ctx.now,
       genId: ctx.genId,
     });

@@ -1,4 +1,6 @@
 import type { Journal, QueryMemoriesFilters } from "../journal/journal.js";
+import type { PermissionsManifest } from "../schemas/manifest.js";
+import { resolveZone } from "../zones.js";
 
 export type RecallFilters = QueryMemoriesFilters;
 
@@ -34,17 +36,40 @@ const EXCLUDED_BY_DEFAULT = new Set(["forgotten", "reverted", "retired"]);
  * tombstoned, not something an agent should stumble back into via a bare
  * recall). An explicit `status: "forgotten"` (or "reverted"/"retired")
  * filter is honored as-is.
+ *
+ * Defense-in-depth zone re-check (VL-SEC-S7-05): the journal is SUPPOSED to
+ * be zone-clean by construction — every producer (reindex, MemoryStore's
+ * remember/distill) zone-gates before it upserts a row. This function does
+ * not trust that invariant blindly: it re-resolves each row's `path`
+ * against the manifest and filters out (logging as an integrity violation)
+ * any row that now resolves to `excluded`. This is the SECOND, independent
+ * gate — it exists to catch a future producer regression before an
+ * excluded-zone note's path/metadata ever reaches an agent via
+ * `memory_recall`/`GET /memories`, not to replace the producer-side gate.
  */
 export function recall(
   journal: Journal,
   filters: RecallFilters,
   now: () => string,
+  manifest: PermissionsManifest,
 ): RecallResult[] {
   const rows = journal.queryMemories(filters);
-  const filtered =
+  const statusFiltered =
     filters.status === undefined
       ? rows.filter((r) => !EXCLUDED_BY_DEFAULT.has(r.status))
       : rows;
+
+  const filtered = statusFiltered.filter((r) => {
+    if (resolveZone(r.path, manifest) !== "excluded") return true;
+    // Should never happen if every producer is correctly zone-gated — its
+    // appearance here means a producer regressed, so this is logged loudly
+    // (not silently swallowed) rather than just filtered.
+    console.error(
+      `recall: integrity violation — memory ${r.id} at ${r.path} resolves to the excluded ` +
+        "zone; filtered out (a producer failed to zone-gate it before indexing)",
+    );
+    return false;
+  });
 
   const nowIso = now();
   const results: RecallResult[] = [];

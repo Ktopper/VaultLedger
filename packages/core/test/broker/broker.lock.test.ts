@@ -7,6 +7,7 @@ import { Broker } from "../../src/broker/broker.js";
 import { LedgerGit } from "../../src/broker/git.js";
 import { Journal } from "../../src/journal/journal.js";
 import { openJournal } from "../../src/journal/db.js";
+import { UNSAFE_NO_LOCK, type LockDirOption } from "../../src/concurrency/lock.js";
 import type { PermissionsManifest } from "../../src/schemas/manifest.js";
 
 const MANIFEST: PermissionsManifest = {
@@ -42,7 +43,7 @@ function makeClock(seed: number): { now: () => string; genId: (prefix: string) =
  * journal, optionally sharing `lockDir`. */
 async function makeTwoBrokers(
   vaultRoot: string,
-  lockDir: string | undefined,
+  lockDir: LockDirOption,
 ): Promise<{ brokerA: Broker; brokerB: Broker }> {
   const gitA = new LedgerGit(vaultRoot);
   const gitB = new LedgerGit(vaultRoot);
@@ -138,7 +139,7 @@ describe("Broker + vault lock (two brokers over one vault, simulating two proces
     const bootstrap = new LedgerGit(dir);
     await bootstrap.init();
 
-    const { brokerA } = await makeTwoBrokers(dir, undefined);
+    const { brokerA } = await makeTwoBrokers(dir, UNSAFE_NO_LOCK);
 
     const result = await brokerA.apply({
       op: "create",

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { createPatch } from "diff";
 import { Broker } from "../../src/broker/broker.js";
+import { UNSAFE_NO_LOCK } from "../../src/concurrency/lock.js";
 import { LedgerGit } from "../../src/broker/git.js";
 import { Journal } from "../../src/journal/journal.js";
 import { openJournal } from "../../src/journal/db.js";
@@ -68,9 +69,17 @@ describe("Approvals", () => {
     const db = openJournal(":memory:");
     const journal = new Journal(db);
     const { now, genId } = makeClock();
-    const broker = new Broker({ vaultRoot, git, journal, manifest: MANIFEST, now, genId });
-    const store = new MemoryStore({ broker, journal, now, genId, vaultRoot });
-    const approvals = new Approvals({ broker, store, journal, now, vaultRoot, genId });
+    const broker = new Broker({
+      vaultRoot,
+      git,
+      journal,
+      manifest: MANIFEST,
+      now,
+      genId,
+      lockDir: UNSAFE_NO_LOCK,
+    });
+    const store = new MemoryStore({ broker, journal, now, genId, vaultRoot, manifest: MANIFEST });
+    const approvals = new Approvals({ broker, store, journal, now, vaultRoot, genId, manifest: MANIFEST });
     return { approvals, broker, store, journal, git, vaultRoot, now, genId };
   }
 
@@ -416,6 +425,74 @@ describe("Approvals", () => {
     expect([open[0]!.memory_a, open[0]!.memory_b].sort()).toEqual([a.id, b.id].sort());
   });
 
+  // VL-SEC-S7-02 (queue.ts call site): dispatchApply's post-commit
+  // checkContradictions hook (the "OTHER" content-changing revise surface,
+  // alongside MemoryStore.revise's own call — see dispatchApply's doc
+  // comment) MUST route its peer-file read through the same
+  // containment/zone gate as every other checkContradictions call site.
+  // Without `manifest` threaded into ApprovalsOptions this call site would
+  // stay a live route to the excluded-content leak even after check.ts,
+  // store.ts, and reindex.ts are all fixed -- `ledger approve` reaching a
+  // canonical-revise is exactly the path this test exercises.
+  test("VL-SEC-S7-02: an approved canonical revise's post-commit contradiction check does not leak an excluded-zone peer's content into conflicts.detail", async () => {
+    const { approvals, store, journal, vaultRoot, git } = await makeHarness();
+
+    // The legitimate canonical belief that will be revised via the queue.
+    const source = await store.remember({
+      content: "deadline: 2026-08-15",
+      entity: "nova",
+      reason: "seed",
+      session: "s1",
+    });
+    await store.setStatus(source.id, "canonical", "durable", "s1");
+
+    // A same-entity, live "peer" whose path resolves to the manifest's
+    // excluded zone (Private/**) -- simulating either a hostile/forged path
+    // reaching the journal, or an excluded note that slipped past a future
+    // producer regression. The file genuinely exists and genuinely
+    // contradicts the source's deadline, so the ONLY thing standing between
+    // this and a content leak is the containment/zone gate, not an ENOENT.
+    const secretRelPath = "Private/secret.md";
+    await seedTrustedNote(git, vaultRoot, secretRelPath, "deadline: 1999-01-01\nssn: 555-11-2222\n");
+    journal.insertMemory({
+      id: "mem_excluded_peer",
+      path: secretRelPath,
+      entity: "nova",
+      status: "working",
+      confidence: "medium",
+      created: "2026-01-01T00:00:00.000Z",
+      source: "human-import",
+      supersedes: null,
+      expires: null,
+      last_referenced: null,
+    });
+
+    // Canonical revise, queued then approved -- lands via dispatchApply,
+    // NOT store.revise (see EXECUTION CONTRACT on MemoryStore.revise).
+    const before = readFileSync(join(vaultRoot, source.path), "utf8");
+    const after = before.replace("deadline: 2026-08-15", "deadline: 2026-09-01");
+    const patchText = createPatch(source.path, before, after);
+    const queued = await store.revise({ id: source.id, patch: patchText, reason: "revise", session: "s1" });
+    const approvalId = (queued as { queued: true; approvalId: string }).approvalId;
+
+    const result = await approvals.approve(approvalId);
+    expect(result).toEqual({ applied: true });
+
+    // The excluded peer's secret content must never appear anywhere in the
+    // journal's conflicts (the surface `ledger conflicts`/`GET /conflicts`
+    // reads).
+    const allConflicts = journal.listConflicts();
+    for (const c of allConflicts) {
+      expect(c.detail ?? "").not.toContain("555-11-2222");
+      expect(c.detail ?? "").not.toContain("1999-01-01");
+    }
+    // No conflict row should even reference the excluded peer's id -- the
+    // read was refused before any comparison against it could happen.
+    expect(allConflicts.some((c) => c.memory_a === "mem_excluded_peer" || c.memory_b === "mem_excluded_peer")).toBe(
+      false,
+    );
+  });
+
   test("reject() on a held canonical-revise leaves the file unchanged and the approval rejected", async () => {
     const { approvals, store, journal, vaultRoot } = await makeHarness();
 
@@ -556,5 +633,186 @@ describe("Approvals", () => {
     expect(approvals.list().map((a) => a.id)).toContain(queued.approvalId);
     await approvals.approve(queued.approvalId);
     expect(approvals.list().map((a) => a.id)).not.toContain(queued.approvalId);
+  });
+
+  // -------------------------------------------------------------------
+  // VL-SEC-S2-03: the generic human-approved-via-queue path must NOT bypass
+  // the ledger guard just because `approved:true` is set. Before the fix,
+  // broker.ts's `applyRevise` gated the guard on bare `!approved`, so ANY
+  // approved revise -- including one dispatched here, through
+  // Approvals.approve -> dispatchApply -> broker.apply({approved:true,
+  // approvalId}) -- skipped governedProvenanceChanged entirely. Combined
+  // with VL-SEC-S2-01 (jsdiff applies a hunk wherever its content actually
+  // matches, not necessarily where its header claims), a patch whose
+  // rendered diff looks like an innocuous body-line edit could silently
+  // flip `ledger.status` underneath an approving human. S2-01's landing
+  // check (patch.ts) now rejects the relocation outright with SYNTAX_BREAK
+  // before this guard is even reached, so this test also incidentally
+  // proves S2-01 covers the approved path end-to-end -- but the assertions
+  // below are written against `governedProvenanceChanged` semantics
+  // (LEDGER_GUARD) in case a future change ever narrows S2-01's check.
+  // -------------------------------------------------------------------
+  test("VL-SEC-S2-03: an approved propose_edit whose declared hunk position lies about touching governed ledger.status is rejected, not silently applied", async () => {
+    const { approvals, broker, journal, vaultRoot, git } = await makeHarness();
+
+    const before = [
+      "---",
+      "ledger:",
+      "  status: working",
+      "  supersedes: null",
+      'entity: "Acme Corp"',
+      "---",
+      "# Acme Corp status",
+      "",
+      "This quarter's revenue projection needs an update.",
+      "The team is reviewing the Q3 numbers this week.",
+      "",
+    ].join("\n");
+    const relPath = "Projects/acme-status.md";
+    await seedTrustedNote(git, vaultRoot, relPath, before);
+    const expectedHash = hashFile(join(vaultRoot, relPath));
+
+    // The diff a human reviewer would see (approve.ts renders op.patch
+    // verbatim): header + context claim this touches body line 9 (an
+    // innocuous wording tweak). The actual removed/context line,
+    // "  status: working", occurs ONLY inside the ledger: frontmatter
+    // block (line 3) -- not at line 9.
+    const lyingPatch = [
+      "--- a/acme-status.md",
+      "+++ b/acme-status.md",
+      "@@ -9,1 +9,1 @@",
+      "-  status: working",
+      "+  status: canonical",
+      "",
+    ].join("\n");
+
+    const queued = await broker.apply({
+      op: "propose_edit",
+      path: relPath,
+      expected_hash: expectedHash,
+      patch: lyingPatch,
+      reason: "tweak wording in Q3 status note",
+      session: "attacker-agent",
+    });
+    if (!("queued" in queued) || !queued.queued) throw new Error("expected a queued result");
+
+    // The human approves, believing (from the rendered diff) they're
+    // approving an unrelated body-wording edit.
+    let thrown: unknown;
+    try {
+      await approvals.approve(queued.approvalId);
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(BrokerError);
+    // Either rejection is an acceptable fix outcome: S2-01's landing check
+    // fires first (SYNTAX_BREAK, since the hunk relocates out of its
+    // declared range), but LEDGER_GUARD would also be correct if S2-01 ever
+    // narrowed. What must NEVER happen is a silent, successful apply.
+    expect(["SYNTAX_BREAK", "LEDGER_GUARD"]).toContain((thrown as BrokerError).code);
+
+    // The file must be byte-for-byte untouched and the approval must stay
+    // pending -- neither a swallowed rejection nor a stale auto-close.
+    expect(readFileSync(join(vaultRoot, relPath), "utf8")).toBe(before);
+    expect(journal.getApproval(queued.approvalId)!.state).toBe("pending");
+  });
+
+  test("VL-SEC-S2-03: even an HONEST, correctly-addressed approved propose_edit is rejected if it targets governed ledger.status — propose_edit/revise is never the sanctioned channel for governance changes, only promote/forget/retire are", async () => {
+    const { approvals, journal, vaultRoot, git, broker } = await makeHarness();
+
+    const before = [
+      "---",
+      "ledger:",
+      "  status: working",
+      "  supersedes: null",
+      'entity: "Acme Corp"',
+      "---",
+      "# Acme Corp status",
+      "",
+      "Body text.",
+      "",
+    ].join("\n");
+    const relPath = "Projects/acme-status-2.md";
+    await seedTrustedNote(git, vaultRoot, relPath, before);
+    const expectedHash = hashFile(join(vaultRoot, relPath));
+
+    // An honest patch: header correctly names line 3 (the real location of
+    // `status: working`), no relocation trick involved. Even so, a generic
+    // approved-via-queue revise must NOT be allowed to change governed
+    // provenance — the sanctioned channel is MemoryStore.promote/forget/
+    // retire (which flip status via the INTERNAL approved:true-without-
+    // approvalId path, not this one). Rejecting this is intentional, not
+    // over-blocking: see the sibling "no over-blocking" test below for the
+    // case this guard must NOT catch.
+    const honestPatch = [
+      "--- a/acme-status-2.md",
+      "+++ b/acme-status-2.md",
+      "@@ -3,1 +3,1 @@",
+      "-  status: working",
+      "+  status: canonical",
+      "",
+    ].join("\n");
+
+    const queued = await broker.apply({
+      op: "propose_edit",
+      path: relPath,
+      expected_hash: expectedHash,
+      patch: honestPatch,
+      reason: "promote to canonical",
+      session: "human-reviewer",
+    });
+    if (!("queued" in queued) || !queued.queued) throw new Error("expected a queued result");
+
+    let thrown: unknown;
+    try {
+      await approvals.approve(queued.approvalId);
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(BrokerError);
+    expect((thrown as BrokerError).code).toBe("LEDGER_GUARD");
+    expect(readFileSync(join(vaultRoot, relPath), "utf8")).toBe(before);
+    expect(journal.getApproval(queued.approvalId)!.state).toBe("pending");
+  });
+
+  test("VL-SEC-S2-03 no-over-blocking control: an approved propose_edit on a note WITH a ledger block, that touches only a non-governed field, still applies", async () => {
+    const { approvals, broker, journal, vaultRoot, git } = await makeHarness();
+    const before = [
+      "---",
+      "ledger:",
+      "  status: working",
+      "  supersedes: null",
+      'entity: "Acme Corp"',
+      "deadline: 2026-01-01",
+      "---",
+      "# Acme Corp status",
+      "",
+      "Body text.",
+      "",
+    ].join("\n");
+    const relPath = "Projects/acme-status-3.md";
+    await seedTrustedNote(git, vaultRoot, relPath, before);
+    const expectedHash = hashFile(join(vaultRoot, relPath));
+
+    const after = before.replace("deadline: 2026-01-01", "deadline: 2026-06-01");
+    const patchText = createPatch("acme-status-3.md", before, after);
+
+    const queued = await broker.apply({
+      op: "propose_edit",
+      path: relPath,
+      expected_hash: expectedHash,
+      patch: patchText,
+      reason: "reschedule",
+      session: "human-reviewer",
+    });
+    if (!("queued" in queued) || !queued.queued) throw new Error("expected a queued result");
+
+    const result = await approvals.approve(queued.approvalId);
+    expect(result).toEqual({ applied: true });
+    expect(readFileSync(join(vaultRoot, relPath), "utf8")).toBe(after);
+    expect(matter(readFileSync(join(vaultRoot, relPath), "utf8")).data.ledger.status).toBe(
+      "working",
+    );
+    expect(journal.getApproval(queued.approvalId)!.state).toBe("approved");
   });
 });

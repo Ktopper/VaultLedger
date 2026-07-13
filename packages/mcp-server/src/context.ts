@@ -166,10 +166,10 @@ export async function loadServerContext(
       patchThreshold: config.patchThreshold,
       lockDir,
     });
-    const store = new MemoryStore({ broker, journal, now, genId, vaultRoot });
-    const approvals = new Approvals({ broker, journal, store, now, vaultRoot, genId });
+    const store = new MemoryStore({ broker, journal, now, genId, vaultRoot, manifest });
+    const approvals = new Approvals({ broker, journal, store, now, vaultRoot, genId, manifest });
 
-    await ensureJournal({ vaultRoot, git, journal, now, genId });
+    await ensureJournal({ vaultRoot, git, journal, manifest, now, genId });
     await reconcile({ git, journal, now, genId });
     if (!deps?.skipSweep) {
       const sweepResult = await sweep({

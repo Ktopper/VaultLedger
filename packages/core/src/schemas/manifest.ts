@@ -18,3 +18,26 @@ export const PermissionsManifest = z.object({
 });
 export type PermissionsManifest = z.infer<typeof PermissionsManifest>;
 export type ZoneName = z.infer<typeof ZoneName>;
+
+/** `zones` shape safe to hand to an agent: the excluded-zone glob patterns
+ * (and, by construction, anything derived only from them) are omitted. */
+export interface AgentVisibleZones {
+  trusted: string[];
+  agent: string[];
+  scratch: string[];
+}
+
+/**
+ * Redact `zones.excluded` before returning zone info to an agent-facing
+ * surface (the MCP `ledger_status` tool, the bridge's `GET /status` route).
+ * The excluded globs name exactly what is hidden from the agent — including
+ * an override that targets a specific file/folder — so returning them
+ * verbatim is itself an existence/path disclosure to the agent (VL-SEC-S7-04).
+ *
+ * The human-facing CLI `status` command deliberately does NOT use this: a
+ * human running `ledger status` locally configured the exclusions and is
+ * entitled to see what they set up.
+ */
+export function redactExcludedZones(zones: PermissionsManifest["zones"]): AgentVisibleZones {
+  return { trusted: zones.trusted, agent: zones.agent, scratch: zones.scratch };
+}

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import { BrokerError } from "../errors.js";
 import type { PermissionsManifest } from "../schemas/manifest.js";
@@ -8,9 +8,9 @@ import { resolveZone } from "../zones.js";
 import { assertHashFormat, hashBytes, hashFile } from "./hash.js";
 import { applyPatch } from "./patch.js";
 import { assertStructurePreserved, governedProvenanceChanged } from "./lint.js";
-import { assertContainedAndReadable } from "./containment.js";
+import { assertContainedAndReadable, writeContainedFile } from "./containment.js";
 import { formatMessage, type LedgerGit } from "./git.js";
-import { withVaultLock } from "../concurrency/lock.js";
+import { UNSAFE_NO_LOCK, withVaultLock, type LockDirOption } from "../concurrency/lock.js";
 
 const DEFAULT_PATCH_THRESHOLD = 0.5;
 
@@ -41,13 +41,15 @@ export interface BrokerOptions {
   now: () => string;
   genId: (prefix: string) => string;
   patchThreshold?: number;
-  /** When set, every mutating broker operation (apply's create/revise/
-   * propose_edit and archive) acquires the shared cross-process vault lock
-   * rooted at this directory (see concurrency/lock.ts) before running its
-   * body. Opt-in: unset (the v0.1 default) leaves behavior byte-for-byte
-   * unchanged — no lock acquired, no lockfile created — so every existing
-   * single-process caller/test is unaffected. */
-  lockDir?: string;
+  /** Every mutating broker operation (apply's create/revise/propose_edit and
+   * archive) acquires the shared cross-process vault lock rooted at this
+   * directory (see concurrency/lock.ts) before running its body. REQUIRED
+   * (VL-SEC-S1-01): an embedder must either pass a real lock directory or
+   * the explicit `UNSAFE_NO_LOCK` sentinel — a Broker can no longer be
+   * constructed unlocked by silent omission. Every real host (CLI, MCP
+   * server, `ledger serve`) passes a real `lockDir` from `vaultLockDir`;
+   * `UNSAFE_NO_LOCK` is for same-process, single-writer tests only. */
+  lockDir: LockDirOption;
 }
 
 type CreateOp = Extract<ProposedOperation, { op: "create" }>;
@@ -82,7 +84,7 @@ export class Broker {
     this.now = opts.now;
     this.genId = opts.genId;
     this.patchThreshold = opts.patchThreshold ?? DEFAULT_PATCH_THRESHOLD;
-    this.lockDir = opts.lockDir;
+    this.lockDir = opts.lockDir === UNSAFE_NO_LOCK ? undefined : opts.lockDir;
   }
 
   async apply(
@@ -181,7 +183,10 @@ export class Broker {
 
     const content = readFileSync(fromAbs);
     mkdirSync(dirname(toAbs), { recursive: true });
-    writeFileSync(toAbs, content);
+    // VL-SEC-S1-02: re-verify containment and write via temp+rename (not a
+    // direct writeFileSync(toAbs, ...), which would follow a symlink swapped
+    // in at toAbs) — see containment.ts's writeContainedFile for why.
+    writeContainedFile(this.vaultRoot, this.manifest, toRel, content);
     unlinkSync(fromAbs);
 
     const message = formatMessage({ op: "forget", basename: basename(fromRel), session });
@@ -238,7 +243,9 @@ export class Broker {
 
     const contentBuf = Buffer.from(op.content, "utf8");
     mkdirSync(dirname(abs), { recursive: true });
-    writeFileSync(abs, contentBuf);
+    // VL-SEC-S1-02: re-verify containment and write via temp+rename rather
+    // than a direct writeFileSync(abs, ...) — see writeContainedFile.
+    writeContainedFile(this.vaultRoot, this.manifest, op.path, contentBuf);
 
     const message = formatMessage({
       op: "create",
@@ -304,9 +311,10 @@ export class Broker {
       throw new BrokerError("NOT_FOUND", `target not found: ${op.path}`);
     }
 
-    // v0.1 TOCTOU gap: the file could change on disk between this hash read
-    // and the writeFileSync below. Acceptable for v0.1 (single-writer broker);
-    // a future version may hold a lock or re-check under the git commit.
+    // VL-SEC-S1-01: this hash read and the write below are covered by the
+    // caller-held vault lock (see apply()'s withVaultLock wrap) when a real
+    // lockDir was supplied, closing the check-write TOCTOU across processes;
+    // see writeContainedFile below for the same-window symlink-swap defense.
     const computed = hashFile(abs);
     if (computed !== expectedHash) {
       throw new BrokerError(
@@ -327,7 +335,25 @@ export class Broker {
     // reach) must not be able to silently rewrite them (self-promote to
     // canonical, fake a supersedes lineage, or drop a belief from every
     // same-entity comparison set by rewriting/removing entity).
-    if (!approved && governedProvenanceChanged(before, after)) {
+    //
+    // VL-SEC-S2-03: bare `approved` is NOT a sound discriminator for skipping
+    // this guard -- `approved:true` is set by TWO distinct kinds of caller:
+    // (1) internal privileged status flips (flipFrontmatterStatus in
+    // store.ts, backfillEntity.ts, and this file's own test fixtures), which
+    // pass approved:true WITHOUT an approvalId, and (2) the generic
+    // human-approved-via-queue path (Approvals.dispatchApply, queue.ts),
+    // which is the ONLY caller that passes approvalId ALONGSIDE approved:true
+    // -- approvalId is server-`genId`'d, never sourced from agent/human JSON,
+    // so its presence is an unforgeable signal of which caller this is. Only
+    // (1) may bypass the guard: a generically-approved revise's patch text is
+    // exactly the untrusted, potentially-lying input VL-SEC-S2-01 guards
+    // against (a hunk whose declared position and actual landing differ), and
+    // the human approving it has no way to independently verify the diff
+    // they were shown matches its actual effect. Skipping the guard there
+    // would let an approved "body wording tweak" silently rewrite
+    // ledger.status/supersedes/entity underneath the approving human.
+    const internal = approved && approvalId == null;
+    if (!internal && governedProvenanceChanged(before, after)) {
       throw new BrokerError(
         "LEDGER_GUARD",
         `revise may not change governed provenance without approval — the ledger: block (status/supersedes) and the top-level entity are governed (use promote/forget/setStatus): ${op.path}`,
@@ -352,7 +378,17 @@ export class Broker {
       );
     }
 
-    writeFileSync(abs, after, "utf8");
+    // VL-SEC-S1-02: this is the window a concurrent process can win — real
+    // async work sits between the containment check at the top of this
+    // method and here (patch apply, the `await` above for fileAtHead, a
+    // possible baseline commit), long enough for another process to swap
+    // `op.path` for a symlink pointing outside the vault. writeContainedFile
+    // re-runs the full realpath containment check with ZERO await between
+    // that check and the write, then writes via temp-file+renameSync (which
+    // does not follow a symlink at the destination) instead of a direct
+    // writeFileSync(abs, ...) reusing the now-possibly-stale `abs` computed
+    // above. See containment.ts for the full defense + documented residual.
+    writeContainedFile(this.vaultRoot, this.manifest, op.path, after);
 
     const message = formatMessage({
       op: "revise",

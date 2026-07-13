@@ -105,7 +105,7 @@ async function seedExpiredScratch(vaultDir: string, env: NodeJS.ProcessEnv): Pro
       patchThreshold: config.patchThreshold,
       lockDir,
     });
-    const store = new MemoryStore({ broker, journal, now: oldNow, genId, vaultRoot: vaultDir });
+    const store = new MemoryStore({ broker, journal, now: oldNow, genId, vaultRoot: vaultDir, manifest });
     const { id } = await store.remember({ content: "old scratch", reason: "seed", session: "seed" });
     return id;
   } finally {
