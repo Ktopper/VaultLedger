@@ -26,25 +26,31 @@ Git, and queues protected-zone writes for human approval.
 ## Quickstart
 
 ```sh
-git clone <this repo's URL> && cd VaultLedger
-pnpm bootstrap                                # install deps (links the `ledger`/`vaultledger-mcp` bins), build core/cli/mcp-server/plugin
-pnpm exec ledger setup /path/to/your/vault    # zone review, Claude Code MCP config, a real verification smoke check
+npx @vaultledger/cli@latest setup /path/to/your/vault
 ```
 
-(`pnpm exec` finds the workspace-linked bin without needing it on your shell
-`PATH` — see the callout in [Developer walkthrough](#developer-walkthrough-v01-internals-manual-steps)
-below if you'd rather have a bare `ledger`.)
-
-`ledger setup` walks you through the vault's zone manifest (which folders the
-agent may propose edits to vs. never touch), prints — or `--write-mcp <path>`
-writes — a Claude Code MCP config block, and finishes with a green `smoke
-verified` line proving the real server runs, with no Claude Code involved
-yet. Add `--install-plugin` to also install the Obsidian review plugin.
-Re-running `ledger setup` is safe and idempotent — an already-set-up vault
-reports back diagnostic-shaped (`already` / `verified`) rather than
-redoing anything. See **[`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md)**
+No clone, no `pnpm install` — `npx` fetches the package and runs it. Point it
+at an existing Obsidian vault (or any folder of markdown — Obsidian itself
+isn't required). `ledger setup` walks you through the vault's zone manifest
+(which folders the agent may propose edits to vs. never touch), prints — or
+`--write-mcp <path>` writes — a Claude Code MCP config block, and finishes
+with a green `smoke verified` line proving the real server runs, with no
+Claude Code involved yet. Add `--install-plugin` to also install the Obsidian
+review plugin. Re-running `ledger setup` is safe and idempotent — an
+already-set-up vault reports back diagnostic-shaped (`already` / `verified`)
+rather than redoing anything. See **[`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md)**
 for the full non-developer walkthrough (under 10 minutes, zero existing notes
 touched).
+
+Paste the printed block into Claude Code's `.mcp.json` (merging with anything
+already there), or have `setup --write-mcp <path>` write it for you:
+
+```json
+{ "mcpServers": { "vaultledger": { "command": "npx", "args": ["-y", "-p", "@vaultledger/mcp-server", "vaultledger-mcp", "--vault", "/path/to/your/vault"] } } }
+```
+
+Working on VaultLedger itself, or want to run it from a clone instead of npm?
+See [From source / contributing](#from-source--contributing) below.
 
 ## Architecture
 
@@ -81,16 +87,40 @@ vaultledger/
 - Rollback of any transaction or entire session via `git revert`, with the
   memory journal kept consistent.
 
+## From source / contributing
+
+The [Quickstart](#quickstart) above is the fast path for a stranger — install
+nothing but Node, `npx` the published CLI. If you're working *on* VaultLedger
+itself, or just want to run it from a clone instead of npm, use this instead:
+
+```sh
+git clone https://github.com/Ktopper/VaultLedger.git && cd VaultLedger
+pnpm bootstrap                                # install deps (links the `ledger`/`vaultledger-mcp` bins), build core/cli/mcp-server/plugin
+pnpm exec ledger setup /path/to/your/vault    # zone review, Claude Code MCP config, a real verification smoke check
+```
+
+(`pnpm exec` finds the workspace-linked bin without needing it on your shell
+`PATH` — see the callout in [Developer walkthrough](#developer-walkthrough-v01-internals-manual-steps)
+below if you'd rather have a bare `ledger`.)
+
+The MCP config block `setup` prints from a clone uses the repo-dist form
+instead of `npx` (see step 3 of the walkthrough below):
+
+```json
+{ "mcpServers": { "vaultledger": { "command": "node", "args": ["/absolute/path/to/VaultLedger/packages/mcp-server/dist/index.js", "--vault", "/path/to/your/vault"] } } }
+```
+
 ## Developer walkthrough (v0.1 internals, manual steps)
 
-The [Quickstart](#quickstart) above (`pnpm bootstrap` + `ledger setup`) is the
-fast path for getting a vault wired up. This section instead walks through the
-exact lower-level commands and tool calls that make up the v0.1 governed-write
-loop — useful if you're working *on* VaultLedger itself, or just want to see
-each moving part: init a vault, wire an agent to it over MCP, remember and
-recall a fact, check status, approve a queued edit, and undo a transaction.
-(This is also, almost verbatim, what `packages/mcp-server/test/v01-gate.e2e.test.ts`
-asserts end-to-end — this walkthrough and the release gate are the same loop.)
+The [From source / contributing](#from-source--contributing) section above
+(`pnpm bootstrap` + `ledger setup`) is the fast path for getting a vault wired
+up from a clone. This section instead walks through the exact lower-level
+commands and tool calls that make up the v0.1 governed-write loop — useful if
+you're working *on* VaultLedger itself, or just want to see each moving part:
+init a vault, wire an agent to it over MCP, remember and recall a fact, check
+status, approve a queued edit, and undo a transaction. (This is also, almost
+verbatim, what `packages/mcp-server/test/v01-gate.e2e.test.ts` asserts
+end-to-end — this walkthrough and the release gate are the same loop.)
 
 **1. Install and build**
 
@@ -103,7 +133,7 @@ pnpm build
 This builds `@vaultledger/core`, `@vaultledger/cli` (the `ledger` bin), and
 `@vaultledger/mcp-server` (the `vaultledger-mcp` bin) via `tsc --build`. (`pnpm
 bootstrap` does this plus the Obsidian plugin build, in one command — see
-[Quickstart](#quickstart).)
+[From source / contributing](#from-source--contributing).)
 
 > **Invoking `ledger`:** the `ledger`/`vaultledger-mcp` bins are committed
 > launcher scripts (`packages/cli/bin/ledger.mjs`,

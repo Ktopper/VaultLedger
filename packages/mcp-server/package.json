@@ -2,11 +2,29 @@
   "name": "@vaultledger/mcp-server",
   "version": "0.4.0",
   "type": "module",
+  "description": "VaultLedger MCP server — the memory tools an AI agent runs",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
   "bin": { "vaultledger-mcp": "./bin/vaultledger-mcp.mjs" },
-  "scripts": { "build": "tsc -b", "test": "vitest run" },
+  "files": ["dist", "bin/vaultledger-mcp.mjs"],
+  "scripts": {
+    "build": "tsc -b",
+    "test": "vitest run",
+    "prepack": "node ../../scripts/prepack-check.mjs"
+  },
+  "license": "MIT",
+  "author": "Kristopher Dunham",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ktopper/VaultLedger.git",
+    "directory": "packages/mcp-server"
+  },
+  "homepage": "https://github.com/Ktopper/VaultLedger#readme",
+  "bugs": "https://github.com/Ktopper/VaultLedger/issues",
+  "keywords": ["obsidian", "mcp", "agent-memory", "provenance", "ai-memory"],
+  "engines": { "node": ">=20" },
+  "publishConfig": { "access": "public" },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@vaultledger/core": "workspace:*",

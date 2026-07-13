@@ -69,7 +69,12 @@ export async function installPlugin(
 ): Promise<StepResult> {
   const root = resolveRoot();
   if (root === null) {
-    return { step: "plugin", state: "failed", detail: "plugin package not found" };
+    return {
+      step: "plugin",
+      state: "failed",
+      detail:
+        "plugin not available in this install — get it from the Obsidian community-plugin store (once listed) or github.com/Ktopper/VaultLedger/releases; from a source clone, `pnpm -C packages/obsidian-plugin build` then rerun --install-plugin",
+    };
   }
 
   const mainJs = join(root, "main.js");
