@@ -152,7 +152,9 @@ describe("prepack-check.mjs", () => {
     expect(result.stderr).toMatch(/bin/i);
   });
 
-  test("a build older than a src/ edit (stale build) exits non-zero", () => {
+  test("a build older than a src/ edit (stale build) WARNS but still exits 0", () => {
+    // Staleness is advisory (tsc-incremental can legitimately leave the main
+    // entry's mtime behind a no-emit src edit) — it warns, never hard-fails.
     dir = makeFixture();
     mkdirSync(join(dir, "src"), { recursive: true });
     writeFileSync(join(dir, "src", "index.ts"), "export {};\n");
@@ -165,8 +167,8 @@ describe("prepack-check.mjs", () => {
     utimesSync(join(dir, "src", "index.ts"), now / 1000, now / 1000);
 
     const result = run(dir);
-    expect(result.status).not.toBe(0);
-    expect(result.stderr).toMatch(/stale/i);
+    expect(result.status).toBe(0);
+    expect(result.stderr).toMatch(/WARNING/i);
   });
 
   test("no src/ directory skips the staleness check (still exits 0)", () => {

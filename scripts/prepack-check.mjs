@@ -104,7 +104,16 @@ if (dupes.length > 0) {
   fail(`found iCloud-duplicate file(s) under dist/ or bin/: ${dupes.join(", ")}`);
 }
 
-// 4. Staleness: dist's main entry must not be older than the newest src/ file.
+// 4. Staleness: dist's main entry older than the newest src/ file is a WARNING,
+// not a hard fail. Rationale: `tsc -b`'s incremental cache legitimately skips
+// rewriting an output whose emitted content is unchanged (comment/type-only
+// edits, or edits to a non-`main` entry in a multi-entry package), so the main
+// entry's mtime can lag a src edit even after a correct `pnpm build` — a hard
+// fail there is a false blocker on a legitimate publish. The design doc calls
+// this check "advisory-grade"; this is that. (Entry-target existence and the
+// iCloud-dupe check above remain hard fails — those are real integrity checks.)
+// If you see this warning and suspect a genuinely stale build, a clean rebuild
+// resolves it: `rm -rf dist tsconfig.tsbuildinfo && pnpm build`.
 const srcDir = join(cwd, "src");
 if (existsSync(srcDir)) {
   const srcFiles = [];
@@ -116,10 +125,11 @@ if (existsSync(srcDir)) {
       const newestSrcMtime = Math.max(...srcFiles.map((f) => statSync(f).mtimeMs));
       const mainMtime = statSync(mainAbs).mtimeMs;
       if (mainMtime < newestSrcMtime) {
-        fail(
-          `stale build: ${mainTarget} (mtime ${new Date(mainMtime).toISOString()}) is older ` +
-            `than the newest file under src/ (mtime ${new Date(newestSrcMtime).toISOString()}) ` +
-            `— rebuild before packing`,
+        console.warn(
+          `prepack-check: WARNING — ${mainTarget} (mtime ${new Date(mainMtime).toISOString()}) is ` +
+            `older than the newest file under src/ (mtime ${new Date(newestSrcMtime).toISOString()}). ` +
+            `Usually a benign tsc-incremental artifact; if the build is genuinely stale, ` +
+            `\`rm -rf dist tsconfig.tsbuildinfo && pnpm build\` and re-pack.`,
         );
       }
     }

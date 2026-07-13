@@ -59,6 +59,14 @@ pnpm build
 This produces a fresh `dist/` in every workspace package from the `main`
 tip. Confirm no errors.
 
+> **If Step 2's `prepack` prints a `WARNING — … older than the newest file
+> under src/`:** that's benign — `tsc -b`'s incremental cache legitimately
+> leaves an unchanged output's mtime behind a no-emit source edit. It does NOT
+> block packing (it's a warning, not a failure). Only if you suspect a
+> genuinely stale build, force a clean rebuild:
+> `pnpm -r exec -- rm -rf dist tsconfig.tsbuildinfo && pnpm build`, then re-run
+> Step 2.
+
 ---
 
 ## Step 2 — Pack + inspect (mechanical, per package)
