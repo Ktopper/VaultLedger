@@ -212,8 +212,8 @@ describe("reindex", () => {
   test("a canonical promotion survives a reindex into a fresh empty journal (status is durable in the file)", async () => {
     const { journal, git, vaultRoot, now, genId } = await makeHarness();
     const broker = new Broker({ vaultRoot, git, journal, manifest: MANIFEST, now, genId });
-    const store = new MemoryStore({ broker, journal, now, genId, vaultRoot });
-    const approvals = new Approvals({ broker, store, journal, now, vaultRoot, genId });
+    const store = new MemoryStore({ broker, journal, now, genId, vaultRoot, manifest: MANIFEST });
+    const approvals = new Approvals({ broker, store, journal, now, vaultRoot, genId, manifest: MANIFEST });
 
     const { id } = await store.remember({ content: "canonical truth", reason: "seed", session: "s1" });
     await store.promote({ id, target_status: "working", reason: "confirmed", session: "s1" });
@@ -303,7 +303,7 @@ describe("reindex", () => {
   test("incremental reindex flags an out-of-band canonical elevation, but still adopts it", async () => {
     const { journal, git, vaultRoot, now, genId } = await makeHarness();
     const broker = new Broker({ vaultRoot, git, journal, manifest: MANIFEST, now, genId });
-    const store = new MemoryStore({ broker, journal, now, genId, vaultRoot });
+    const store = new MemoryStore({ broker, journal, now, genId, vaultRoot, manifest: MANIFEST });
 
     const { id, path } = await store.remember({ content: "x", reason: "seed", session: "s1" });
     await store.promote({ id, target_status: "working", reason: "confirmed", session: "s1" });
@@ -334,8 +334,8 @@ describe("reindex", () => {
   test("an already-canonical row that stays canonical is NOT flagged", async () => {
     const { journal, git, vaultRoot, now, genId } = await makeHarness();
     const broker = new Broker({ vaultRoot, git, journal, manifest: MANIFEST, now, genId });
-    const store = new MemoryStore({ broker, journal, now, genId, vaultRoot });
-    const approvals = new Approvals({ broker, store, journal, now, vaultRoot, genId });
+    const store = new MemoryStore({ broker, journal, now, genId, vaultRoot, manifest: MANIFEST });
+    const approvals = new Approvals({ broker, store, journal, now, vaultRoot, genId, manifest: MANIFEST });
 
     const { id } = await store.remember({ content: "y", reason: "seed", session: "s1" });
     await store.promote({ id, target_status: "working", reason: "confirmed", session: "s1" });
@@ -439,7 +439,7 @@ describe("reindex", () => {
   test("round-trip: a memory remembered by the store survives a FULL journal rebuild with its entity intact", async () => {
     const { journal, git, vaultRoot, now, genId } = await makeHarness();
     const broker = new Broker({ vaultRoot, git, journal, manifest: MANIFEST, now, genId });
-    const store = new MemoryStore({ broker, journal, now, genId, vaultRoot });
+    const store = new MemoryStore({ broker, journal, now, genId, vaultRoot, manifest: MANIFEST });
 
     const { id } = await store.remember({
       content: "Nova's deadline is 2026-08-15.",

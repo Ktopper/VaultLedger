@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename } from "node:path";
 import { BrokerError } from "../errors.js";
 import type { Broker } from "../broker/broker.js";
+import { assertContainedAndReadable } from "../broker/containment.js";
 import { checkContradictions } from "../contradiction/check.js";
 import { checkSourceStaleness } from "../contradiction/staleness.js";
 import type { ApprovalRow, Journal } from "../journal/journal.js";
@@ -264,7 +265,10 @@ export class Approvals {
             stalenessTarget = {
               memoryId: candidateId,
               path: op.path,
-              beforeContent: readFileSync(join(this.vaultRoot, op.path), "utf8"),
+              beforeContent: readFileSync(
+                assertContainedAndReadable(this.vaultRoot, this.manifest, op.path),
+                "utf8",
+              ),
             };
           }
         } catch (err) {
@@ -305,7 +309,10 @@ export class Approvals {
           stalenessTarget.memoryId,
         );
         try {
-          const afterContent = readFileSync(join(this.vaultRoot, stalenessTarget.path), "utf8");
+          const afterContent = readFileSync(
+            assertContainedAndReadable(this.vaultRoot, this.manifest, stalenessTarget.path),
+            "utf8",
+          );
           checkSourceStaleness(
             { journal: this.journal, now: this.now, genId: this.genId },
             stalenessTarget.memoryId,

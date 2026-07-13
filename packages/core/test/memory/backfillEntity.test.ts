@@ -149,7 +149,7 @@ describe("backfillEntity", () => {
       last_referenced: null,
     });
 
-    const result = await backfillEntity({ broker, journal, vaultRoot, now, genId });
+    const result = await backfillEntity({ broker, journal, vaultRoot, manifest: MANIFEST, now, genId });
 
     expect(result.backfilled).toBe(1);
     expect(result.skipped).toBe(0);
@@ -191,7 +191,7 @@ describe("backfillEntity", () => {
     });
 
     const before = readFileSync(join(vaultRoot, relPath), "utf8");
-    const result = await backfillEntity({ broker, journal, vaultRoot, now, genId });
+    const result = await backfillEntity({ broker, journal, vaultRoot, manifest: MANIFEST, now, genId });
 
     expect(result.backfilled).toBe(0);
     expect(result.skipped).toBe(1);
@@ -224,7 +224,7 @@ describe("backfillEntity", () => {
       last_referenced: null,
     });
 
-    const result = await backfillEntity({ broker, journal, vaultRoot, now, genId });
+    const result = await backfillEntity({ broker, journal, vaultRoot, manifest: MANIFEST, now, genId });
 
     expect(result.backfilled).toBe(0);
     expect(result.skipped).toBe(0);
@@ -276,7 +276,7 @@ describe("backfillEntity", () => {
       last_referenced: null,
     });
 
-    const result = await backfillEntity({ broker, journal, vaultRoot, now, genId });
+    const result = await backfillEntity({ broker, journal, vaultRoot, manifest: MANIFEST, now, genId });
 
     expect(result.errors).toHaveLength(1);
     expect(result.errors[0]!.path).toBe("Agent/Memory/mem_missing.md");
@@ -311,7 +311,7 @@ describe("backfillEntity", () => {
     });
 
     const before = readFileSync(join(vaultRoot, relPath), "utf8");
-    const result = await backfillEntity({ broker, journal, vaultRoot, now, genId });
+    const result = await backfillEntity({ broker, journal, vaultRoot, manifest: MANIFEST, now, genId });
 
     expect(result.backfilled).toBe(0);
     expect(result.skipped).toBe(0);
@@ -320,5 +320,57 @@ describe("backfillEntity", () => {
 
     const after = readFileSync(join(vaultRoot, relPath), "utf8");
     expect(after).toBe(before);
+  });
+
+  // VL-SEC (WU-4 follow-up, read-gate consistency): the per-note read must go
+  // through the shared containment/zone gate. A journal row whose path
+  // resolves to the excluded zone must be REFUSED at the read (recorded in
+  // `errors`), never read + surfaced in `mismatched` with its `fileEntity`
+  // exposed -- backfillEntity's result reaches CLI output, so an excluded
+  // note's frontmatter entity would otherwise be printable.
+  test("a memory whose path is in the excluded zone is refused at the read gate (errors, not mismatched — no fileEntity leak)", async () => {
+    const { journal, broker, vaultRoot, now, genId } = await makeHarness();
+
+    // A real on-disk excluded-zone note whose FILE entity DIFFERS from the
+    // journal row -- pre-gate this would land in `mismatched` with
+    // fileEntity="secret-entity" leaked into the result.
+    const relPath = "Private/secret.md";
+    const noteBody = matter.stringify("Sensitive.", {
+      entity: "secret-entity",
+      ledger: {
+        id: "mem_excluded",
+        status: "working",
+        created: now(),
+        source: "s1",
+        reason: "seed",
+        confidence: "medium",
+        supersedes: null,
+        expires: null,
+      },
+    });
+    mkdirSync(join(vaultRoot, "Private"), { recursive: true });
+    writeFileSync(join(vaultRoot, relPath), noteBody, "utf8");
+
+    journal.insertMemory({
+      id: "mem_excluded",
+      path: relPath,
+      entity: "journal-entity",
+      status: "working",
+      confidence: "medium",
+      created: now(),
+      source: "s1",
+      supersedes: null,
+      expires: null,
+      last_referenced: null,
+    });
+
+    const result = await backfillEntity({ broker, journal, vaultRoot, manifest: MANIFEST, now, genId });
+
+    // Refused at the gate: recorded as an error, NOT a mismatch.
+    expect(result.backfilled).toBe(0);
+    expect(result.mismatched).toEqual([]);
+    expect(result.errors.map((e) => e.path)).toContain(relPath);
+    // The excluded note's file entity must not appear anywhere in the result.
+    expect(JSON.stringify(result)).not.toContain("secret-entity");
   });
 });
