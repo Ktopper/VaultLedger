@@ -1,6 +1,6 @@
 import tseslint from "typescript-eslint";
 export default tseslint.config(
-  { ignores: ["**/dist/**", "**/node_modules/**", "packages/obsidian-plugin/main.js"] },
+  { ignores: ["**/dist/**", "**/node_modules/**", "packages/obsidian-plugin/main.js", "security/poc/**"] },
   ...tseslint.configs.recommended,
   {
     // Bundle-purity guard, lint half (test/bundlePurity.test.ts is the real
