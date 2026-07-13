@@ -146,8 +146,13 @@ Every publishable `package.json` gains:
   `"keywords"` (obsidian, mcp, agent-memory, provenance, …),
   `"engines": { "node": ">=20" }` (matches the root manifest).
 
-**Per-package `LICENSE`:** npm auto-includes `LICENSE` only from the package's
-own directory — the root file does not ride into workspace tarballs. Copy the
+**Per-package `LICENSE`:** under **pnpm** (the only sanctioned publish path
+here), `pnpm pack` already hoists the root workspace `LICENSE` into each
+package's tarball when the package lacks its own — verified 2026-07-13
+(`packages/core` with no own LICENSE still packs the root MIT text). So
+per-package copies aren't strictly necessary under pnpm; we copy them anyway for
+explicitness and raw-`npm publish` safety (npm proper does NOT hoist it). Copy
+the
 root `LICENSE` verbatim into each of the four package dirs (committed copies;
 no build-time copy step to go stale or get skipped).
 
@@ -207,11 +212,14 @@ command is run by (or explicitly authorized by) Kris.
    the scratch dir for step 2 lives **outside the repo** (untracked tarballs
    inside it would dirty the tree and fail the git check).
 1. **Clean build:** `pnpm install` → `pnpm build` (fresh `dist/` everywhere).
-2. **Pack + inspect (mechanical, per package):** `pnpm pack` has no
-   recursive/filter form (pnpm#4351) — pack each package explicitly:
-   `pnpm -r --filter '!@vaultledger/obsidian-plugin' exec pnpm pack
-   --pack-destination "$SCRATCH"` (or a four-line `for` loop over the package
-   dirs). Then list each tarball (`tar -tzf`) and assert: `dist/` present with
+2. **Pack + inspect (mechanical, per package):** on this pnpm (11.9),
+   `pnpm -r --filter '!@vaultledger/obsidian-plugin' pack
+   --pack-destination "$SCRATCH"` works directly and produces exactly the 4
+   non-plugin tarballs (verified 2026-07-13 — the old `pnpm#4351` "no recursive
+   pack" caveat is stale for this version; note that unfiltered `pnpm -r pack`
+   does NOT skip the private plugin, so the `!`-filter is required). In
+   practice this is the `scripts/verify-publish.mjs` check. Then list each
+   tarball (`tar -tzf`) and assert: `dist/` present with
    `.js`/`.d.ts` and maps (the base tsconfig emits `sourceMap` +
    `declarationMap`, so maps are expected); `bin/<name>.mjs` present where
    declared; `LICENSE` + `README.md` present; **absent:** `src/`, `test/`,
