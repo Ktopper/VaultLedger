@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import { BrokerError } from "../errors.js";
 import type { PermissionsManifest } from "../schemas/manifest.js";
@@ -8,7 +8,7 @@ import { resolveZone } from "../zones.js";
 import { assertHashFormat, hashBytes, hashFile } from "./hash.js";
 import { applyPatch } from "./patch.js";
 import { assertStructurePreserved, governedProvenanceChanged } from "./lint.js";
-import { assertContainedAndReadable } from "./containment.js";
+import { assertContainedAndReadable, writeContainedFile } from "./containment.js";
 import { formatMessage, type LedgerGit } from "./git.js";
 import { withVaultLock } from "../concurrency/lock.js";
 
@@ -181,7 +181,10 @@ export class Broker {
 
     const content = readFileSync(fromAbs);
     mkdirSync(dirname(toAbs), { recursive: true });
-    writeFileSync(toAbs, content);
+    // VL-SEC-S1-02: re-verify containment and write via temp+rename (not a
+    // direct writeFileSync(toAbs, ...), which would follow a symlink swapped
+    // in at toAbs) — see containment.ts's writeContainedFile for why.
+    writeContainedFile(this.vaultRoot, this.manifest, toRel, content);
     unlinkSync(fromAbs);
 
     const message = formatMessage({ op: "forget", basename: basename(fromRel), session });
@@ -238,7 +241,9 @@ export class Broker {
 
     const contentBuf = Buffer.from(op.content, "utf8");
     mkdirSync(dirname(abs), { recursive: true });
-    writeFileSync(abs, contentBuf);
+    // VL-SEC-S1-02: re-verify containment and write via temp+rename rather
+    // than a direct writeFileSync(abs, ...) — see writeContainedFile.
+    writeContainedFile(this.vaultRoot, this.manifest, op.path, contentBuf);
 
     const message = formatMessage({
       op: "create",
@@ -352,7 +357,17 @@ export class Broker {
       );
     }
 
-    writeFileSync(abs, after, "utf8");
+    // VL-SEC-S1-02: this is the window a concurrent process can win — real
+    // async work sits between the containment check at the top of this
+    // method and here (patch apply, the `await` above for fileAtHead, a
+    // possible baseline commit), long enough for another process to swap
+    // `op.path` for a symlink pointing outside the vault. writeContainedFile
+    // re-runs the full realpath containment check with ZERO await between
+    // that check and the write, then writes via temp-file+renameSync (which
+    // does not follow a symlink at the destination) instead of a direct
+    // writeFileSync(abs, ...) reusing the now-possibly-stale `abs` computed
+    // above. See containment.ts for the full defense + documented residual.
+    writeContainedFile(this.vaultRoot, this.manifest, op.path, after);
 
     const message = formatMessage({
       op: "revise",
