@@ -133,3 +133,36 @@ Critical/High fix re-runs its kept `security/poc/` harness (with negative
 controls) to prove closure. This section is updated to reviewed → **fixed**
 (outcome + commit) after the batch. Publishing remains blocked until at least
 the 3 Criticals + 4 agent-triggerable Highs are fixed + re-verified.
+
+## Fix outcomes (batch complete — 2026-07-13)
+Subagent-driven, each fix gate-verified + every Critical/High adversarially
+re-reviewed (refute-first) and PoC-re-run at coordinator level. Full suite:
+core 499 / server 55 / cli 122 / mcp-server 52 / plugin 20 = **748 pass**;
+`pnpm audit`: **0 vulnerabilities**. Publishing is unblocked.
+
+| ID | Sev | Outcome | Commit | Verification |
+|---|---|---|---|---|
+| VL-SEC-S1-02 | Crit | **fixed** | `c40c0d9` | ancestor re-check + temp-rename `O_EXCL`. Adversarial review caught an **introduced** temp-plant Critical (predictable temp name); re-fixed (random name + `O_EXCL` fail-closed) + regression test; both leaf-race & temp-plant PoCs show no escape. |
+| VL-SEC-S2-01+03 | Crit | **fixed** | `8ef3172` | landing-position verification (observes jsdiff `compareLine`) + `approvalId==null` guard split. Survived 14 adversarial relocation patches; `broker.test.ts:972` legit-flip green. |
+| VL-SEC-S7-03 | Crit | **fixed** | `33a0361` | unanchored `**/Private/**` + `scanVault` invariant. Glob-completeness probe: all depths/case-variants excluded, no false-match. |
+| VL-SEC-S7-01 | High | **fixed** | `569708a` | reindex `resolveZone` gate. |
+| VL-SEC-S7-02 | High | **fixed** | `569708a`,`1518598` | check.ts containment gate + 5 checkContradictions sites threaded (a 5th, `conflicts.ts --rescan`, surfaced by the required-manifest compile break). |
+| VL-SEC-S4-01 | High | **fixed** | `8118cb4` | `diff`→8.0.4 (CVE-2026-24001); child-process DoS test: 8-byte patch rejects cleanly. |
+| VL-SEC-S4-03 | High | **fixed** | `8118cb4` | `canonicalize`+stringify replaced with pairwise `canonicalEqual` (never materializes); proven semantically identical to the ledger guard over 10k+ fuzz pairs; handles cyclic anchors + depth-30 bombs. |
+| VL-SEC-S3-03 | Med | **fixed** | `569708a` | closed by the check.ts containment gate. |
+| VL-SEC-S2-04 | Med | **fixed** | `d617e62` | boundary made explicit + drift invariant (audit confirmed no governance reads a non-`ledger`/`entity` field; deliberately NOT expanded — would break the agent fact-update model). |
+| VL-SEC-S7-04 | Med | **fixed** | `589a45b` | `redactExcludedZones` on `ledger_status` + `GET /status`; CLI keeps patterns; plugin verified not to need them. |
+| VL-SEC-S4-05 | Med | **fixed** | `8118cb4` | zod bounds on all MCP inputs; content/patch use a true UTF-8 **byte** cap (`Buffer.byteLength`), not char-count. |
+| VL-SEC-S1-01 | Low | **fixed** | `772f5ae` | `lockDir` now required (`UNSAFE_NO_LOCK` opt-out sentinel); stale TOCTOU comment removed. |
+| VL-SEC-S2-05 | Low | **fixed** | `8ef3172` | hunk-order/non-overlap check (with S2). |
+| VL-SEC-S3-01 | Low | **fixed** | `569708a`,`1518598` | check.ts gated; +6 further raw reads gated for consistency (review-found footgun). |
+| VL-SEC-S7-05 | Low | **fixed** | `569708a` | recall() defense-in-depth zone re-check. |
+| VL-SEC-S7-06 | Low | **fixed** | `569708a` | covered by reindex file-level gate. |
+| VL-SEC-S8-02 | Low | **fixed** | `772f5ae` | `bundlePurity.test.ts` extended to forbid `innerHTML=`/`insertAdjacentHTML(`/etc. in the built bundle (RED-confirmed). |
+| VL-SEC-S4-06 (dev-deps) | Low | **fixed** | `772f5ae` | vitest 2.1.9→3.2.7, esbuild/vite bumped/overridden; `pnpm audit` → 0; `@types/diff` removed (dead after diff@8). |
+| VL-SEC-S6-03 | Low | **skipped (documented)** | — | gitignoring the tracked+needed benign `.npmrc` (`auto-install-peers=true`) is a no-op for the stated goal; left as-is. |
+
+### New finding surfaced during the fix batch
+- **VL-SEC-S2-07 — Low — accepted-with-expiry.** Both the old `canonicalize` and the new `canonicalEqual` in `governedProvenanceChanged` treat two *different* YAML-`Date`-typed governed field values as **equal** (js-yaml auto-parses ISO-date scalars → `Date`, and `Object.keys(date) === []` collapses both sides to `{}`). A Date-typed governed field could thus be tampered without tripping the ledger guard. **Pre-existing** (identical in old and new code — not introduced by the fix batch) and **narrow**: no governed field (`status`/`supersedes`/`entity`/`score`) is date-typed today. **Accept until** any governed frontmatter field becomes date-typed — at which point make `canonicalEqual` `Date`-aware (compare `getTime()`).
+
+**Non-finding infra commits in the batch:** `a2a7e43` (eslint-ignore `security/poc/`).
