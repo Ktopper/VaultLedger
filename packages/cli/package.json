@@ -8,7 +8,11 @@
   "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
   "bin": { "ledger": "./bin/ledger.mjs" },
   "files": ["dist", "bin/ledger.mjs"],
-  "scripts": { "build": "tsc -b", "test": "vitest run" },
+  "scripts": {
+    "build": "tsc -b",
+    "test": "vitest run",
+    "prepack": "node ../../scripts/prepack-check.mjs"
+  },
   "license": "MIT",
   "author": "Kristopher Dunham",
   "repository": {
