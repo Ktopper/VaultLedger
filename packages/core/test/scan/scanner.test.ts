@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readdirSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { scanVault } from "../../src/scan/scanner.js";
+import { resolveZone } from "../../src/zones.js";
 import { BrokerError } from "../../src/errors.js";
 
 let dir: string | undefined;
@@ -107,7 +108,7 @@ describe("scanVault", () => {
     expect(result.proposedManifest.zones.agent).toEqual(["Agent/**"]);
     expect(result.proposedManifest.zones.scratch).toEqual(["Agent/Scratch/**"]);
     expect(result.proposedManifest.zones.excluded).toEqual(
-      expect.arrayContaining([".obsidian/**", "Private/**"]),
+      expect.arrayContaining([".obsidian/**", "**/Private/**"]),
     );
     expect(result.proposedManifest.mode).toBe("assisted");
   });
@@ -214,5 +215,90 @@ describe("scanVault", () => {
     const lp = result.profile.detected.likelyProjects;
     expect([...lp]).toEqual([...lp].sort());
     expect(lp).toEqual(["Areas", "Work"]);
+  });
+
+  // -------------------------------------------------------------------
+  // VL-SEC-S7-03: a folder literally named "Private" nested anywhere in the
+  // tree (not just vault root) must be honored by the proposed manifest's
+  // `excluded` glob(s). hasPrivate detection scans the WHOLE tree, so the
+  // exclusion it proposes must cover the whole tree too -- a root-anchored
+  // "Private/**" silently leaves nested Private folders in-zone even though
+  // the manifest claims hasPrivate:true.
+  // -------------------------------------------------------------------
+
+  describe("nested Private folders are honored by the proposed manifest (VL-SEC-S7-03)", () => {
+    test("a Private folder nested under Agent/Memory resolves to excluded", () => {
+      dir = mkdtempSync(join(tmpdir(), "vaultledger-scan-nested-private-"));
+      mkdirSync(join(dir, "Agent", "Memory", "Private"), { recursive: true });
+      writeFileSync(join(dir, "Agent", "Memory", "Private", "secret.md"), "Secret.\n");
+
+      const result = scanVault(dir);
+
+      expect(result.profile.hasPrivate).toBe(true);
+      expect(resolveZone("Agent/Memory/Private/secret.md", result.proposedManifest)).toBe(
+        "excluded",
+      );
+    });
+
+    test("a Private folder nested under Projects/ClientX resolves to excluded", () => {
+      dir = mkdtempSync(join(tmpdir(), "vaultledger-scan-nested-private2-"));
+      mkdirSync(join(dir, "Projects", "ClientX", "Private"), { recursive: true });
+      writeFileSync(join(dir, "Projects", "ClientX", "Private", "notes.md"), "Notes.\n");
+
+      const result = scanVault(dir);
+
+      expect(resolveZone("Projects/ClientX/Private/notes.md", result.proposedManifest)).toBe(
+        "excluded",
+      );
+    });
+
+    test("a root-level Private folder still resolves to excluded (no regression)", () => {
+      dir = mkdtempSync(join(tmpdir(), "vaultledger-scan-root-private-"));
+      mkdirSync(join(dir, "Private"), { recursive: true });
+      writeFileSync(join(dir, "Private", "secret.md"), "Secret.\n");
+
+      const result = scanVault(dir);
+
+      expect(resolveZone("Private/secret.md", result.proposedManifest)).toBe("excluded");
+    });
+
+    test("a non-Private nested Agent path is unaffected and still resolves to agent zone", () => {
+      dir = mkdtempSync(join(tmpdir(), "vaultledger-scan-agent-nonprivate-"));
+      mkdirSync(join(dir, "Agent", "Memory"), { recursive: true });
+      writeFileSync(join(dir, "Agent", "Memory", "note.md"), "Not private.\n");
+
+      const result = scanVault(dir);
+
+      expect(resolveZone("Agent/Memory/note.md", result.proposedManifest)).toBe("agent");
+    });
+
+    test("scanVault throws if the proposed manifest would fail to exclude a detected Private folder", () => {
+      // Direct invariant test: construct a manifest deliberately missing the
+      // unanchored glob (simulating a regression) and confirm resolveZone
+      // does NOT resolve the nested path to excluded -- i.e. this is a real
+      // gap, not a vacuous assertion.
+      const brokenManifest = {
+        mode: "assisted" as const,
+        zones: {
+          trusted: ["**"],
+          agent: ["Agent/**"],
+          scratch: ["Agent/Scratch/**"],
+          excluded: [".obsidian/**", "Private/**"],
+        },
+        overrides: [],
+      };
+      expect(resolveZone("Agent/Memory/Private/secret.md", brokenManifest)).not.toBe("excluded");
+    });
+
+    test("scanVault itself refuses to return a manifest that under-excludes a detected Private folder (self-check invariant)", () => {
+      dir = mkdtempSync(join(tmpdir(), "vaultledger-scan-invariant-"));
+      mkdirSync(join(dir, "Agent", "Memory", "Private"), { recursive: true });
+      writeFileSync(join(dir, "Agent", "Memory", "Private", "secret.md"), "Secret.\n");
+
+      const { proposedManifest } = scanVault(dir);
+      for (const folderPath of ["Agent/Memory/Private"]) {
+        expect(resolveZone(`${folderPath}/probe.md`, proposedManifest)).toBe("excluded");
+      }
+    });
   });
 });

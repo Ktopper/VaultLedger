@@ -2,6 +2,7 @@ import { readdirSync, readFileSync, statSync, type Dirent } from "node:fs";
 import { join } from "node:path";
 import { PermissionsManifest } from "../schemas/manifest.js";
 import { BrokerError } from "../errors.js";
+import { resolveZone } from "../zones.js";
 
 // NOTE: gray-matter / YAML frontmatter parsing (mentioned in design §7) is
 // intentionally omitted here — no VaultProfile field is frontmatter-derived in
@@ -49,6 +50,15 @@ interface WalkStats {
   topLevelFolders: string[];
   /** every folder base name encountered in the tree (for hasPrivate/hasAgent) */
   allFolderNames: Set<string>;
+  /**
+   * root-relative, forward-slash-joined path of every folder whose base name
+   * matches PRIVATE_FOLDER_RE, at ANY depth (e.g. "Agent/Memory/Private").
+   * Used post-scan to self-check the proposed manifest actually excludes
+   * each one (VL-SEC-S7-03) -- hasPrivate alone only tells you a Private
+   * folder exists somewhere, not that the proposed excluded globs cover
+   * where it actually lives.
+   */
+  privateFolderPaths: string[];
   /** note (file) basenames, for the YYYY-MM-DD daily-note pattern */
   noteBaseNames: string[];
   noteCount: number;
@@ -62,6 +72,7 @@ function walk(root: string, excludeDirs: Set<string>): WalkStats {
     topFolderNoteCounts: new Map(),
     topLevelFolders: [],
     allFolderNames: new Set(),
+    privateFolderPaths: [],
     noteBaseNames: [],
     noteCount: 0,
     linkCount: 0,
@@ -71,8 +82,12 @@ function walk(root: string, excludeDirs: Set<string>): WalkStats {
 
   // Single traversal. `depth` distinguishes root's immediate children (depth 0)
   // so top-level folders are captured inline — no separate readdir(root) pass,
-  // no duplicated exclusion/symlink logic.
-  function walkDir(dir: string, topFolder: string | null, depth: number): void {
+  // no duplicated exclusion/symlink logic. `relPath` is the root-relative,
+  // forward-slash-joined path of `dir` itself ("" at the root), tracked
+  // alongside `topFolder` so a Private folder found at any depth can be
+  // recorded with its FULL path (not just its base name) for the
+  // post-scan exclusion self-check.
+  function walkDir(dir: string, topFolder: string | null, depth: number, relPath: string): void {
     let entries: Dirent[];
     try {
       entries = readdirSync(dir, { withFileTypes: true });
@@ -86,12 +101,14 @@ function walk(root: string, excludeDirs: Set<string>): WalkStats {
       if (entry.isSymbolicLink()) continue;
 
       const full = join(dir, entry.name);
+      const entryRelPath = relPath ? `${relPath}/${entry.name}` : entry.name;
 
       if (entry.isDirectory()) {
         if (excludeDirs.has(entry.name)) continue;
         stats.allFolderNames.add(entry.name);
+        if (PRIVATE_FOLDER_RE.test(entry.name)) stats.privateFolderPaths.push(entryRelPath);
         if (depth === 0) stats.topLevelFolders.push(entry.name);
-        walkDir(full, topFolder ?? entry.name, depth + 1);
+        walkDir(full, topFolder ?? entry.name, depth + 1, entryRelPath);
         continue;
       }
 
@@ -119,7 +136,7 @@ function walk(root: string, excludeDirs: Set<string>): WalkStats {
     }
   }
 
-  walkDir(root, null, 0);
+  walkDir(root, null, 0, "");
   return stats;
 }
 
@@ -187,7 +204,17 @@ export function scanVault(root: string, opts?: { excludeDirs?: string[] }): Scan
   };
 
   const excluded = [".obsidian/**"];
-  if (hasPrivate) excluded.push("Private/**");
+  // Unanchored glob (VL-SEC-S7-03 fix): hasPrivate is detected at ANY depth
+  // ([...allFolderNames].some(...) above scans the whole tree), so the
+  // exclusion glob must match Private at any depth too — a root-anchored
+  // "Private/**" only shields a vault-root Private folder, silently leaving
+  // e.g. "Agent/Memory/Private/" or "Projects/ClientX/Private/" in-zone even
+  // though the manifest reports hasPrivate:true. picomatch's "**/Private/**"
+  // (with the shared PICOMATCH_OPTS { dot: true, nocase: true } used by
+  // resolveZone) matches BOTH a root "Private/x.md" and any nested
+  // ".../Private/x.md", and case-insensitively — verified in
+  // packages/core/test/scan/scanner.test.ts.
+  if (hasPrivate) excluded.push("**/Private/**");
 
   const proposedManifest = PermissionsManifest.parse({
     mode: "assisted",
@@ -199,6 +226,28 @@ export function scanVault(root: string, opts?: { excludeDirs?: string[] }): Scan
     },
     overrides: [],
   });
+
+  // Self-check invariant (VL-SEC-S7-03 fix, part 2): before handing this
+  // manifest back to `ledger init`/`setup` to print and (on confirm) write,
+  // verify EVERY folder matching PRIVATE_FOLDER_RE anywhere in the scanned
+  // tree actually resolves to "excluded" under the manifest we just built.
+  // This is deliberately redundant with the glob fix above — it's a
+  // defense-in-depth backstop so a future regression (e.g. someone
+  // re-anchoring the glob, or adding a competing base-zone/override glob
+  // that outranks it) is caught here, at the source, rather than silently
+  // shipping an under-exclusion like the one this fixes.
+  for (const folderPath of stats.privateFolderPaths) {
+    const probe = `${folderPath}/__vaultledger_invariant_probe__.md`;
+    if (resolveZone(probe, proposedManifest) !== "excluded") {
+      throw new BrokerError(
+        "INVARIANT_VIOLATION",
+        `scanVault refused to propose an unsafe manifest: folder "${folderPath}" matches the ` +
+          `Private-folder pattern but does not resolve to the excluded zone under the proposed ` +
+          `excluded globs (${JSON.stringify(excluded)}). This would silently under-protect a ` +
+          `folder the human expects to be excluded.`,
+      );
+    }
+  }
 
   return { profile, proposedManifest };
 }

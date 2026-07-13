@@ -45,6 +45,13 @@ const BROKER_ERROR_STATUS: Record<RejectionCode, number> = {
   // caller input error about the request's shape, not a state conflict --
   // same family as INVALID_TRANSITION.
   INVALID_SOURCE: 422,
+  // scanVault's self-check (VL-SEC-S7-03 fix): thrown only from `ledger
+  // init`/`setup` (CLI-side, not reachable through any server route today)
+  // when the proposed manifest would fail to exclude a detected Private
+  // folder. Included here only for Record<RejectionCode, number>
+  // exhaustiveness -- 500 because it signals an internal invariant the tool
+  // failed to uphold, not a client-caused rejection.
+  INVARIANT_VIOLATION: 500,
 };
 
 const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);

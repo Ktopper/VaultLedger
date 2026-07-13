@@ -52,6 +52,16 @@ export const RejectionCode = {
   // so a bad citation never produces a half-written note or dangling
   // memory_relations row.
   INVALID_SOURCE: "INVALID_SOURCE",
+  // VL-SEC-S7-03 fix: scanVault's own self-check that every folder matching
+  // the Private-folder pattern (at any depth) actually resolves to the
+  // excluded zone under the manifest it is about to propose. This is a
+  // defense-in-depth backstop against a future regression re-introducing a
+  // root-anchored-only exclusion glob -- the tool must catch its own
+  // under-exclusion rather than silently handing `ledger init`/`setup` a
+  // manifest that claims hasPrivate:true but doesn't actually exclude it.
+  // Not retriable: the same scan of the same tree reproduces the identical
+  // (broken) manifest every time -- only a code fix resolves it.
+  INVARIANT_VIOLATION: "INVARIANT_VIOLATION",
 } as const;
 
 export type RejectionCode = (typeof RejectionCode)[keyof typeof RejectionCode];
@@ -79,6 +89,7 @@ const RETRIABLE: Record<RejectionCode, boolean> = {
   // fix the citation (drop the bad id, cite a live/retired one, or supply at
   // least one source) and resubmit.
   INVALID_SOURCE: false,
+  INVARIANT_VIOLATION: false,
 };
 
 export interface Rejection {
