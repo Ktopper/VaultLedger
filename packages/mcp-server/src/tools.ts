@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { BrokerError, Confidence, recall, type RecallFilters } from "@vaultledger/core";
+import { BrokerError, Confidence, recall, redactExcludedZones, type RecallFilters } from "@vaultledger/core";
 import type { ServerContext } from "./context.js";
 
 /** Structured error shape every tool handler returns instead of throwing.
@@ -384,7 +384,11 @@ export function buildTools(ctx: ServerContext): ToolDef[] {
           const parsed = LedgerStatusInput.safeParse(rawArgs ?? {});
           if (!parsed.success) return invalidArgs(parsed.error.message);
           return {
-            zones: ctx.manifest.zones,
+            // Agent-facing: redact excluded-zone globs (VL-SEC-S7-04) —
+            // returning them verbatim would tell the agent exactly what
+            // (and, for a file-targeted override, precisely which file) is
+            // hidden from it. The human-facing CLI `status` keeps them.
+            zones: redactExcludedZones(ctx.manifest.zones),
             pendingApprovals: ctx.approvals.list(),
             recentTransactions: ctx.journal.listTransactions({ limit: 10 }),
           };

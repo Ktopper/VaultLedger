@@ -8,6 +8,7 @@ import {
   Conflicts,
   findStale,
   recall,
+  redactExcludedZones,
   undoSession,
   undoTransaction,
   type RejectionCode,
@@ -196,7 +197,12 @@ export function buildBridge(ctx: VaultContext, token: string): FastifyInstance {
 
   app.get("/status", async () => {
     return {
-      zones: ctx.manifest.zones,
+      // Agent-facing (the MCP-connected agent reaches this over the
+      // token-authed loopback bridge): redact excluded-zone globs
+      // (VL-SEC-S7-04) — see redactExcludedZones' doc comment. The
+      // obsidian-plugin review UI (bridgeClient.status()) does not display
+      // zones.excluded anywhere, so this doesn't regress its legitimate use.
+      zones: redactExcludedZones(ctx.manifest.zones),
       mode: ctx.manifest.mode,
       pendingApprovals: ctx.approvals.list().length,
       recentTransactions: ctx.journal.listTransactions({ limit: 10 }),

@@ -39,11 +39,32 @@ describe("read routes", () => {
     const res = await app.inject({ method: "GET", url: "/status", headers: HEADERS });
     expect(res.statusCode).toBe(200);
     const body = res.json();
-    expect(body.zones).toEqual(ctx.manifest.zones);
+    expect(body.zones).toEqual({
+      trusted: ctx.manifest.zones.trusted,
+      agent: ctx.manifest.zones.agent,
+      scratch: ctx.manifest.zones.scratch,
+    });
     expect(body.mode).toBe(ctx.manifest.mode);
     expect(body.pendingApprovals).toBe(0);
     expect(Array.isArray(body.recentTransactions)).toBe(true);
     expect(body.recentTransactions.length).toBeGreaterThan(0);
+  });
+
+  // VL-SEC-S7-04: GET /status is the bridge route the MCP-connected agent
+  // can reach over loopback. It must not leak the excluded-zone glob
+  // patterns verbatim (makeTestVault's manifest sets excluded: ["Private/**"]).
+  test("GET /status does not leak the excluded-zone glob pattern verbatim", async () => {
+    vault = await makeTestVault();
+    const ctx = await openTestVault(vault);
+    closeCtx = () => ctx.close();
+    expect(ctx.manifest.zones.excluded).toContain("Private/**");
+
+    app = buildBridge(ctx, TOKEN);
+    const res = await app.inject({ method: "GET", url: "/status", headers: HEADERS });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).not.toContain("Private/**");
+    const body = res.json();
+    expect(Object.prototype.hasOwnProperty.call(body.zones, "excluded")).toBe(false);
   });
 
   test("GET /approvals includes a non-empty rendered diff for a queued propose_edit", async () => {
