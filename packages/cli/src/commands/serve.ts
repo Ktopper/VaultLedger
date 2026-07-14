@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileS
 import { join } from "node:path";
 import { BrokerError, readConfig, vaultLockDir } from "@vaultledger/core";
 import { startBridge } from "@vaultledger/server";
+import { isPidAlive } from "./pid.js";
 
 export interface ServeOptions {
   port?: number;
@@ -44,21 +45,6 @@ const NOT_INITIALIZED_MESSAGE = "not a VaultLedger vault (run `ledger init` firs
 
 function defaultMintToken(): string {
   return randomBytes(24).toString("hex");
-}
-
-/**
- * Is `pid` a live process? `process.kill(pid, 0)` sends no signal but still
- * performs the existence + permission check: it succeeds for a live process
- * we own, throws EPERM for a live process we DON'T own (still alive → true),
- * and throws ESRCH when no such process exists (dead → false).
- */
-function isPidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    return (e as NodeJS.ErrnoException).code === "EPERM";
-  }
 }
 
 /** Read + validate an existing bridge.json. Returns undefined if it's absent

@@ -1,4 +1,5 @@
 import { simpleGit, type SimpleGit } from "simple-git";
+import { existsSync } from "node:fs";
 import { BrokerError } from "../errors.js";
 
 const IDENTITY_ARGS = ["-c", "user.name=VaultLedger", "-c", "user.email=ledger@local"];
@@ -167,5 +168,46 @@ export class LedgerGit {
       }
     }
     return commits;
+  }
+}
+
+export interface GitProbe {
+  isRepo: boolean;
+  gitWorks: boolean;      // false only when the git binary itself failed to run
+  head: string | null;    // resolved HEAD sha, or null on a repo with no commits yet
+}
+
+/**
+ * Read-only git health probe for `ledger doctor`. Never writes. Distinguishes
+ * three states doctor reports differently: not a repo, a repo with no commits
+ * yet (legitimate — HEAD unresolvable is NOT an error here), and a repo with a
+ * resolvable HEAD. A git binary that can't run at all surfaces as
+ * `gitWorks:false` (the classic environment failure nothing else catches).
+ */
+export async function probeGitRepo(dir: string): Promise<GitProbe> {
+  // A nonexistent path is exactly the "typo / wrong vault" input `ledger
+  // doctor` exists to diagnose — treat it as "not a repo" rather than letting
+  // simpleGit's constructor throw GitConstructError synchronously. gitWorks
+  // stays true: a missing directory is not a broken git binary (that case
+  // still surfaces below via checkIsRepo's catch → gitWorks:false).
+  if (!existsSync(dir)) return { isRepo: false, gitWorks: true, head: null };
+  let git: SimpleGit;
+  try {
+    git = simpleGit(dir);
+  } catch {
+    return { isRepo: false, gitWorks: true, head: null };
+  }
+  let isRepo: boolean;
+  try {
+    isRepo = await git.checkIsRepo();
+  } catch {
+    return { isRepo: false, gitWorks: false, head: null };
+  }
+  if (!isRepo) return { isRepo: false, gitWorks: true, head: null };
+  try {
+    const sha = (await git.revparse(["HEAD"])).trim();
+    return { isRepo: true, gitWorks: true, head: sha };
+  } catch {
+    return { isRepo: true, gitWorks: true, head: null };
   }
 }

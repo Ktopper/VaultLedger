@@ -251,3 +251,34 @@ export function scanVault(root: string, opts?: { excludeDirs?: string[] }): Scan
 
   return { profile, proposedManifest };
 }
+
+/**
+ * Read-only walk collecting every directory whose basename matches
+ * PRIVATE_FOLDER_RE, at any depth, as vault-root-relative forward-slash paths.
+ * Skips the same DEFAULT_EXCLUDE_DIRS `scanVault` skips. Used by `ledger
+ * doctor`'s zone-integrity check to probe each against the CURRENT manifest
+ * (scanVault's internal walk probes the proposed one and would throw).
+ */
+export function findPrivateFolders(root: string): string[] {
+  const out: string[] = [];
+  const walk = (absDir: string, relDir: string): void => {
+    // Skip unreadable dirs (EACCES) or ones that vanished mid-walk (ENOENT)
+    // rather than crashing the whole zone-integrity check — mirrors the
+    // defensive readdirSync in doctor's collectSyncDups.
+    let entries: import("node:fs").Dirent[];
+    try {
+      entries = readdirSync(absDir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (DEFAULT_EXCLUDE_DIRS.has(entry.name)) continue;
+      const rel = relDir ? `${relDir}/${entry.name}` : entry.name;
+      if (PRIVATE_FOLDER_RE.test(entry.name)) out.push(rel);
+      walk(join(absDir, entry.name), rel);
+    }
+  };
+  walk(root, "");
+  return out;
+}
