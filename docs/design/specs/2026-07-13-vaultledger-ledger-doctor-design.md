@@ -213,6 +213,27 @@ the remediation.
   *"an `.mcp.json` using the `npx` server form does not depend on this
   resolution."*
 
+### 3.5a Native dependencies (added 2026-07-14, post-smoke)
+- **`native-deps`** — the single most likely "why is my agent stuck?"
+  broken-install state, and the one doctor was originally **blind** to: with
+  `better-sqlite3`'s compiled binding missing (the classic pnpm-10
+  "skipped `approve-builds`" state our own friction note warns about), every
+  journal-touching command (`status`/`log`/`approve`, the MCP server) fails —
+  yet doctor reported a **false clean bill**, because no check ever loaded the
+  native module when the journal was absent. Fix: a dedicated probe
+  (`probeNativeDeps` in core) opens and closes an **in-memory** database
+  (`:memory:` — no file, no vault write, so it stays read-only) which forces
+  the `.node` binding to load. *Loads → `ok`; throws → `fail`, remediation
+  "reinstall — on pnpm 10 run `pnpm approve-builds` then reinstall; otherwise
+  `npm rebuild better-sqlite3`".* **Vault-independent** (it's install health,
+  not vault state — runs even on an uninitialized/garbage path) and reported
+  **first**, since a broken binding makes most other checks moot. Companion
+  hardening (not a doctor check): both CLI and MCP entry points now route
+  top-level error printing through `explainNativeBindingError` (core), so a
+  broken binding yields ONE actionable line instead of the raw ~14-line
+  `bindings` path dump — **at the committed bin launchers**, since the dist's
+  own `isMainModule` catch is dead code when invoked via the linked bin.
+
 ### 3.6 Stale mutation lock
 - **`lock`** — the post-crash state that silently blocks every broker write:
   the agent just sees lock timeouts and nothing else in the set surfaces why.
@@ -298,11 +319,12 @@ redundant fails. Rule:
 
 Vault-dependent (cascade-skipped when `config` fails): `permissions`,
 `zone-integrity`, `journal`, `lock`, `bridge`, `plugin`. Vault-**independent**
-(always run, even on an uninitialized dir): `git` (a git repo can exist before
-`ledger setup`), `mcp` (install health, not vault state), `versions`,
-`sync-artifacts` (it can still scan `.ledger/` / `.git/` if present, and
-reports `ok` if there's nothing to scan). The `skipped` state already exists
-in setup's `StepState` vocabulary; doctor reuses it.
+(always run, even on an uninitialized dir): `native-deps` (install health —
+reported first), `git` (a git repo can exist before `ledger setup`), `mcp`
+(install health, not vault state), `versions`, `sync-artifacts` (it can still
+scan `.ledger/` / `.git/` if present, and reports `ok` if there's nothing to
+scan). The `skipped` state already exists in setup's `StepState` vocabulary;
+doctor reuses it.
 
 Net effect: `ledger doctor ./not-a-vault` prints one actionable `fail`
 (`config`) + a tidy list of `skipped`, exit `1` — not ten scary fails.
