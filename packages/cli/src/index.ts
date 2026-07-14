@@ -5,6 +5,8 @@ import { approveCommand } from "./commands/approve.js";
 import { auditCommand } from "./commands/audit.js";
 import { backfillEntityCommand } from "./commands/backfillEntity.js";
 import { conflictsCommand } from "./commands/conflicts.js";
+import { runDoctor } from "./commands/doctor.js";
+import { renderDoctorReport } from "./commands/doctorReport.js";
 import { initCommand } from "./commands/init.js";
 import { logCommand } from "./commands/log.js";
 import { reindexCommand } from "./commands/reindex.js";
@@ -23,6 +25,8 @@ export { approveCommand, type ApproveOptions, type ApproveCommandResult } from "
 export { auditCommand, type AuditOptions } from "./commands/audit.js";
 export { backfillEntityCommand, type BackfillEntityOptions } from "./commands/backfillEntity.js";
 export { conflictsCommand, type ConflictsOptions } from "./commands/conflicts.js";
+export { runDoctor, type DoctorOptions, type DoctorResult } from "./commands/doctor.js";
+export { renderDoctorReport, type CheckResult, type CheckStatus } from "./commands/doctorReport.js";
 export { initCommand, type InitOptions, type InitResult } from "./commands/init.js";
 export { logCommand, type LogFilters } from "./commands/log.js";
 export { reindexCommand } from "./commands/reindex.js";
@@ -66,6 +70,22 @@ export function buildProgram(): Command {
     .action(async (vaultDir: string) => {
       try {
         await statusCommand(vaultDir);
+      } catch (e) {
+        reportError(e);
+      }
+    });
+
+  program
+    .command("doctor <vaultDir>")
+    .description("read-only health check: inspect vault + runtime wiring, report issues")
+    .option("--json", "emit CheckResult[] as JSON", false)
+    .option("--strict", "treat warnings as failures (exit 1)", false)
+    .action(async (vaultDir: string, opts: { json: boolean; strict: boolean }) => {
+      try {
+        const { checks, exitCode } = await runDoctor(vaultDir, opts, {});
+        if (opts.json) console.log(JSON.stringify({ checks, exitCode }, null, 2));
+        else console.log(renderDoctorReport(checks));
+        if (exitCode !== 0) process.exitCode = exitCode;
       } catch (e) {
         reportError(e);
       }
