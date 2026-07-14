@@ -1,14 +1,20 @@
 import { describe, expect, test, afterEach } from "vitest";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PermissionsManifest, vaultLockDir, LOCK_CONFIG } from "@vaultledger/core";
 import { makeInitializedVault, type TestVault } from "../helpers.js";
+import { initCommand } from "../../src/commands/init.js";
 import {
   runDoctor,
   mapGitProbe,
   mapMcpProbe,
   compareVersions,
   scanSyncArtifacts,
+  checkZoneIntegrity,
+  checkLock,
+  mapJournalProbe,
+  mapPluginFreshness,
 } from "../../src/commands/doctor.js";
 
 describe("runDoctor — config gate + cascade + exit code", () => {
@@ -154,5 +160,189 @@ describe("runDoctor — vault-independent checks run unconditionally", () => {
       expect(checks.find((c) => c.name === "mcp")!.status).toBe("ok");
       expect(["info", "warn"]).toContain(checks.find((c) => c.name === "versions")!.status);
     } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test("uninitialized dir: all five vault-dependent checks cascade-skip", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "vl-empty-"));
+    try {
+      const { checks } = await runDoctor(dir, { json: false, strict: false }, {});
+      for (const name of ["zone-integrity", "journal", "lock", "bridge", "plugin"]) {
+        expect(checks.find((c) => c.name === name)!.status).toBe("skipped");
+      }
+      // interim placeholder gone: journal is a real cascade skip, not a placeholder
+      expect(checks.find((c) => c.name === "journal")!.detail).not.toContain("placeholder");
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe("checkZoneIntegrity", () => {
+  test("Private folder present at init time is excluded → ok", async () => {
+    const vaultDir = mkdtempSync(join(tmpdir(), "vl-zone-"));
+    const homeDir = mkdtempSync(join(tmpdir(), "vl-home-"));
+    try {
+      // Create the Private folder BEFORE init so scanVault bakes `**/Private/**`
+      // into the written manifest.
+      mkdirSync(join(vaultDir, "Agent", "Memory", "Private"), { recursive: true });
+      await initCommand(vaultDir, { confirm: true, rand: () => "test1234", out: () => {} });
+      const env = { HOME: homeDir } as NodeJS.ProcessEnv;
+      const { checks } = await runDoctor(vaultDir, { json: false, strict: false }, { env });
+      const zi = checks.find((c) => c.name === "zone-integrity")!;
+      expect(zi.status).toBe("ok");
+      expect(zi.detail).toContain("all excluded");
+      expect(zi.detail).toContain(".ledger/** excluded");
+    } finally {
+      rmSync(vaultDir, { recursive: true, force: true });
+      rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  test("a Private folder NOT covered by excluded globs → fail", () => {
+    const dir = mkdtempSync(join(tmpdir(), "vl-zone-"));
+    try {
+      mkdirSync(join(dir, "Private"), { recursive: true });
+      // Hand-built manifest whose excluded does NOT cover the Private folder.
+      const manifest = PermissionsManifest.parse({
+        zones: { trusted: ["**"], agent: [], scratch: [], excluded: [".obsidian/**"] },
+      });
+      const r = checkZoneIntegrity(dir, manifest);
+      expect(r.status).toBe("fail");
+      expect(r.detail).toContain("Private");
+      expect(r.remediation).toContain("permissions.yaml");
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test("no Private folders present → ok with the 'no Private' wording", () => {
+    const dir = mkdtempSync(join(tmpdir(), "vl-zone-"));
+    try {
+      const manifest = PermissionsManifest.parse({});
+      const r = checkZoneIntegrity(dir, manifest);
+      expect(r.status).toBe("ok");
+      expect(r.detail).toContain("no Private folders present");
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe("mapJournalProbe", () => {
+  test("absent → warn (reindex)", () => {
+    const r = mapJournalProbe({ status: "absent" }, false);
+    expect(r.status).toBe("warn");
+    expect(r.detail).toContain("not built yet");
+    expect(r.remediation).toContain("ledger reindex");
+  });
+
+  test("ok → ok with count", () => {
+    const r = mapJournalProbe({ status: "ok", count: 42 }, false);
+    expect(r.status).toBe("ok");
+    expect(r.detail).toContain("42 memories indexed");
+  });
+
+  test("unreadable + live writer → info (busy)", () => {
+    const r = mapJournalProbe({ status: "unreadable", error: "torn copy" }, true);
+    expect(r.status).toBe("info");
+    expect(r.detail).toContain("busy");
+  });
+
+  test("unreadable + no live writer → warn", () => {
+    const r = mapJournalProbe({ status: "unreadable", error: "corrupt" }, false);
+    expect(r.status).toBe("warn");
+    expect(r.detail).toContain("unreadable");
+    expect(r.remediation).toContain("ledger reindex");
+  });
+});
+
+describe("checkLock", () => {
+  let home: string | undefined;
+  afterEach(() => { if (home) rmSync(home, { recursive: true, force: true }); home = undefined; });
+
+  const env = (): NodeJS.ProcessEnv => ({ HOME: home! }) as NodeJS.ProcessEnv;
+
+  test("absent lock → ok, live false", () => {
+    home = mkdtempSync(join(tmpdir(), "vl-home-"));
+    const { result, live } = checkLock("test1234", env(), () => 1000);
+    expect(result.status).toBe("ok");
+    expect(result.detail).toContain("no mutation lock");
+    expect(live).toBe(false);
+  });
+
+  test("fresh lock → ok, live true", () => {
+    home = mkdtempSync(join(tmpdir(), "vl-home-"));
+    const lockPath = join(vaultLockDir("test1234", env()), "vault.lock");
+    mkdirSync(lockPath, { recursive: true });
+    const mtimeMs = statSync(lockPath).mtimeMs;
+    const { result, live } = checkLock("test1234", env(), () => mtimeMs + 1000);
+    expect(result.status).toBe("ok");
+    expect(result.detail).toContain("writer holds the mutation lock");
+    expect(live).toBe(true);
+  });
+
+  test("stale lock → warn, live false, remediation names the path", () => {
+    home = mkdtempSync(join(tmpdir(), "vl-home-"));
+    const lockPath = join(vaultLockDir("test1234", env()), "vault.lock");
+    mkdirSync(lockPath, { recursive: true });
+    const mtimeMs = statSync(lockPath).mtimeMs;
+    const { result, live } = checkLock("test1234", env(), () => mtimeMs + LOCK_CONFIG.stale + 5000);
+    expect(result.status).toBe("warn");
+    expect(result.detail).toContain("stale mutation lock");
+    expect(result.remediation).toContain(lockPath);
+    expect(live).toBe(false);
+  });
+});
+
+describe("runDoctor — bridge check", () => {
+  let v: TestVault | undefined;
+  afterEach(() => { v?.cleanup(); v = undefined; });
+
+  async function bridgeCheck(bridge: unknown | null): Promise<string> {
+    v = await makeInitializedVault();
+    const dir = vaultLockDir("vault_test1234", v.deps.env);
+    mkdirSync(dir, { recursive: true });
+    if (bridge !== null) writeFileSync(join(dir, "bridge.json"), JSON.stringify(bridge));
+    const { checks } = await runDoctor(v.vaultDir, { json: false, strict: false }, { env: v.deps.env });
+    return checks.find((c) => c.name === "bridge")!.status;
+  }
+
+  test("alive pid → ok", async () => {
+    v = await makeInitializedVault();
+    const dir = vaultLockDir("vault_test1234", v.deps.env);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "bridge.json"),
+      JSON.stringify({ pid: process.pid, port: 51234, token: "t", startedAt: "x" }),
+    );
+    const { checks } = await runDoctor(v.vaultDir, { json: false, strict: false }, { env: v.deps.env });
+    const b = checks.find((c) => c.name === "bridge")!;
+    expect(b.status).toBe("ok");
+    expect(b.detail).toContain("port 51234");
+    expect(b.detail).toContain(`pid ${process.pid}`);
+  });
+
+  test("surely-dead pid → warn", async () => {
+    expect(await bridgeCheck({ pid: 2147483647, port: 51234, token: "t", startedAt: "x" })).toBe("warn");
+  });
+
+  test("absent bridge.json → info", async () => {
+    expect(await bridgeCheck(null)).toBe("info");
+  });
+});
+
+describe("mapPluginFreshness", () => {
+  test("null → info (not installed)", () => {
+    const r = mapPluginFreshness(null);
+    expect(r.status).toBe("info");
+    expect(r.detail).toContain("not installed");
+    expect(r.remediation).toContain("--install-plugin");
+  });
+
+  test("already → ok", () => {
+    const r = mapPluginFreshness({ step: "plugin", state: "already", detail: "plugin v1 current" });
+    expect(r.status).toBe("ok");
+    expect(r.detail).toContain("current");
+  });
+
+  test("outdated → warn (carries the version-delta detail)", () => {
+    const r = mapPluginFreshness({ step: "plugin", state: "outdated", detail: "v1 → v2" });
+    expect(r.status).toBe("warn");
+    expect(r.detail).toBe("v1 → v2");
+    expect(r.remediation).toContain("--install-plugin");
   });
 });
