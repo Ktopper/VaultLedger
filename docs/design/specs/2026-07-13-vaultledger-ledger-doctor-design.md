@@ -166,14 +166,22 @@ the remediation.
     would mislabel as "unreadable → reindex" on a vault with nothing wrong.
     This is NOT caught by the §7 sidecar-materialization test — it needs the
     healthy-WAL and live-writer fixtures called out in §7.
-  - **Fallback (named, if the plain readonly open proves unreliable in the §7
-    fixtures):** open via the SQLite URI form with `immutable=1`
-    (`file:<path>?immutable=1`, `{ readonly: true }`). `immutable=1` asserts no
-    concurrent writer and bypasses the `-shm`/WAL-recovery requirement — safe
-    for a *count-only* read, and the live-writer case is cross-referenced
-    against the `lock` check (§3.6) rather than trusted blindly. If even that
-    is unreliable, degrade the check to existence + non-zero file size + a
-    softer detail line (never a `fail`/hard `warn` on size alone).
+  - **⚠ MECHANISM CORRECTED AT PLAN-REVIEW (2026-07-14) — this bullet's
+    prescription was empirically disproven; see the plan for the real
+    implementation.** On macOS / better-sqlite3 11, `{ readonly: true,
+    fileMustExist: true }` on a healthy cleanly-closed WAL DB does **not**
+    throw — it silently **succeeds and materializes** `-wal`/`-shm` beside the
+    real file (violating read-only). And the `immutable=1` URI fallback below
+    is **not valid better-sqlite3** — it doesn't enable `SQLITE_OPEN_URI`, so
+    `file:…?immutable=1` is treated as a literal filename and throws. **The
+    implemented mechanism is instead: open a disposable temp COPY of
+    `journal.db` (+ any present `-wal`/`-shm`), never the real file** — SQLite
+    then touches only the throwaway, keeping app-support byte-identical while
+    still yielding an accurate count. The original fallback text is retained
+    below only as the reasoning trail:
+  - *(superseded)* Fallback: open via the SQLite URI form with `immutable=1`
+    (`file:<path>?immutable=1`, `{ readonly: true }`); else degrade to
+    existence + non-zero file size + a softer detail line.
   - **Absent vs. corrupt vs. active-writer:** `fileMustExist:true` throws
     `SQLITE_CANTOPEN` for an absent DB, but a corrupt/locked DB — and, per the
     hazard above, a *healthy* WAL DB with no `-shm` — can throw the same.
@@ -415,3 +423,11 @@ bypasses the renderer and emits `{ checks: CheckResult[], exitCode }`.
    mtime-refresh/staleness model, no stored pid). The check delivers the same
    value (surface a crashed-writer lock, read-only, human removes it) via the
    staleness window instead of a pid liveness probe. Documented in §3.6.
+2. **`journal` uses a temp-copy read, not a readonly open.** Discovered at
+   plan-review (2026-07-14): both mechanisms §3.4 originally named — a
+   `{ readonly: true }` open and the `immutable=1` URI fallback — fail on
+   macOS / better-sqlite3 11 (the former silently materializes `-wal`/`-shm`
+   sidecars; the latter is unsupported syntax). The implemented check copies
+   `journal.db` (+ live sidecars) to a temp dir and opens the copy, so SQLite
+   never touches the real file. Same intent (count + readability, zero
+   mutation), corrected mechanism. See §3.4's ⚠ callout and the plan's Task 2.
