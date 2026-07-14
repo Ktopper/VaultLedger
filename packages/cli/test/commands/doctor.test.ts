@@ -324,6 +324,24 @@ describe("runDoctor — bridge check", () => {
   test("absent bridge.json → info", async () => {
     expect(await bridgeCheck(null)).toBe("info");
   });
+
+  test("present but corrupt bridge.json (cloud-sync truncation) → warn, not info", async () => {
+    v = await makeInitializedVault();
+    const dir = vaultLockDir("vault_test1234", v.deps.env);
+    mkdirSync(dir, { recursive: true });
+    // A truncated / non-JSON discovery file — must surface as corruption, not
+    // be silently read as "bridge not running".
+    writeFileSync(join(dir, "bridge.json"), '{"pid": 123, "por');
+    const { checks } = await runDoctor(v.vaultDir, { json: false, strict: false }, { env: v.deps.env });
+    const b = checks.find((c) => c.name === "bridge")!;
+    expect(b.status).toBe("warn");
+    expect(b.detail).toMatch(/malformed|corrupt/i);
+  });
+
+  test("present but wrong-shape bridge.json → warn", async () => {
+    // Parses as JSON but lacks numeric pid/port.
+    expect(await bridgeCheck({ foo: "bar" })).toBe("warn");
+  });
 });
 
 describe("mapPluginFreshness", () => {

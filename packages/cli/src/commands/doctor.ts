@@ -12,7 +12,7 @@ import {
   type GitProbe,
   type JournalProbe,
 } from "@vaultledger/core";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import YAML from "yaml";
@@ -353,13 +353,25 @@ export function mapJournalProbe(probe: JournalProbe, lockLive: boolean): CheckRe
 /** Read the bridge discovery file (never acquiring anything) and report
  * whether a live `ledger serve` is behind it. Parses defensively — a missing
  * or malformed file is simply "not running". */
-function checkBridge(vaultId: string, env: NodeJS.ProcessEnv): CheckResult {
+export function checkBridge(vaultId: string, env: NodeJS.ProcessEnv): CheckResult {
   const notRunning: CheckResult = {
     name: "bridge",
     status: "info",
     detail: "bridge not running — start it with `ledger serve`",
   };
   const bridgePath = join(vaultLockDir(vaultId, env), "bridge.json");
+  // An ABSENT bridge.json means the bridge simply isn't running (info). But a
+  // bridge.json that EXISTS yet won't parse / has the wrong shape is a corrupt
+  // discovery file — exactly the cloud-sync truncation this feature guards
+  // against elsewhere — and must surface as a warning, not read as "not
+  // running" (which would mask real corruption).
+  if (!existsSync(bridgePath)) return notRunning;
+  const malformed: CheckResult = {
+    name: "bridge",
+    status: "warn",
+    detail: "bridge.json present but unreadable/malformed — likely cloud-sync corruption",
+    remediation: "re-run `ledger serve` to republish it",
+  };
   let pid: number;
   let port: number;
   try {
@@ -367,11 +379,11 @@ function checkBridge(vaultId: string, env: NodeJS.ProcessEnv): CheckResult {
       pid?: unknown;
       port?: unknown;
     };
-    if (typeof parsed.pid !== "number" || typeof parsed.port !== "number") return notRunning;
+    if (typeof parsed.pid !== "number" || typeof parsed.port !== "number") return malformed;
     pid = parsed.pid;
     port = parsed.port;
   } catch {
-    return notRunning;
+    return malformed;
   }
   if (isPidAlive(pid)) {
     return { name: "bridge", status: "ok", detail: `bridge running (port ${port}, pid ${pid})` };

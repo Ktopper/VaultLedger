@@ -21,8 +21,13 @@ import { makeInitializedVault, type TestVault } from "./helpers.js";
  *     `--strict` promotes warn→exit 1, and the JSON shape is just a serialization
  *     of the same runDoctor result.
  *  2. LOAD-BEARING (spec §7): doctor is a diagnosis command — it MUST leave the
- *     vault tree, the app-support dir, and git HEAD byte-identical. Proven for
- *     both the absent-journal and WAL-mode-journal fixtures.
+ *     vault tree, the app-support dir, and git HEAD byte-identical. The
+ *     substantive app-support byte-identity proof is the WAL-mode-journal
+ *     fixture (its app-support dir actually contains a built journal.db, so the
+ *     snapshot comparison is non-vacuous); the absent-journal fixture proves
+ *     the complementary guarantee — that doctor never create-on-opens the DB —
+ *     via the explicit `existsSync(journal) === false` assertion (its
+ *     app-support snapshot is empty-vs-empty and intentionally not the crux).
  */
 
 // Returns a sorted map of relativePath -> `${size}:${mtimeMs}` for every file
