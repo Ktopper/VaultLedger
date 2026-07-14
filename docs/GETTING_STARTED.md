@@ -183,6 +183,13 @@ build script — run `pnpm approve-builds` once and re-run `pnpm bootstrap`
 (this only affects installing from source via pnpm; `npx` users never hit
 it, since the published package ships prebuilt binaries for common platforms
 and only compiles from source — needing a C++ toolchain — on unusual ones).
+A related network caveat: those prebuilt binaries download from GitHub release
+assets, so an environment behind a **restrictive/corporate proxy** (or an
+offline sandbox) that blocks those assets falls back to a source compile — and
+if a toolchain isn't reachable either, `better-sqlite3` won't install. On any
+broken/partial native install, `ledger doctor <vault>` names it directly (the
+`native-deps` check) and every command prints a one-line reinstall hint rather
+than a raw bindings error.
 
 Confirm it worked:
 

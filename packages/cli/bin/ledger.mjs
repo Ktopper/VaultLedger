@@ -10,9 +10,11 @@
 // Node runs THIS file, `argv[1]` is this launcher's path, not
 // `dist/index.js` — so that guard is false and `dist/index.js`'s own
 // auto-run never fires. We call the exported `main()` explicitly instead.
-import { main } from "../dist/index.js";
+import { main, explainNativeBindingError } from "../dist/index.js";
 
 main().catch((e) => {
-  console.error(e instanceof Error ? e.message : String(e));
+  // Backstop for a broken better-sqlite3 native binding whose error escapes a
+  // command action's own handler — collapse it to one actionable line.
+  console.error(explainNativeBindingError(e) ?? (e instanceof Error ? e.message : String(e)));
   process.exitCode = 1;
 });

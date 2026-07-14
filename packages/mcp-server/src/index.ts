@@ -3,7 +3,12 @@ import { resolve } from "node:path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema, type CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { resolvesToThisModule } from "@vaultledger/core";
+import { resolvesToThisModule, explainNativeBindingError } from "@vaultledger/core";
+// Re-exported so the committed bin launcher (bin/vaultledger-mcp.mjs) can use
+// it in its own `main().catch` without a second dependency-resolution path —
+// the launcher is the real entrypoint, so the isMainModule block below never
+// fires under the bin.
+export { explainNativeBindingError };
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { loadServerContext, type ServerContext } from "./context.js";
 import { buildTools, type ToolDef } from "./tools.js";
@@ -165,7 +170,9 @@ export async function main(): Promise<void> {
 const isMainModule = resolvesToThisModule(process.argv[1], import.meta.url);
 if (isMainModule) {
   main().catch((e) => {
-    console.error(e instanceof Error ? e.message : String(e));
+    // Collapse a broken better-sqlite3 native binding to one actionable line
+    // instead of the raw ~14-line `bindings` path dump.
+    console.error(explainNativeBindingError(e) ?? (e instanceof Error ? e.message : String(e)));
     process.exitCode = 1;
   });
 }

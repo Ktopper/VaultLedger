@@ -1,6 +1,9 @@
 #!/usr/bin/env node
-import { resolvesToThisModule } from "@vaultledger/core";
+import { resolvesToThisModule, explainNativeBindingError } from "@vaultledger/core";
 import { Command } from "commander";
+// Re-exported so the committed bin launcher (bin/ledger.mjs) can use it in its
+// own `main().catch` backstop — the launcher is the real entrypoint.
+export { explainNativeBindingError };
 import { approveCommand } from "./commands/approve.js";
 import { auditCommand } from "./commands/audit.js";
 import { backfillEntityCommand } from "./commands/backfillEntity.js";
@@ -37,7 +40,9 @@ export { undoCommand, type UndoOptions, type UndoCommandResult } from "./command
 export { loadContext, type LedgerContext, type LoadContextDeps } from "./context.js";
 
 function reportError(e: unknown): void {
-  console.error(e instanceof Error ? e.message : String(e));
+  // A broken better-sqlite3 native binding otherwise dumps a raw ~14-line
+  // `bindings` path list; collapse that class to one actionable line.
+  console.error(explainNativeBindingError(e) ?? (e instanceof Error ? e.message : String(e)));
   process.exitCode = 1;
 }
 

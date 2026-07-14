@@ -15,6 +15,7 @@ import {
   checkLock,
   mapJournalProbe,
   mapPluginFreshness,
+  mapNativeProbe,
   nodeInEnginesRange,
 } from "../../src/commands/doctor.js";
 
@@ -341,6 +342,39 @@ describe("runDoctor — bridge check", () => {
   test("present but wrong-shape bridge.json → warn", async () => {
     // Parses as JSON but lacks numeric pid/port.
     expect(await bridgeCheck({ foo: "bar" })).toBe("warn");
+  });
+});
+
+describe("mapNativeProbe", () => {
+  test("ok probe → ok", () => {
+    expect(mapNativeProbe({ ok: true }).status).toBe("ok");
+  });
+
+  test("failed probe → fail with an approve-builds/rebuild remediation", () => {
+    const r = mapNativeProbe({ ok: false, error: "Could not locate the bindings file.\n → /a\n → /b" });
+    expect(r.status).toBe("fail");
+    expect(r.remediation).toMatch(/approve-builds|npm rebuild better-sqlite3/);
+    // detail collapses the multi-line dump to its first line.
+    expect(r.detail.split("\n").length).toBe(1);
+  });
+});
+
+describe("runDoctor — native-deps check (healthy install)", () => {
+  let v: TestVault | undefined;
+  afterEach(() => { v?.cleanup(); v = undefined; });
+
+  test("a working better-sqlite3 install → native-deps ok, and it runs even on a garbage path", async () => {
+    v = await makeInitializedVault();
+    const { checks } = await runDoctor(v.vaultDir, { json: false, strict: false }, { env: v.deps.env });
+    const nd = checks.find((c) => c.name === "native-deps")!;
+    expect(nd.status).toBe("ok");
+
+    // Vault-independent: present (not skipped) even on an uninitialized dir.
+    const dir = mkdtempSync(join(tmpdir(), "vl-nd-"));
+    try {
+      const { checks: c2 } = await runDoctor(dir, { json: false, strict: false }, {});
+      expect(c2.find((c) => c.name === "native-deps")!.status).toBe("ok");
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
 

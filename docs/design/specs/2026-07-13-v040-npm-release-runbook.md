@@ -197,6 +197,13 @@ run, and never re-attempt an already-live package.
 
 ## Step 6 — Post-publish smoke (clean environment)
 
+> **Run this on your Mac, not in a sandbox/CI with a restrictive proxy.** The
+> `npx` install pulls `better-sqlite3`'s prebuilt binary from GitHub release
+> assets; a proxied/offline environment that blocks those assets forces a
+> source compile and the smoke fails on install, not on VaultLedger — a false
+> negative. (A corporate-proxy *consumer* hits the same wall; that's the
+> `native-deps`/friction-note territory, not a publish blocker.)
+
 From an **empty temp directory with no workspace on the path** (i.e. not
 inside `~/dev/VaultLedger` or any clone — a fresh `mkdir` elsewhere):
 

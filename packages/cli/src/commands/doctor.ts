@@ -5,12 +5,14 @@ import {
   PermissionsManifest,
   probeGitRepo,
   probeJournal,
+  probeNativeDeps,
   findPrivateFolders,
   resolveZone,
   vaultLockDir,
   LOCK_CONFIG,
   type GitProbe,
   type JournalProbe,
+  type NativeProbe,
 } from "@vaultledger/core";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -46,6 +48,30 @@ export function deriveExitCode(checks: CheckResult[], strict: boolean): number {
 }
 
 /** Pure: map a git probe to a doctor CheckResult. */
+/** Pure: map a native-dependency probe to a doctor CheckResult. */
+export function mapNativeProbe(p: NativeProbe): CheckResult {
+  if (p.ok) {
+    return { name: "native-deps", status: "ok", detail: "better-sqlite3 native binding loads" };
+  }
+  return {
+    name: "native-deps",
+    status: "fail",
+    // Keep the detail to the first line — the raw bindings error is a ~14-line
+    // path dump; the remediation carries the fix.
+    detail: `better-sqlite3 native binding failed to load — ${p.error.split("\n")[0]}`,
+    remediation:
+      "reinstall it: on pnpm 10 run `pnpm approve-builds` then reinstall; otherwise `npm rebuild better-sqlite3`",
+  };
+}
+
+/** Read-only install-health check: does the better-sqlite3 native binding load?
+ * The single most likely "why is my agent stuck" broken-install state, and one
+ * doctor was previously blind to (it never loaded the native module when the
+ * journal was absent, so it reported a false clean bill). */
+function checkNativeDeps(): CheckResult {
+  return mapNativeProbe(probeNativeDeps());
+}
+
 export function mapGitProbe(p: GitProbe): CheckResult {
   if (!p.gitWorks) {
     return {
@@ -494,6 +520,7 @@ export async function runDoctor(
   // 3. VAULT-INDEPENDENT checks: git, mcp, versions, sync-artifacts.
   //    These run unconditionally — they do NOT depend on an initialized vault.
   //    Every push routes through `guard` so an unforeseen throw is a `fail`.
+  checks.push(await guard("native-deps", () => checkNativeDeps()));
   checks.push(await guard("git", () => checkGit(vaultDir)));
   checks.push(await guard("mcp", () => checkMcp()));
   checks.push(await guard("versions", () => checkVersions()));
