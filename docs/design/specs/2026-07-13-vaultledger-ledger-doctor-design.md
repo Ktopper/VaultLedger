@@ -156,15 +156,38 @@ the remediation.
     `new Database(dbPath)` (no options → create-on-open) and runs
     `pragma("journal_mode = WAL")` (materializes sidecars). Doctor opens the
     path directly with `{ readonly: true, fileMustExist: true }` instead.
-  - **Absent vs. corrupt:** `fileMustExist:true` throws `SQLITE_CANTOPEN` for
-    an absent DB, but a corrupt/locked DB can throw the same. `existsSync` the
-    path first (cheap) so the two cases get accurate detail lines — both route
-    to the same `ledger reindex` remediation (the journal is disposable), but
-    "not built yet" must not mislabel a present-but-corrupt journal.
+  - **SECOND HAZARD — a read-only open of a healthy WAL DB can itself throw
+    (false-corrupt risk).** SQLite read-only access to a WAL-mode database is
+    restricted: a `{ readonly: true }` connection generally cannot open a WAL
+    database unless a readable `-shm` already exists — it can neither create
+    the shared-memory index nor run WAL recovery. So depending on platform and
+    whether the last writer closed cleanly, `{ readonly: true }` on a
+    *perfectly healthy* WAL journal can throw, which the naïve mapping below
+    would mislabel as "unreadable → reindex" on a vault with nothing wrong.
+    This is NOT caught by the §7 sidecar-materialization test — it needs the
+    healthy-WAL and live-writer fixtures called out in §7.
+  - **Fallback (named, if the plain readonly open proves unreliable in the §7
+    fixtures):** open via the SQLite URI form with `immutable=1`
+    (`file:<path>?immutable=1`, `{ readonly: true }`). `immutable=1` asserts no
+    concurrent writer and bypasses the `-shm`/WAL-recovery requirement — safe
+    for a *count-only* read, and the live-writer case is cross-referenced
+    against the `lock` check (§3.6) rather than trusted blindly. If even that
+    is unreliable, degrade the check to existence + non-zero file size + a
+    softer detail line (never a `fail`/hard `warn` on size alone).
+  - **Absent vs. corrupt vs. active-writer:** `fileMustExist:true` throws
+    `SQLITE_CANTOPEN` for an absent DB, but a corrupt/locked DB — and, per the
+    hazard above, a *healthy* WAL DB with no `-shm` — can throw the same.
+    `existsSync` the path first (cheap) to separate absent from present-throws.
+    For a present-throws, cross-reference the `lock` check: **if the mutation
+    lock shows a live writer, the detail must read "journal busy — possibly
+    held by an active writer", NOT imply corruption.** Both still route to the
+    same `ledger reindex` remediation (the journal is disposable).
   - Absent → `warn`, "journal not built yet — run `ledger reindex`" (the
     journal is a disposable index; absence is recoverable, not fatal).
-  - Present but unopenable → `warn`, "journal present but unreadable — run
-    `ledger reindex` to rebuild it".
+  - Present but unopenable, no live writer → `warn`, "journal present but
+    unreadable — run `ledger reindex` to rebuild it".
+  - Present but unopenable, live writer held (per `lock`) → `info`/`warn`,
+    "journal busy — possibly held by an active writer".
   - Present and opens → `ok`, detail "N memories indexed" + a light drift hint
     ("run `ledger reindex` if you suspect the index has drifted"). Doctor does
     **not** run a reconcile (that would be heavier and, more importantly, a
@@ -214,6 +237,11 @@ the remediation.
     `permissions 2.yaml` — the same `" 2."` pattern `prepack-check.mjs` and
     `verify-publish.mjs` already guard against), and
   - broken-named refs under `.git/refs/` (a cheap refs listing).
+  - **Scope stays narrow on purpose — `.ledger/` and `.git/refs/` only, never
+    the note space.** User notes legitimately contain names like `Page 2.md`,
+    so widening the `" 2."` scan to the whole vault would drown the check in
+    false positives. Left as a warning so nobody "improves" it into a
+    vault-wide sweep later.
   - Any found → `warn`, detail lists the offending paths, remediation "these
     look like cloud-sync duplicates/corruption — review and remove the
     duplicates; a broken git ref can break `ledger undo`."
@@ -229,8 +257,10 @@ the remediation.
 ### 3.9 Bridge (runtime, info-tier)
 - **`bridge`** — `bridge.json`'s presence does **not** mean the bridge is
   running; after a crash/reboot a **stale** `bridge.json` actively misleads the
-  plugin (it points at a dead port). Reuse serve.ts's `isPidAlive`
-  (`process.kill(pid, 0)` — read-only) against the recorded pid:
+  plugin (it points at a dead port). Use the `isPidAlive`
+  (`process.kill(pid, 0)` — read-only) probe against the recorded pid — note
+  `isPidAlive` is private to serve.ts, so extract-or-reimplement per §6, not a
+  reuse of an exported symbol:
   - absent → `info` ("bridge not running — `ledger serve` to start it").
   - present, pid alive → `ok`/`info` ("bridge running (port N, pid P)").
   - present, pid dead → `warn` ("stale `bridge.json` — pid P is not running;
@@ -338,6 +368,17 @@ bypasses the renderer and emits `{ checks: CheckResult[], exitCode }`.
   exit `0`; on a deliberately-broken vault (no git, nested `Private/`, missing
   config) → the right `fail`s + the cascade `skipped`s, exit `1`; `--strict`
   promotes a `warn` fixture to exit `1`; `--json` shape.
+- **WAL-journal read fixtures (empirical verification of the §3.4 second
+  hazard) — treat these as the go/no-go on the readonly-open approach during
+  implementation:**
+  1. a **healthy WAL journal, writer closed cleanly** → the `journal` check
+     MUST report `ok` (not `unreadable`). If the plain `{ readonly: true,
+     fileMustExist: true }` open throws here, that is the signal to adopt the
+     §3.4 `immutable=1` fallback (or the size-only degrade) — decided by what
+     these fixtures actually do on this platform, not by assumption.
+  2. a **WAL journal with a live concurrent writer** → MUST NOT report
+     `corrupt`; per §3.4 it cross-references the `lock` check and reports the
+     "possibly held by an active writer" detail.
 - **Mutation-free assertion (the load-bearing test)** — run `doctor` against a
   vault and assert it left the vault **byte-identical**: no file content/mtime
   changes, no new git commit, no journal change. The fixture set for THIS test
