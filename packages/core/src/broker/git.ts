@@ -169,3 +169,33 @@ export class LedgerGit {
     return commits;
   }
 }
+
+export interface GitProbe {
+  isRepo: boolean;
+  gitWorks: boolean;      // false only when the git binary itself failed to run
+  head: string | null;    // resolved HEAD sha, or null on a repo with no commits yet
+}
+
+/**
+ * Read-only git health probe for `ledger doctor`. Never writes. Distinguishes
+ * three states doctor reports differently: not a repo, a repo with no commits
+ * yet (legitimate — HEAD unresolvable is NOT an error here), and a repo with a
+ * resolvable HEAD. A git binary that can't run at all surfaces as
+ * `gitWorks:false` (the classic environment failure nothing else catches).
+ */
+export async function probeGitRepo(dir: string): Promise<GitProbe> {
+  const git = simpleGit(dir);
+  let isRepo: boolean;
+  try {
+    isRepo = await git.checkIsRepo();
+  } catch {
+    return { isRepo: false, gitWorks: false, head: null };
+  }
+  if (!isRepo) return { isRepo: false, gitWorks: true, head: null };
+  try {
+    const sha = (await git.revparse(["HEAD"])).trim();
+    return { isRepo: true, gitWorks: true, head: sha };
+  } catch {
+    return { isRepo: true, gitWorks: true, head: null };
+  }
+}
