@@ -84,11 +84,15 @@ the remediation.
 
 ### 3.1 Init & config
 - **`config`** — `.ledger/config.json` exists and parses to a config with a
-  valid `vaultId` (reuse `readConfig` / `assertValidVaultId`; `readConfig`
-  already throws a typed `NOT_FOUND` on absent/corrupt). *Absent or corrupt →
-  `fail`, remediation "run `ledger setup <vault>`".* This check's outcome
-  gates the cascade (§4): a `fail` here means the vaultId is unknown, so every
-  out-of-vault check (journal, lock, bridge) is `skipped`.
+  valid `vaultId`. Reuse `readConfig` (already throws a typed `NOT_FOUND` on
+  absent/corrupt). Note: `assertValidVaultId` is **module-private** in
+  `config.ts` and `readConfig` does not call it — so validate the id by
+  routing it through `journalPath(vaultId, env)` / `vaultLockDir(vaultId, env)`
+  (both call `assertValidVaultId` internally and throw on a bad id), which the
+  journal/lock checks need to compute paths from anyway. *Absent, corrupt, or
+  invalid id → `fail`, remediation "run `ledger setup <vault>`".* This check's
+  outcome gates the cascade (§4): a `fail` here means the vaultId is unknown,
+  so every out-of-vault check (journal, lock, bridge) is `skipped`.
 - **`permissions`** — `.ledger/permissions.yaml` exists and parses to a valid
   `PermissionsManifest` (the same parse `openVault` uses). *Absent or invalid
   → `fail`, "run `ledger setup <vault>`" / "fix permissions.yaml".*
@@ -99,6 +103,11 @@ the remediation.
   `simple-git` everywhere and nothing else in the set would catch it. So the
   check runs a real `git rev-parse` (read-only) via the same git layer the
   broker uses.
+  - **Reuse note:** `LedgerGit` (core) exposes only mutating/write-oriented
+    methods (`init`/`commitFile`/`revertCommit`/`fileAtHead`/…) — no public
+    read-only repo probe. So the check calls `simpleGit(vaultDir)` directly
+    (`.checkIsRepo()` / `.revparse(["HEAD"])`), both pure reads, rather than
+    reusing `LedgerGit`.
   - `.git/` absent → `fail`, "`ledger undo` needs git for rollback — run
     `ledger setup <vault>` (it runs `git init`)".
   - `git` binary missing / `rev-parse` errors → `fail`, "git isn't working —
@@ -110,17 +119,29 @@ the remediation.
 
 ### 3.3 Zone integrity (security-skim invariants, now continuously verified)
 - **`zone-integrity`** — pulls the S7-03 invariant out of its one-time
-  regression test into an always-on check: under the vault's *current*
-  manifest, every folder matching `PRIVATE_FOLDER_RE` at any depth resolves to
-  the `excluded` zone (probe each candidate with `resolveZone`, exactly as
-  `scanVault`'s self-check does). *Any Private folder not excluded → `fail`,
-  "a 'Private' folder is not excluded — re-run `ledger setup <vault>` or fix
-  permissions.yaml".* A security invariant that regresses silently is exactly
-  what belongs in doctor rather than living only in the fix's regression test.
-  - **Cheap extension (same shape, same manifest):** also assert the
-    `.ledger/**` always-excluded invariant from the same security batch —
-    `resolveZone(".ledger/anything.md")` must be `excluded`. Folded into this
-    check since it's a probe against the same manifest.
+  regression test into an always-on check: under the vault's *current*,
+  on-disk parsed manifest, every folder matching `PRIVATE_FOLDER_RE` at any
+  depth resolves to the `excluded` zone. *Any Private folder not excluded →
+  `fail`, "a 'Private' folder is not excluded — re-run `ledger setup <vault>`
+  or fix permissions.yaml".* A security invariant that regresses silently is
+  exactly what belongs in doctor rather than living only in the fix's
+  regression test.
+  - **Enumeration (re-walk, not `scanVault` reuse):** `scanVault`'s
+    private-folder walk (`privateFolderPaths`) is internal, isn't returned in
+    `ScanResult`, and probes the *proposed* manifest (throwing
+    `INVARIANT_VIOLATION`), not the vault's *current* one. So doctor re-walks
+    the tree itself to collect `PRIVATE_FOLDER_RE` matches — reusing the
+    `PRIVATE_FOLDER_RE` semantics and the same directory-exclusion set
+    scanner.ts skips (`.git`/`.obsidian`/`.ledger`/`node_modules`/`.trash`) —
+    then probes each match with `resolveZone(probe, currentManifest)`.
+  - **Constant-guard extension (not manifest-sensitive):** also assert
+    `resolveZone(".ledger/anything.md", currentManifest) === "excluded"`. Be
+    precise about what this proves: `resolveZone` hard-codes `.ledger/**`
+    (and `.git/**`) as excluded *before* consulting the manifest, so this can
+    never fail on account of the vault's `permissions.yaml` — it's a
+    constant-guard against a future edit to `zones.ts`, not a check of vault
+    config. Worth keeping (same low cost), but it is defense-in-depth on the
+    code, not on the manifest.
 
 ### 3.4 Journal
 - **`journal`** — open the app-support journal DB **read-only** and report the
@@ -131,8 +152,19 @@ the remediation.
     sidecar files — both of which would violate the read-only guarantee. The
     check MUST open with `{ readonly: true, fileMustExist: true }` and treat
     the throw (file absent) as the "absent" path, not create-on-open.
+  - **Note — do NOT reuse core's `openJournal`:** it opens with
+    `new Database(dbPath)` (no options → create-on-open) and runs
+    `pragma("journal_mode = WAL")` (materializes sidecars). Doctor opens the
+    path directly with `{ readonly: true, fileMustExist: true }` instead.
+  - **Absent vs. corrupt:** `fileMustExist:true` throws `SQLITE_CANTOPEN` for
+    an absent DB, but a corrupt/locked DB can throw the same. `existsSync` the
+    path first (cheap) so the two cases get accurate detail lines — both route
+    to the same `ledger reindex` remediation (the journal is disposable), but
+    "not built yet" must not mislabel a present-but-corrupt journal.
   - Absent → `warn`, "journal not built yet — run `ledger reindex`" (the
     journal is a disposable index; absence is recoverable, not fatal).
+  - Present but unopenable → `warn`, "journal present but unreadable — run
+    `ledger reindex` to rebuild it".
   - Present and opens → `ok`, detail "N memories indexed" + a light drift hint
     ("run `ledger reindex` if you suspect the index has drifted"). Doctor does
     **not** run a reconcile (that would be heavier and, more importantly, a
@@ -279,10 +311,18 @@ bypasses the renderer and emits `{ checks: CheckResult[], exitCode }`.
   init/status/log/reindex/memory/approve/conflicts/serve/setup/undo.
 - **Reuse (no change):** `checkPluginFreshness`, `resolvePluginRoot`,
   `resolveMcpServerEntry` (cli/setup); `resolveZone`, `PRIVATE_FOLDER_RE`
-  semantics (core/scan); `readConfig`, `permissionsPath`, `journalPath`,
-  `vaultLockDir`, `appSupportBase` (core/config); the permissions parse
-  (core/host); `isPidAlive` pattern + `bridge.json` path (cli/serve — extract
-  `isPidAlive` to a shared spot if cheap, else re-implement the 4-line probe).
+  semantics + the directory-exclusion set (core/scan); `readConfig`,
+  `permissionsPath`, `journalPath`, `vaultLockDir`, `appSupportBase`,
+  `configPath` (core/config); `LOCK_CONFIG.stale` for the lock staleness
+  threshold (core/concurrency).
+- **Re-implement (no shared export to reuse — noted so the plan doesn't assume
+  reuse):** the permissions parse — `openVault` does
+  `PermissionsManifest.parse(YAML.parse(raw))` **inline** (no exported
+  `parsePermissions`), so the `permissions` check repeats that two-liner
+  (`PermissionsManifest` + the `yaml` dep are both importable). `isPidAlive` —
+  private to `serve.ts`; extract it to a shared module if cheap, else
+  re-implement the 4-line `process.kill(pid,0)` probe. The `git` read probe —
+  direct `simpleGit(dir)` (see §3.2), not `LedgerGit`.
 - **Test** `packages/cli/test/commands/doctor.test.ts` (+ per-check fixtures).
 
 ---
