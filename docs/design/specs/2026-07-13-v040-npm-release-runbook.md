@@ -163,26 +163,35 @@ Verify it landed on the registry:
 npm view @vaultledger/core@0.4.0
 ```
 
-Then publish the remaining three packages:
+Then publish the remaining three **one at a time, in this exact
+runtime-dependency order** (NOT `pnpm -r publish`):
 
 ```bash
-pnpm -r publish --access public
+pnpm --filter @vaultledger/server publish --access public
+pnpm --filter @vaultledger/mcp-server publish --access public
+pnpm --filter @vaultledger/cli publish --access public
 ```
 
-The recursive publish **skips versions already on the registry**, so the
-already-published `core` canary is not re-attempted — this command is
-rerun-safe.
+**Do NOT use `pnpm -r publish --access public` here.** `server` and
+`mcp-server` each *devDepend* on `cli` while `cli` *runtime-depends* on both,
+so the workspace graph has `cli↔server` / `cli↔mcp-server` cycles. `pnpm -r
+publish` topo-sorts over the whole graph (devDeps included) and a cycle makes
+the order undefined — it can push `cli` to the registry **before**
+`server`/`mcp-server`, and anyone who `npm install`s `@vaultledger/cli` in
+that gap gets a 404 on the missing sibling. The canary shrinks that window to
+just `core`; publishing `cli` **last**, after its runtime deps are already
+live, closes it entirely. `cli` must be the final publish.
 
 **2FA note:** with auth-and-writes 2FA, each upload prompts for a valid OTP,
-and a TOTP window can lapse mid-run, leaving a partial publish. This is
-recoverable: simply re-run the same `pnpm -r publish --access public`
-command — already-published versions are skipped automatically. This is
-exactly why the canary-first + skip-already-published shape is used instead
-of one all-or-nothing run.
+and a TOTP window can lapse between packages, leaving a partial publish. Each
+per-package publish is *individually* rerun-safe (publish skips a version
+already on the registry), so recovery is: `npm view @vaultledger/<pkg>@0.4.0`
+in the order above and resume from the first one that 404s — no all-or-nothing
+run, and never re-attempt an already-live package.
 
 - [ ] `@vaultledger/core@0.4.0` published and verified via `npm view`.
-- [ ] `@vaultledger/server`, `@vaultledger/mcp-server`, `@vaultledger/cli` all
-      published at `0.4.0`.
+- [ ] `@vaultledger/server@0.4.0`, then `@vaultledger/mcp-server@0.4.0`, then
+      **last** `@vaultledger/cli@0.4.0` — each published in that order.
 
 ---
 
@@ -282,10 +291,12 @@ npm login
 npm whoami
 npm org ls vaultledger
 
-# Step 5
+# Step 5 — per-package, in dependency order (NOT `pnpm -r publish`; cli LAST)
 pnpm --filter @vaultledger/core publish --access public
 npm view @vaultledger/core@0.4.0
-pnpm -r publish --access public
+pnpm --filter @vaultledger/server publish --access public
+pnpm --filter @vaultledger/mcp-server publish --access public
+pnpm --filter @vaultledger/cli publish --access public
 
 # Step 6 (from a fresh empty temp dir, not the repo)
 cd "$(mktemp -d)"

@@ -240,14 +240,22 @@ command is run by (or explicitly authorized by) Kris.
    test would be the irreversible publish itself.
 5. **Human gate — the publish, canary-first:** publish `@vaultledger/core`
    alone, verify it on the registry (`npm view @vaultledger/core@0.4.0`), then
-   publish the remaining three via `pnpm -r publish --access public` — the
-   recursive publish skips versions already on the registry, so the canary
-   isn't re-attempted. Kris runs these himself or explicitly authorizes each.
-   2FA note: with auth-and-writes 2FA each upload wants a valid OTP and a TOTP
-   window can lapse mid-run, leaving a partial set — this is *recoverable by
-   re-running the same command* (already-published versions are skipped), and
-   is exactly why the canary+skip shape is used rather than one all-or-nothing
-   run.
+   publish the remaining three as **four explicit per-package publishes in
+   runtime-dependency order** — `core` → `server` → `mcp-server` → `cli` — NOT
+   `pnpm -r publish`. **Why not recursive:** `server` and `mcp-server` each
+   *devDepend* on `cli` while `cli` *runtime-depends* on both, so the workspace
+   graph contains `cli↔server` and `cli↔mcp-server` cycles. `pnpm -r publish`
+   topologically sorts over the full graph (devDeps included), and a cycle
+   makes that order undefined — it can put `cli` on the registry before
+   `server`/`mcp-server`, and a consumer who `npm install`s `@vaultledger/cli`
+   in that gap gets a 404 on the missing runtime sibling. Canary-first shrinks
+   the window (only `core` precedes) but does not close it; four ordered
+   publishes close it entirely at zero cost, since a dependent is never
+   published before its runtime deps exist. Kris runs these himself or
+   explicitly authorizes each. Each per-package publish is *individually*
+   rerun-safe (publish skips a version already on the registry), so a 2FA/OTP
+   lapse mid-sequence is recovered by `npm view @vaultledger/<pkg>@0.4.0` in
+   the same order and resuming from the first 404 — no all-or-nothing run.
 6. **Post-publish smoke (clean environment):** from an empty temp dir with no
    workspace on the path:
    - `npx @vaultledger/cli@0.4.0 --help` → command list renders;
@@ -317,6 +325,7 @@ bundle-purity guard are all confirmed inert to this track and untouched.
 | iCloud duplicate files leak into tarballs | none in the relocated clone today; explicit bin-file `files` entries + prepack `" 2."` hard-fail are precautionary against re-sync; tarball inspection re-checks |
 | `workspace:*` reaches the registry | publish via `pnpm` only; WU-4.2 asserts rewritten ranges in the packed manifests |
 | Scope not owned at publish time | org creation is a named blocking prerequisite, and WU-4.4 proves session + scope rights (`npm whoami`, `npm org ls`) before anything irreversible |
-| Partial publish mid-run (2FA OTP lapse) | canary-first publish + rerun-safe recursive publish (already-published versions skipped) |
+| Partial publish mid-run (2FA OTP lapse) | four ordered per-package publishes, each individually rerun-safe (already-published versions skipped); resume from the first `npm view` 404 |
+| `cli` reaches the registry before its runtime siblings (404 window) | publish per-package in dependency order (`core`→`server`→`mcp-server`→`cli`), NOT `pnpm -r publish` — the `cli↔server`/`cli↔mcp-server` dev cycles make recursive topo-order undefined |
 | npm-installed `ledger setup` resolves repo paths | v0.4 built `resolveMcpServerEntry` packaging-safe; WU-4.5 proves it from a clean temp dir before declaring done |
 | Native dep (`better-sqlite3`) install friction | prebuilds cover common platforms; documented pnpm-10 approve-builds note; `engines: node>=20` |
