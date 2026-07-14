@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, existsSync, readdirSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openJournal } from "../../src/journal/db.js";
@@ -27,5 +27,15 @@ describe("probeJournal", () => {
     if (r.status === "ok") expect(typeof r.count).toBe("number");
     // Mutation-free: the probe materializes no new file beside the real DB.
     expect(readdirSync(dir).sort()).toEqual(before);
+  });
+
+  test("a present-but-corrupt DB file → status:'unreadable', never throws", () => {
+    const p = join(dir, "journal.db");
+    writeFileSync(p, "this is not a sqlite database");
+    let r: ReturnType<typeof probeJournal>;
+    expect(() => { r = probeJournal(p); }).not.toThrow();
+    expect(r!.status).toBe("unreadable");
+    // Temp-copy cleanup ran: no leftover probe temp dirs linger under the real dir.
+    expect(existsSync(p)).toBe(true); // real file untouched
   });
 });

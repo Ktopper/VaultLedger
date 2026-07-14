@@ -95,13 +95,51 @@ function checkMcp(): CheckResult {
   return mapMcpProbe(resolveMcpServerEntry());
 }
 
-/** Pure: compare cli vs mcp-server versions (skew is a warning). */
+/** Extract the leading major-version integer from a `vX.Y.Z` / `X.Y.Z` string. */
+function nodeMajor(version: string): number | null {
+  const m = /^v?(\d+)/.exec(version.trim());
+  return m ? Number(m[1]) : null;
+}
+
+/**
+ * Minimal (major-version-granularity) check of `nodeVersion` against a
+ * semver `engines.node` range like ">=20" / ">=18 <21" / "20.x" / "^20".
+ * Deliberately NOT a full semver parse (no dep): each space-separated clause
+ * is reduced to a comparator + major bound; `^`/`~`/bare are treated as `>=`
+ * on the major. Returns `null` (unknown) on any form it can't parse, so the
+ * caller folds the engines info into the normal line rather than false-warning.
+ */
+export function nodeInEnginesRange(nodeVersion: string, range: string): boolean | null {
+  const major = nodeMajor(nodeVersion);
+  if (major === null) return null;
+  const clauses = range.trim().split(/\s+/).filter(Boolean);
+  if (clauses.length === 0) return null;
+  for (const clause of clauses) {
+    const m = /^(>=|<=|>|<|\^|~)?v?(\d+)/.exec(clause);
+    if (!m) return null; // unrecognized form → give up (fold into info)
+    const op = m[1] ?? ">=";
+    const bound = Number(m[2]);
+    let ok: boolean;
+    switch (op) {
+      case ">": ok = major > bound; break;
+      case "<=": ok = major <= bound; break;
+      case "<": ok = major < bound; break;
+      default: ok = major >= bound; break; // >=, ^, ~, bare
+    }
+    if (!ok) return false;
+  }
+  return true;
+}
+
+/** Pure: compare cli vs mcp-server versions (skew is a warning), and — when an
+ * `engines.node` range is supplied — flag a running Node outside it. */
 export function compareVersions(input: {
   cliVersion: string;
   mcpVersion: string;
   nodeVersion: string;
+  enginesNode?: string;
 }): CheckResult {
-  const { cliVersion, mcpVersion, nodeVersion } = input;
+  const { cliVersion, mcpVersion, nodeVersion, enginesNode } = input;
   if (cliVersion !== mcpVersion) {
     return {
       name: "versions",
@@ -110,10 +148,19 @@ export function compareVersions(input: {
       remediation: "reinstall so cli and mcp-server match",
     };
   }
+  if (enginesNode && nodeInEnginesRange(nodeVersion, enginesNode) === false) {
+    return {
+      name: "versions",
+      status: "warn",
+      detail: `node ${nodeVersion} outside supported range ${enginesNode} (cli v${cliVersion}, mcp-server v${mcpVersion})`,
+      remediation: `run VaultLedger on a Node in ${enginesNode}`,
+    };
+  }
+  const engineNote = enginesNode ? `, engines ${enginesNode}` : "";
   return {
     name: "versions",
     status: "info",
-    detail: `cli v${cliVersion}, mcp-server v${mcpVersion}, node ${nodeVersion}`,
+    detail: `cli v${cliVersion}, mcp-server v${mcpVersion}, node ${nodeVersion}${engineNote}`,
   };
 }
 
@@ -124,14 +171,27 @@ export function compareVersions(input: {
  * which throws ERR_PACKAGE_PATH_NOT_EXPORTED (no `./package.json` exports entry).
  */
 function checkVersions(): CheckResult {
-  const require = createRequire(import.meta.url);
-  const cliVersion = JSON.parse(
-    readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
-  ).version as string;
-  // dist/index.js → dist → package root
-  const mcpPkg = join(dirname(require.resolve("@vaultledger/mcp-server")), "..", "package.json");
-  const mcpVersion = JSON.parse(readFileSync(mcpPkg, "utf8")).version as string;
-  return compareVersions({ cliVersion, mcpVersion, nodeVersion: process.version });
+  try {
+    const require = createRequire(import.meta.url);
+    const cliPkg = JSON.parse(
+      readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
+    ) as { version: string; engines?: { node?: unknown } };
+    const cliVersion = cliPkg.version;
+    const enginesNode = typeof cliPkg.engines?.node === "string" ? cliPkg.engines.node : undefined;
+    // dist/index.js → dist → package root
+    const mcpPkg = join(dirname(require.resolve("@vaultledger/mcp-server")), "..", "package.json");
+    const mcpVersion = JSON.parse(readFileSync(mcpPkg, "utf8")).version as string;
+    return compareVersions({ cliVersion, mcpVersion, nodeVersion: process.version, enginesNode });
+  } catch {
+    // A broken install (mcp-server unresolvable, unreadable package.json) must
+    // not crash the whole command — checkMcp already reports the hard fail.
+    return {
+      name: "versions",
+      status: "warn",
+      detail: "could not resolve @vaultledger/mcp-server version — cli install may be broken",
+      remediation: "reinstall @vaultledger/cli",
+    };
+  }
 }
 
 const SYNC_DUP_RE = / [0-9]+(\.|$)/;
@@ -345,6 +405,28 @@ export function mapPluginFreshness(step: StepResult | null): CheckResult {
   };
 }
 
+/**
+ * Belt-and-suspenders crash guard: run a single check and, if it throws for
+ * any unforeseen reason, turn that into a `fail` CheckResult rather than
+ * letting it escape `runDoctor`. `ledger doctor`'s whole job is to survive the
+ * broken/confused inputs it exists to diagnose, so no one check may take the
+ * command down.
+ */
+async function guard(
+  name: string,
+  fn: () => CheckResult | Promise<CheckResult>,
+): Promise<CheckResult> {
+  try {
+    return await fn();
+  } catch (e) {
+    return {
+      name,
+      status: "fail",
+      detail: `check errored: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
+}
+
 export async function runDoctor(
   vaultDir: string,
   opts: DoctorOptions,
@@ -399,14 +481,16 @@ export async function runDoctor(
 
   // 3. VAULT-INDEPENDENT checks: git, mcp, versions, sync-artifacts.
   //    These run unconditionally — they do NOT depend on an initialized vault.
-  checks.push(await checkGit(vaultDir));
-  checks.push(checkMcp());
-  checks.push(checkVersions());
-  checks.push(scanSyncArtifacts(vaultDir));
+  //    Every push routes through `guard` so an unforeseen throw is a `fail`.
+  checks.push(await guard("git", () => checkGit(vaultDir)));
+  checks.push(await guard("mcp", () => checkMcp()));
+  checks.push(await guard("versions", () => checkVersions()));
+  checks.push(await guard("sync-artifacts", () => scanSyncArtifacts(vaultDir)));
 
   // 4. VAULT-DEPENDENT checks: zone-integrity, journal, lock, bridge, plugin.
   //    Cascade-skipped when there's no initialized vault; zone-integrity is
-  //    ADDITIONALLY skipped when the manifest failed to parse.
+  //    ADDITIONALLY skipped (with a DISTINCT message) when the manifest failed
+  //    to parse — the vault IS initialized, its permissions are just corrupt.
   if (vaultId === null) {
     checks.push(skip("zone-integrity"));
     checks.push(skip("journal"));
@@ -414,13 +498,38 @@ export async function runDoctor(
     checks.push(skip("bridge"));
     checks.push(skip("plugin"));
   } else {
-    checks.push(manifest === null ? skip("zone-integrity") : checkZoneIntegrity(vaultDir, manifest));
-    // Compute lock before journal so journal can cross-reference `live`.
-    const lock = checkLock(vaultId, env, now);
-    checks.push(mapJournalProbe(probeJournal(journalPath(vaultId, env)), lock.live));
+    const vid = vaultId;
+    if (manifest === null) {
+      checks.push({
+        name: "zone-integrity",
+        status: "skipped",
+        detail: "permissions.yaml did not parse — see the permissions check",
+      });
+    } else {
+      const m = manifest;
+      checks.push(await guard("zone-integrity", () => checkZoneIntegrity(vaultDir, m)));
+    }
+    // Compute lock before journal so journal can cross-reference `live`. A
+    // throw here degrades to a `fail` lock result with live=false.
+    let lock: LockCheck;
+    try {
+      lock = checkLock(vid, env, now);
+    } catch (e) {
+      lock = {
+        result: {
+          name: "lock",
+          status: "fail",
+          detail: `check errored: ${e instanceof Error ? e.message : String(e)}`,
+        },
+        live: false,
+      };
+    }
+    checks.push(
+      await guard("journal", () => mapJournalProbe(probeJournal(journalPath(vid, env)), lock.live)),
+    );
     checks.push(lock.result);
-    checks.push(checkBridge(vaultId, env));
-    checks.push(mapPluginFreshness(checkPluginFreshness(vaultDir)));
+    checks.push(await guard("bridge", () => checkBridge(vid, env)));
+    checks.push(await guard("plugin", () => mapPluginFreshness(checkPluginFreshness(vaultDir))));
   }
 
   const exitCode = deriveExitCode(checks, opts.strict);

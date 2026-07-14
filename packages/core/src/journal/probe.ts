@@ -25,10 +25,14 @@ export type JournalProbe =
  */
 export function probeJournal(dbPath: string): JournalProbe {
   if (!existsSync(dbPath)) return { status: "absent" };
-  const tmpDir = mkdtempSync(join(tmpdir(), "vl-journal-probe-"));
-  const tmpDb = join(tmpDir, "journal.db");
+  // mkdtempSync is INSIDE the try so an unwritable temp dir surfaces as
+  // `unreadable` rather than throwing out of the probe. tmpDir may therefore
+  // be undefined in `finally`, so its cleanup is guarded.
+  let tmpDir: string | undefined;
   let db: Database.Database | undefined;
   try {
+    tmpDir = mkdtempSync(join(tmpdir(), "vl-journal-probe-"));
+    const tmpDb = join(tmpDir, "journal.db");
     copyFileSync(dbPath, tmpDb);
     for (const sfx of ["-wal", "-shm"]) {
       if (existsSync(dbPath + sfx)) copyFileSync(dbPath + sfx, tmpDb + sfx);
@@ -42,6 +46,6 @@ export function probeJournal(dbPath: string): JournalProbe {
     return { status: "unreadable", error: e instanceof Error ? e.message : String(e) };
   } finally {
     db?.close();
-    rmSync(tmpDir, { recursive: true, force: true });
+    if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
   }
 }

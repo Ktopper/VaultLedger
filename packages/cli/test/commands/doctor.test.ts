@@ -2,7 +2,7 @@ import { describe, expect, test, afterEach } from "vitest";
 import { mkdtempSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PermissionsManifest, vaultLockDir, LOCK_CONFIG } from "@vaultledger/core";
+import { PermissionsManifest, vaultLockDir, LOCK_CONFIG, permissionsPath } from "@vaultledger/core";
 import { makeInitializedVault, type TestVault } from "../helpers.js";
 import { initCommand } from "../../src/commands/init.js";
 import {
@@ -15,6 +15,7 @@ import {
   checkLock,
   mapJournalProbe,
   mapPluginFreshness,
+  nodeInEnginesRange,
 } from "../../src/commands/doctor.js";
 
 describe("runDoctor — config gate + cascade + exit code", () => {
@@ -344,5 +345,99 @@ describe("mapPluginFreshness", () => {
     expect(r.status).toBe("warn");
     expect(r.detail).toBe("v1 → v2");
     expect(r.remediation).toContain("--install-plugin");
+  });
+});
+
+describe("nodeInEnginesRange", () => {
+  test(">=20 with node v20/v22 → in range; v18 → out", () => {
+    expect(nodeInEnginesRange("v20.11.0", ">=20")).toBe(true);
+    expect(nodeInEnginesRange("v22.0.0", ">=20")).toBe(true);
+    expect(nodeInEnginesRange("v18.19.0", ">=20")).toBe(false);
+  });
+
+  test("bounded range '>=18 <21' honors the upper bound", () => {
+    expect(nodeInEnginesRange("v20.0.0", ">=18 <21")).toBe(true);
+    expect(nodeInEnginesRange("v22.0.0", ">=18 <21")).toBe(false);
+    expect(nodeInEnginesRange("v16.0.0", ">=18 <21")).toBe(false);
+  });
+
+  test("caret/bare forms treated as >= on the major", () => {
+    expect(nodeInEnginesRange("v20.5.0", "^20")).toBe(true);
+    expect(nodeInEnginesRange("v21.0.0", "20")).toBe(true);
+  });
+
+  test("unparseable range → null (unknown, folded into info by caller)", () => {
+    expect(nodeInEnginesRange("v20.0.0", "garbage")).toBeNull();
+    expect(nodeInEnginesRange("weird", ">=20")).toBeNull();
+  });
+});
+
+describe("compareVersions — engines.node check (spec §3.10)", () => {
+  test("node inside engines range → info line notes the range", () => {
+    const r = compareVersions({ cliVersion: "0.4.0", mcpVersion: "0.4.0", nodeVersion: "v20.0.0", enginesNode: ">=20" });
+    expect(r.status).toBe("info");
+    expect(r.detail).toContain("engines >=20");
+  });
+
+  test("node outside engines range → warn", () => {
+    const r = compareVersions({ cliVersion: "0.4.0", mcpVersion: "0.4.0", nodeVersion: "v18.0.0", enginesNode: ">=20" });
+    expect(r.status).toBe("warn");
+    expect(r.detail).toContain("outside supported range >=20");
+    expect(r.remediation).toContain(">=20");
+  });
+
+  test("no enginesNode → unchanged info (backward compatible)", () => {
+    const r = compareVersions({ cliVersion: "0.4.0", mcpVersion: "0.4.0", nodeVersion: "v20.0.0" });
+    expect(r.status).toBe("info");
+    expect(r.detail).not.toContain("engines");
+  });
+});
+
+describe("runDoctor — crash-safety on confused / broken inputs", () => {
+  test("a nonexistent vaultDir returns a tidy result (no throw): config fail, git graceful fail, exit 1", async () => {
+    let result: Awaited<ReturnType<typeof runDoctor>> | undefined;
+    await expect(
+      (async () => { result = await runDoctor("/no/such/vault/path-xyz", { json: false, strict: false }, {}); })(),
+    ).resolves.toBeUndefined();
+    const { checks, exitCode } = result!;
+    expect(checks.find((c) => c.name === "config")!.status).toBe("fail");
+    expect(exitCode).toBe(1);
+    const git = checks.find((c) => c.name === "git")!;
+    expect(git.status).toBe("fail");
+    // A GRACEFUL fail (probeGitRepo's "not a repo"), NOT a swallowed crash.
+    expect(git.detail).not.toContain("check errored");
+    expect(git.detail).toContain("not a git repo");
+    // versions never crashes the command — it's a real result, not a throw.
+    expect(["info", "warn"]).toContain(checks.find((c) => c.name === "versions")!.status);
+  });
+
+  test("runDoctor never throws even when the dir is a file, not a directory", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "vl-file-"));
+    const asFile = join(dir, "not-a-dir");
+    writeFileSync(asFile, "i am a file");
+    try {
+      await expect(
+        runDoctor(asFile, { json: false, strict: false }, {}),
+      ).resolves.toBeDefined();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe("runDoctor — corrupt permissions.yaml (config ok, manifest unparseable)", () => {
+  let v: TestVault | undefined;
+  afterEach(() => { v?.cleanup(); v = undefined; });
+
+  test("permissions fail AND zone-integrity skipped with the DISTINCT corrupt-manifest message", async () => {
+    v = await makeInitializedVault();
+    // Valid YAML that violates the manifest schema (version must be the
+    // literal 1; zones must be an object), while config.json stays valid.
+    writeFileSync(permissionsPath(v.vaultDir), "version: 2\nzones: not-an-object\n");
+    const { checks } = await runDoctor(v.vaultDir, { json: false, strict: false }, { env: v.deps.env });
+    expect(checks.find((c) => c.name === "config")!.status).toBe("ok");
+    expect(checks.find((c) => c.name === "permissions")!.status).toBe("fail");
+    const zi = checks.find((c) => c.name === "zone-integrity")!;
+    expect(zi.status).toBe("skipped");
+    expect(zi.detail).toContain("permissions.yaml did not parse");
+    expect(zi.detail).not.toContain("no initialized vault");
   });
 });

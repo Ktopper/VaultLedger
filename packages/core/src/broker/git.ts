@@ -1,4 +1,5 @@
 import { simpleGit, type SimpleGit } from "simple-git";
+import { existsSync } from "node:fs";
 import { BrokerError } from "../errors.js";
 
 const IDENTITY_ARGS = ["-c", "user.name=VaultLedger", "-c", "user.email=ledger@local"];
@@ -184,7 +185,18 @@ export interface GitProbe {
  * `gitWorks:false` (the classic environment failure nothing else catches).
  */
 export async function probeGitRepo(dir: string): Promise<GitProbe> {
-  const git = simpleGit(dir);
+  // A nonexistent path is exactly the "typo / wrong vault" input `ledger
+  // doctor` exists to diagnose — treat it as "not a repo" rather than letting
+  // simpleGit's constructor throw GitConstructError synchronously. gitWorks
+  // stays true: a missing directory is not a broken git binary (that case
+  // still surfaces below via checkIsRepo's catch → gitWorks:false).
+  if (!existsSync(dir)) return { isRepo: false, gitWorks: true, head: null };
+  let git: SimpleGit;
+  try {
+    git = simpleGit(dir);
+  } catch {
+    return { isRepo: false, gitWorks: true, head: null };
+  }
   let isRepo: boolean;
   try {
     isRepo = await git.checkIsRepo();

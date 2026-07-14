@@ -262,7 +262,16 @@ export function scanVault(root: string, opts?: { excludeDirs?: string[] }): Scan
 export function findPrivateFolders(root: string): string[] {
   const out: string[] = [];
   const walk = (absDir: string, relDir: string): void => {
-    for (const entry of readdirSync(absDir, { withFileTypes: true })) {
+    // Skip unreadable dirs (EACCES) or ones that vanished mid-walk (ENOENT)
+    // rather than crashing the whole zone-integrity check — mirrors the
+    // defensive readdirSync in doctor's collectSyncDups.
+    let entries: import("node:fs").Dirent[];
+    try {
+      entries = readdirSync(absDir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
       if (!entry.isDirectory()) continue;
       if (DEFAULT_EXCLUDE_DIRS.has(entry.name)) continue;
       const rel = relDir ? `${relDir}/${entry.name}` : entry.name;

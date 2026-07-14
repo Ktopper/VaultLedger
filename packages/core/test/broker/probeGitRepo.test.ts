@@ -33,4 +33,10 @@ describe("probeGitRepo", () => {
     expect(r.isRepo).toBe(true);
     expect(r.head).toMatch(/^[0-9a-f]{7,}$/);
   });
+
+  test("a nonexistent path → isRepo:false, gitWorks:true, no throw", async () => {
+    const missing = join(dir, "does", "not", "exist");
+    const r = await probeGitRepo(missing);
+    expect(r).toEqual({ isRepo: false, gitWorks: true, head: null });
+  });
 });
