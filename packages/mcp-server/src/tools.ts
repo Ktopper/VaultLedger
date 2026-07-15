@@ -109,7 +109,13 @@ const RecallInput = z
   .object({
     entity: z.string().max(ID_MAX_LENGTH).optional(),
     tag: z.string().max(TAG_MAX_LENGTH).optional(),
-    status: z.enum(["scratch", "working", "canonical", "forgotten", "reverted"]).optional(),
+    // v0.3b added the terminal "retired" status (core's MemoryStatus and
+    // recall.ts's explicit-status filter both support it, and retired sources
+    // stay citable) — this enum simply wasn't updated with it, so an agent
+    // could never reach a retired memory through MCP. Retired remains excluded
+    // from BARE recall by default (recall.ts EXCLUDED_BY_DEFAULT); this only
+    // lets an agent ask for it explicitly.
+    status: z.enum(["scratch", "working", "canonical", "forgotten", "reverted", "retired"]).optional(),
     since: z.string().max(64).optional(),
     limit: z.number().int().positive().optional(),
   })
