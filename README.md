@@ -49,6 +49,12 @@ already there), or have `setup --write-mcp <path>` write it for you:
 { "mcpServers": { "vaultledger": { "command": "npx", "args": ["-y", "-p", "@vault-ledger/mcp-server", "vaultledger-mcp", "--vault", "/path/to/your/vault"] } } }
 ```
 
+Using a different harness — or want the per-harness depth (skills/standing
+instructions, the two-step verify, each harness's trust model)? See
+**[`docs/integrations/`](docs/integrations/README.md)**: [Claude
+Code](docs/integrations/claude-code.md), [Hermes](docs/integrations/hermes.md),
+[any MCP client](docs/integrations/mcp-clients.md).
+
 Working on VaultLedger itself, or want to run it from a clone instead of npm?
 See [From source / contributing](#from-source--contributing) below.
 

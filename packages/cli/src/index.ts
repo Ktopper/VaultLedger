@@ -55,7 +55,7 @@ function reportError(e: unknown): void {
 export function buildProgram(): Command {
   const program = new Command();
   // Keep in sync with packages/cli/package.json "version".
-  program.name("ledger").description("VaultLedger CLI").version("0.4.0");
+  program.name("ledger").description("VaultLedger CLI").version("0.4.1");
 
   program
     .command("init <vaultDir>")

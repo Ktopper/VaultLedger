@@ -101,6 +101,37 @@ describe("compareVersions", () => {
   });
 });
 
+describe("compareVersions — major.minor granularity", () => {
+  const base = { nodeVersion: "v22.16.0" };
+
+  test("REGRESSION: patch-differs (cli 0.4.1 vs mcp 0.4.0) -> info, NOT a skew warn", () => {
+    // A single-package 0.4.1 fast-follow necessarily produces this; warning here
+    // would make doctor cry wolf on every healthy install.
+    const r = compareVersions({ ...base, cliVersion: "0.4.1", mcpVersion: "0.4.0" });
+    expect(r.status).toBe("info");
+  });
+
+  test("prerelease suffixes parse to major.minor (0.4.1-beta.1 vs 0.4.0) -> info", () => {
+    const r = compareVersions({ ...base, cliVersion: "0.4.1-beta.1", mcpVersion: "0.4.0" });
+    expect(r.status).toBe("info");
+  });
+
+  test("minor-differs (0.4.x vs 0.5.x) -> warn (real drift)", () => {
+    const r = compareVersions({ ...base, cliVersion: "0.4.0", mcpVersion: "0.5.0" });
+    expect(r.status).toBe("warn");
+    expect(r.detail).toMatch(/skew/i);
+  });
+
+  test("major-differs (0.4.0 vs 1.0.0) -> warn", () => {
+    expect(compareVersions({ ...base, cliVersion: "0.4.0", mcpVersion: "1.0.0" }).status).toBe("warn");
+  });
+
+  test("unparseable versions fall back to exact-string comparison", () => {
+    expect(compareVersions({ ...base, cliVersion: "weird", mcpVersion: "other" }).status).toBe("warn");
+    expect(compareVersions({ ...base, cliVersion: "weird", mcpVersion: "weird" }).status).toBe("info");
+  });
+});
+
 describe("scanSyncArtifacts", () => {
   let dir: string | undefined;
   afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); dir = undefined; });

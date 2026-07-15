@@ -419,6 +419,57 @@ describe("buildTools", () => {
     const error = result.error as { code: string };
     expect(error.code).toBe("INVALID_ARGS");
   });
+
+  test('memory_recall accepts an explicit status: "retired" and reaches the retired memory', async () => {
+    const { tools } = await setup();
+    const remember = tools.get("memory_remember")!;
+    const created = await remember.handler({ content: "aging fact", reason: "seed" });
+    const promote = tools.get("memory_promote")!;
+    await promote.handler({ id: created.id, target_status: "working", reason: "confirmed" });
+    const retire = tools.get("memory_retire")!;
+    await retire.handler({ id: created.id, reason: "no longer current" });
+
+    const recall = tools.get("memory_recall")!;
+    const result = await recall.handler({ status: "retired" });
+
+    // core's MemoryStatus has included "retired" since v0.3b and recall.ts
+    // honors an explicit retired filter -- the MCP enum must not be the one
+    // place that rejects it, or an agent can never reach a retired memory.
+    expect(result.error).toBeUndefined();
+    const memories = result.memories as Array<{ id: string }>;
+    expect(memories.map((m) => m.id)).toContain(created.id);
+  });
+
+  test("memory_recall without a status filter still does not surface a retired memory (retired stays excluded by default)", async () => {
+    const { tools } = await setup();
+    const remember = tools.get("memory_remember")!;
+    const created = await remember.handler({ content: "aging fact", reason: "seed" });
+    const promote = tools.get("memory_promote")!;
+    await promote.handler({ id: created.id, target_status: "working", reason: "confirmed" });
+    const retire = tools.get("memory_retire")!;
+    await retire.handler({ id: created.id, reason: "no longer current" });
+
+    const recall = tools.get("memory_recall")!;
+    const result = await recall.handler({});
+
+    // Accepting an EXPLICIT retired filter must not weaken recall.ts's
+    // EXCLUDED_BY_DEFAULT: a bare recall still must not stumble into it.
+    expect(result.error).toBeUndefined();
+    const memories = result.memories as Array<{ id: string }>;
+    expect(memories.map((m) => m.id)).not.toContain(created.id);
+  });
+
+  test("memory_recall still rejects a status outside the enum (the enum stays closed)", async () => {
+    const { tools } = await setup();
+    const recall = tools.get("memory_recall")!;
+
+    const result = await recall.handler({ status: "bogus" });
+
+    expect(result.memories).toBeUndefined();
+    expect(result.error).toBeTruthy();
+    const error = result.error as { code: string };
+    expect(error.code).toBe("INVALID_ARGS");
+  });
 });
 
 describe("parseVaultArg", () => {

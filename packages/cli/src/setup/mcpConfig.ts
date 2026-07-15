@@ -37,14 +37,74 @@ export interface McpConfig {
   };
 }
 
-/** Build the vaultledger MCP server config block. Both `vault` and `entry`
- * must already be absolute — this function does no resolution of its own. */
+/**
+ * Is `entry` inside an ephemeral, prunable package cache?
+ *
+ * Cache segments are EMPIRICALLY OBSERVED (2026-07-15) — do not "correct" them
+ * from memory:
+ *   npm npx    ~/.npm/_npx/<hash>/node_modules/…                        -> "_npx"
+ *   pnpm dlx   <cacheDir>/dlx/<32-hex key>/<rand>/node_modules/…        -> "dlx" + key
+ *   pnpm <7    <tmpdir>/dlx-<rand>/node_modules/…                       -> "dlx-" prefix (legacy)
+ *
+ * Matching is by EXACT path segment (a substring match is a false-positive
+ * farm) and requires a later `node_modules` segment.
+ *
+ * The `dlx` arm keys on pnpm's 32-hex CACHE KEY, deliberately NOT on the parent
+ * directory's name: pnpm does `resolve(opts.cacheDir, "dlx")` and `cacheDir` is
+ * user-configurable, so the parent can be anything — a parent-name check
+ * silently misses relocated caches and pnpm's `~/.pnpm-cache` Windows fallback,
+ * which is exactly the prunable-path bug this predicate exists to prevent. The
+ * cache key is structural; the parent's name is not. It also rejects a user's
+ * own `~/projects/dlx/my-app/…`.
+ *
+ * `_npx` needs no such check: a leading-underscore, npm-reserved segment isn't
+ * plausibly a user directory.
+ */
+export function isEphemeralEntry(entry: string): boolean {
+  const seg = entry.split(/[\\/]+/).filter(Boolean);
+  const nodeModulesAfter = (i: number): boolean => seg.slice(i + 1).includes("node_modules");
+
+  for (let i = 0; i < seg.length; i++) {
+    const s = seg[i];
+    if (s === undefined) continue;
+    // npm's npx cache
+    if (s === "_npx" && nodeModulesAfter(i)) return true;
+    // pnpm's dlx cache — keyed on the 32-hex cache key, not the parent's name
+    if (s === "dlx" && /^[0-9a-f]{32}$/.test(seg[i + 1] ?? "") && nodeModulesAfter(i)) return true;
+    // legacy pnpm(<7) dlx under os.tmpdir().
+    //
+    // ACCEPTED IMPRECISION: unlike the `dlx` arm above — hardened to key on the
+    // 32-hex cache key precisely so a user directory named `dlx` isn't matched —
+    // the legacy shape is `dlx-<random>` with no structure left to key on, so a
+    // user directory named `dlx-*` (e.g. ~/projects/dlx-tools/node_modules/…)
+    // matches here. Left as-is deliberately: the dangerous direction (§2.3) is
+    // unreachable — a contributor's clone resolves to
+    // <clone>/packages/mcp-server/dist/index.js with no `node_modules` after the
+    // segment, so it can never be misread as ephemeral. The worst case is a user
+    // under a `dlx-*` directory getting the npx form plus a disclosure line —
+    // a working config either way. Don't "fix" this by loosening the `dlx` arm.
+    if (s.startsWith("dlx-") && nodeModulesAfter(i)) return true;
+  }
+  return false;
+}
+
+/** Build the vaultledger MCP server config block.
+ *
+ * An entry resolved from an ephemeral npx/dlx cache MUST NOT be baked into a
+ * config the user keeps — npm/pnpm can prune it, and the config then dies
+ * silently weeks later as "server not responding". For those, emit the durable
+ * npx form instead.
+ *
+ * A STABLE entry keeps the physical path deliberately: in a source clone the
+ * npx form would fetch the PUBLISHED package instead of the contributor's local
+ * build — silently wrong for exactly the people modifying the code. Do not
+ * "simplify" this branch away.
+ */
 export function buildMcpConfig(vault: string, entry: string): McpConfig {
-  return {
-    mcpServers: {
-      vaultledger: { command: "node", args: [entry, "--vault", vault] },
-    },
-  };
+  const vaultledger: McpServerEntryConfig = isEphemeralEntry(entry)
+    ? { command: "npx", args: ["-y", "-p", "@vault-ledger/mcp-server", "vaultledger-mcp", "--vault", vault] }
+    : { command: "node", args: [entry, "--vault", vault] };
+  return { mcpServers: { vaultledger } };
 }
 
 export type MergeResult =

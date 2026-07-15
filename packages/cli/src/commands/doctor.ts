@@ -127,6 +127,13 @@ function nodeMajor(version: string): number | null {
   return m ? Number(m[1]) : null;
 }
 
+/** Parse a version's `major.minor`, tolerating a leading `v` and any
+ * prerelease/build suffix (`0.4.1-beta.1` -> "0.4"). null if unrecognizable. */
+export function majorMinor(version: string): string | null {
+  const m = /^v?(\d+)\.(\d+)/.exec(version.trim());
+  return m ? `${m[1]}.${m[2]}` : null;
+}
+
 /**
  * Minimal (major-version-granularity) check of `nodeVersion` against a
  * semver `engines.node` range like ">=20" / ">=18 <21" / "20.x" / "^20".
@@ -166,7 +173,17 @@ export function compareVersions(input: {
   enginesNode?: string;
 }): CheckResult {
   const { cliVersion, mcpVersion, nodeVersion, enginesNode } = input;
-  if (cliVersion !== mcpVersion) {
+  // Compare major.minor, not the exact string. Pre-1.0 semver puts the
+  // breaking-change boundary at the MINOR, so a patch-level difference between
+  // independently-versioned siblings is normal — and a single-package
+  // fast-follow (cli 0.4.1 depending on its own 0.4.0 siblings) necessarily
+  // produces one. Warning there would make doctor cry wolf on a healthy
+  // install. Cross-minor drift is the real signal and still warns. If either
+  // version is unparseable, fall back to the old exact-string comparison.
+  const cliMM = majorMinor(cliVersion);
+  const mcpMM = majorMinor(mcpVersion);
+  const skewed = cliMM !== null && mcpMM !== null ? cliMM !== mcpMM : cliVersion !== mcpVersion;
+  if (skewed) {
     return {
       name: "versions",
       status: "warn",
