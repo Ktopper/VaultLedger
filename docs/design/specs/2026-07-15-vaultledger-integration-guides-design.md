@@ -7,7 +7,7 @@ verified `npm view` + a real `npx` smoke on the Mac). This is the
 integration-guides track that was deliberately queued behind the publish so it
 could be written against verified-live packages.
 
-**Scope:** one track, five deliverables, **one single-package `0.4.1` publish**
+**Scope:** one track, five deliverables, **one `0.4.1` publish — two packages (mcp-server → cli), ordered**
 at the end (§7). Serves the spec.md §9 criterion: *"Existing harness/skill
 projects integrate rather than compete (their prompts call our tools)."*
 
@@ -132,8 +132,10 @@ the swap changes the emitted config, which the consumer *does* receive.
 
 ### 2.7 Tests
 
-- `isEphemeralEntry`: `_npx` path → true; `dlx-` path → true; a normal
-  `node_modules` path → false; a monorepo workspace path → false.
+- `isEphemeralEntry`: `_npx` path → true; pnpm `dlx/<32-hex key>/…` path → true
+  (incl. a **relocated `cache-dir`**, whose parent is not `pnpm`); legacy
+  `dlx-<rand>` → true; a normal `node_modules` path → false; a monorepo
+  workspace path → false.
 - `buildMcpConfig`: ephemeral entry → npx-form block (exact shape); stable
   entry → path-form block (unchanged from today).
 - `mergeMcpConfig` still preserves siblings/extras with the new shape (the
@@ -151,8 +153,12 @@ the swap changes the emitted config, which the consumer *does* receive.
 
 ## 2.8 Required companion fix — the version-skew check must tolerate a patch bump
 
-**This is a self-inflicted false signal that §7's single-package publish
-creates, and it must ship in the same 0.4.1.**
+**This is the false signal a single-package publish creates, and it ships in
+0.4.1.** (§7 was amended mid-build: this release ended up **two-package**, so the
+skew does not bite 0.4.1 itself. Keep this fix anyway — it is the correct
+semantics, and it is what makes the *next* single-package fast-follow, the
+common case, safe to ship. Do not drop it on the grounds that "there's no skew
+now.")
 
 After a cli-only bump, a consumer installing `@vault-ledger/cli@0.4.1` gets
 `@vault-ledger/mcp-server@0.4.0` (cli's `workspace:*` dep rewrites to the
@@ -415,26 +421,45 @@ is the natural owner — it's what users install.
 
 ---
 
-## 7. The `0.4.1` publish — **single package** (do not re-run the four-package ritual)
+## 7. The `0.4.1` publish — **two packages, ordered** (NOT the four-package ritual)
 
-The fix lives **entirely in `@vault-ledger/cli`**. Therefore:
+> **AMENDED 2026-07-15, mid-build.** This section originally specced a
+> **single-package** cli-only publish. Building the skill surfaced a real bug
+> whose one-word fix lives in **mcp-server** (`RecallInput.status` omitted
+> `retired`, so an agent could never reach a retired memory via MCP —
+> contradicting core's documented intent and undercutting the
+> retire-don't-forget lifecycle). Kris chose to fix it in this release, so
+> **mcp-server bumps too**. Recorded as an amendment rather than a silent
+> rewrite: the single-package reasoning below is still exactly right for a
+> cli-only fast-follow, and that's the common case.
 
-- **Only `@vault-ledger/cli` bumps to `0.4.1`.** `core`, `server`, and
-  `mcp-server` stay at `0.4.0` and are **not** re-published (they're unchanged
-  and already live).
-- cli's `workspace:*` dependency ranges rewrite at publish to the siblings'
-  **local** versions — `0.4.0` — which are already on the registry, so
-  `@vault-ledger/cli@0.4.1` resolves cleanly for consumers.
-- **The four-package dependency-ordering ritual does not apply.** That ordering
-  exists to stop a dependent landing before its runtime deps; here every
-  dependency is already live. It is **one command**:
+Two packages change: **`@vault-ledger/mcp-server`** (the `retired` enum fix) and
+**`@vault-ledger/cli`** (the npx/dlx fix + the §2.8 skew fix). Therefore:
+
+- **`mcp-server` and `cli` both bump to `0.4.1`.** `core` and `server` stay at
+  `0.4.0` and are **not** re-published (unchanged, already live).
+- **Order matters, and the rule is the one already established: the dependent
+  publishes LAST.** `cli` runtime-depends on `mcp-server`, so:
 
   ```bash
-  pnpm --filter @vault-ledger/cli publish --access public
+  pnpm --filter @vault-ledger/mcp-server publish --access public   # first
+  pnpm --filter @vault-ledger/cli publish --access public          # last (depends on it)
   ```
 
-  Stated explicitly because, left unsaid, someone will dutifully re-run the
-  whole runbook.
+  Two commands, in dependency order — **not** the four-package ritual (`core`
+  and `server` don't move). Stated explicitly because, left unsaid, someone will
+  dutifully re-run the whole runbook.
+- cli's `workspace:*` ranges rewrite at publish to the siblings' **local**
+  versions: `mcp-server@0.4.1` (published moments earlier, hence the order) and
+  `core`/`server`@`0.4.0` (already live). All resolve cleanly.
+
+**Consequence for §2.8 — it stays, and stays required.** With both at `0.4.1`
+there is no cli↔mcp-server skew *in this release*, so §2.8 is no longer
+load-bearing for 0.4.1 specifically. Keep it anyway: it is the correct semantics
+(pre-1.0, the minor is the compatibility boundary), and it is what makes the
+*next* single-package fast-follow — the common case this release happens not to
+be — safe to ship without doctor crying wolf. Do not drop it on the grounds that
+"there's no skew now."
 - Preconditions still hold: clean `main`, `node scripts/verify-publish.mjs`,
   `pnpm -r publish --dry-run`, then the single publish, then the npx smoke on
   the Mac.
