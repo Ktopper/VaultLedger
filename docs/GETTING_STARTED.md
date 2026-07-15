@@ -150,6 +150,10 @@ actually restarted) first — VaultLedger itself already proved it works.
 
 ## Next steps
 
+- [**Integration guides**](integrations/README.md) — per-harness depth:
+  [Claude Code](integrations/claude-code.md) (skills, `CLAUDE.md`, the
+  `--write-mcp` merge), [Hermes](integrations/hermes.md), or
+  [any other MCP client](integrations/mcp-clients.md).
 - [README](../README.md) — full architecture, the review surface, and
   contradiction detection.
 - `npx @vault-ledger/cli@latest status /path/to/your/vault` — zones, pending
