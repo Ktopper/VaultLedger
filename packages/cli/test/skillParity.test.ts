@@ -27,4 +27,12 @@ describe("vaultledger-memory skill: the two shapes cannot diverge", () => {
     expect(raw).toMatch(/^name: vaultledger-memory$/m);
     expect(raw).toMatch(/^description: .+/m);
   });
+
+  test("SNIPPET.md has NO frontmatter — it must stay paste-ready", () => {
+    // `body()` strips frontmatter from BOTH files, so without this assertion
+    // SNIPPET could sprout a frontmatter block and still pass parity — while
+    // silently ceasing to be paste-ready into a system prompt, which is its
+    // entire reason to exist as a separate shape.
+    expect(readFileSync(SNIPPET, "utf8").startsWith("---\n")).toBe(false);
+  });
 });

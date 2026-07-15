@@ -461,16 +461,34 @@ load-bearing for 0.4.1 specifically. Keep it anyway: it is the correct semantics
 be — safe to ship without doctor crying wolf. Do not drop it on the grounds that
 "there's no skew now."
 - Preconditions still hold: clean `main`, `node scripts/verify-publish.mjs`,
-  `pnpm -r publish --dry-run`, then the single publish, then the npx smoke on
-  the Mac.
+  `pnpm -r publish --dry-run`, then **the two ordered publishes**, then the npx
+  smoke on the Mac.
 
-**Implementation note — RESOLVED at spec review, no change needed:**
-`scripts/verify-publish.mjs` asserts **only dependency ranges**, never a
-package's own version — the check is `range !== "0.4.0"` (`:196`), reached only
-for `depName.startsWith("@vault-ledger/")` (`:182-204`), and there is no
-`packedPkg.version` assertion anywhere. Tarball discovery uses the version-less
-prefix `vault-ledger-cli-` (`:265, :296-300`), so `…-0.4.1.tgz` still matches.
-**A cli-only 0.4.1 bump passes `verify-publish.mjs` unchanged.**
+**Implementation note — SUPERSEDED. `verify-publish.mjs` WAS changed, and had
+to be.** (The original note said "no change needed", which was true only while
+§7 was a cli-only bump. Corrected here because §7 is the runbook read at the
+cutover, and a confident-but-false note about the most safety-critical script in
+the release is exactly what causes a wrong decision under time pressure.)
+
+What actually happened: once mcp-server joined the release, cli's packed dep on
+it rewrites to `0.4.1` — and the old check was a hard-coded
+`range !== "0.4.0"`, which **would have falsely blocked this release** (verified:
+three packages failed, since `server` and `mcp-server` also devDepend on `cli`).
+The script now reads each sibling's **actual local version** from
+`packages/*/package.json` and requires the packed range to equal it exactly —
+correct by construction, because that is precisely what pnpm's `workspace:*`
+rewrite produces, and it can never go stale on a version bump again.
+
+Its teeth were preserved and adversarially re-verified at final review: a
+literal `workspace:` reaching the registry still fails; a hand-written stale or
+caret range still fails; it was **not** weakened to accept anything. A latent
+reporting bug was fixed in passing (the "all ranges rewritten" success line
+could print directly beneath its own FAIL — the verdict was already correct, but
+the output contradicted itself).
+
+Still true, unchanged: the script asserts only dependency **ranges**, never a
+package's own version, and tarball discovery uses a version-less prefix — so a
+version bump needs no change there.
 
 **But §2.8 is a hard prerequisite of this publish** — a cli-only bump makes
 doctor's version check warn on every healthy install. Ship §2.8 in the same

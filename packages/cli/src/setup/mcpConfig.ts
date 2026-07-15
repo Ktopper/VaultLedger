@@ -71,7 +71,18 @@ export function isEphemeralEntry(entry: string): boolean {
     if (s === "_npx" && nodeModulesAfter(i)) return true;
     // pnpm's dlx cache — keyed on the 32-hex cache key, not the parent's name
     if (s === "dlx" && /^[0-9a-f]{32}$/.test(seg[i + 1] ?? "") && nodeModulesAfter(i)) return true;
-    // legacy pnpm(<7) dlx under os.tmpdir()
+    // legacy pnpm(<7) dlx under os.tmpdir().
+    //
+    // ACCEPTED IMPRECISION: unlike the `dlx` arm above — hardened to key on the
+    // 32-hex cache key precisely so a user directory named `dlx` isn't matched —
+    // the legacy shape is `dlx-<random>` with no structure left to key on, so a
+    // user directory named `dlx-*` (e.g. ~/projects/dlx-tools/node_modules/…)
+    // matches here. Left as-is deliberately: the dangerous direction (§2.3) is
+    // unreachable — a contributor's clone resolves to
+    // <clone>/packages/mcp-server/dist/index.js with no `node_modules` after the
+    // segment, so it can never be misread as ephemeral. The worst case is a user
+    // under a `dlx-*` directory getting the npx form plus a disclosure line —
+    // a working config either way. Don't "fix" this by loosening the `dlx` arm.
     if (s.startsWith("dlx-") && nodeModulesAfter(i)) return true;
   }
   return false;
