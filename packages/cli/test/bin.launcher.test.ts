@@ -35,9 +35,9 @@ if (!distBuilt) {
 }
 
 describe.skipIf(!distBuilt)("ledger.mjs bin launcher (the actual package.json \"bin\" target)", () => {
-  test("--version prints 0.4.0 and exits 0", () => {
+  test("--version prints 0.4.1 and exits 0", () => {
     const stdout = execFileSync("node", [launcherPath, "--version"], { encoding: "utf8" });
-    expect(stdout.trim()).toBe("0.4.0");
+    expect(stdout.trim()).toBe("0.4.1");
   });
 
   test("--help prints real commander output (proves main() actually ran)", () => {

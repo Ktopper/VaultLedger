@@ -18,24 +18,56 @@
 //     package.json.
 //   - absent: src/, test/, tsconfig*, *.tsbuildinfo, any " 2."-pattern
 //     (iCloud-duplicate) file, any .env* file.
-//   - every @vault-ledger/* range in the packed package.json reads exactly
-//     "0.4.0" (the workspace:* rewrite happened; no literal "workspace:"
-//     remains).
+//   - every @vault-ledger/* range in the packed package.json reads exactly the
+//     depended-on sibling's current local version (the workspace:* rewrite
+//     happened; no literal "workspace:" remains). Ranges are compared against
+//     the live packages/*/package.json versions rather than a hard-coded
+//     literal, because packages bump independently: a release that ships
+//     cli+mcp-server at 0.4.1 while core/server stay at 0.4.0 is legitimate,
+//     and cli's packed dep on mcp-server must then read "0.4.1".
 //   - independently: @vault-ledger/obsidian-plugin does NOT appear in the
 //     packed package.json's "dependencies" (it MAY appear in
 //     devDependencies — harmless, registry installs never install a
-//     dependency's devDeps). This is checked separately from the "reads
-//     0.4.0" check because a re-added plugin dependency would ALSO read
-//     0.4.0 after the rewrite and would silently pass that check alone.
+//     dependency's devDeps). This is checked separately from the range check
+//     because a re-added plugin dependency would ALSO read a valid version
+//     after the rewrite and would silently pass that check alone.
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "..");
+
+/** Read every workspace package's declared name -> version from packages/<dir>/package.json.
+ * This is the source of truth the packed ranges are checked against: pnpm rewrites
+ * `workspace:*` to the sibling's exact local version at pack time, so a correct packed
+ * range is *by definition* whatever that sibling declares locally. Hard-coding a literal
+ * here would break every release where packages bump independently (e.g. 0.4.1 shipping
+ * cli+mcp-server while core/server stay at 0.4.0). Includes the private obsidian-plugin,
+ * which may legitimately appear in devDependencies. */
+function readLocalVersions() {
+  const versions = new Map();
+  const pkgsDir = join(REPO_ROOT, "packages");
+  for (const entry of readdirSync(pkgsDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    try {
+      const raw = readFileSync(join(pkgsDir, entry.name, "package.json"), "utf8");
+      const parsed = JSON.parse(raw);
+      if (typeof parsed.name === "string" && typeof parsed.version === "string") {
+        versions.set(parsed.name, parsed.version);
+      }
+    } catch {
+      // Not a package dir (or unreadable) — skip; an unknown sibling is caught
+      // below as "not a known workspace package".
+    }
+  }
+  return versions;
+}
+
+const LOCAL_VERSIONS = readLocalVersions();
 
 // name -> expected bin entry filename under bin/, or undefined if no bin.
 const PACKAGES = {
@@ -180,30 +212,51 @@ function verifyPackage(pkgName, binName, tarballPath, results) {
   }
 
   const depFields = ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"];
-  let sawUnrewrittenWorkspace = false;
+  let sawBadRange = false;
   for (const field of depFields) {
     const deps = packedPkg[field];
     if (!deps || typeof deps !== "object") continue;
     for (const [depName, range] of Object.entries(deps)) {
       if (!depName.startsWith("@vault-ledger/")) continue;
+      // A literal "workspace:" reaching the registry is unresolvable for
+      // consumers — the single most important thing this check catches.
       if (typeof range !== "string" || range.includes("workspace:")) {
-        sawUnrewrittenWorkspace = true;
+        sawBadRange = true;
         fail(
           pkgName,
           results,
           `${field}.${depName} still reads "${range}" — workspace:* rewrite did not happen`,
         );
-      } else if (range !== "0.4.0") {
+        continue;
+      }
+      const localVersion = LOCAL_VERSIONS.get(depName);
+      if (localVersion === undefined) {
+        sawBadRange = true;
         fail(
           pkgName,
           results,
-          `${field}.${depName} reads "${range}", expected exactly "0.4.0"`,
+          `${field}.${depName} reads "${range}" but is not a known workspace package — cannot verify the rewrite target`,
+        );
+      } else if (range !== localVersion) {
+        // Still strict: the ONLY accepted range is the sibling's exact local
+        // version, which is what pnpm's workspace:* rewrite must produce. A
+        // stale/wrong range (e.g. "0.4.0" when the sibling is now 0.4.1, or a
+        // caret range) fails here.
+        sawBadRange = true;
+        fail(
+          pkgName,
+          results,
+          `${field}.${depName} reads "${range}", expected exactly "${localVersion}" (the sibling's local version)`,
         );
       }
     }
   }
-  if (!sawUnrewrittenWorkspace) {
-    pass(pkgName, results, "all @vault-ledger/* ranges rewritten to 0.4.0 (no literal workspace:)");
+  if (!sawBadRange) {
+    pass(
+      pkgName,
+      results,
+      "all @vault-ledger/* ranges rewritten to their sibling's exact local version (no literal workspace:)",
+    );
   }
 
   // Independent check (WU-1 regression guard): obsidian-plugin must never
