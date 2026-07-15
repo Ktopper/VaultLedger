@@ -226,8 +226,11 @@ the remediation.
   the `.node` binding to load. *Loads → `ok`; throws → `fail`, remediation
   "reinstall — on pnpm 10 run `pnpm approve-builds` then reinstall; otherwise
   `npm rebuild better-sqlite3`".* **Vault-independent** (it's install health,
-  not vault state — runs even on an uninitialized/garbage path) and reported
-  **first**, since a broken binding makes most other checks moot. Companion
+  not vault state — runs even on an uninitialized/garbage path); it renders as
+  the **first of the install-health / vault-independent checks**, i.e. right
+  after the `config`/`permissions` gate (config stays the report's first line
+  because it drives the cascade). It's unmissable regardless — a broken binding
+  makes most other checks moot. Companion
   hardening (not a doctor check): both CLI and MCP entry points now route
   top-level error printing through `explainNativeBindingError` (core), so a
   broken binding yields ONE actionable line instead of the raw ~14-line
@@ -320,7 +323,8 @@ redundant fails. Rule:
 Vault-dependent (cascade-skipped when `config` fails): `permissions`,
 `zone-integrity`, `journal`, `lock`, `bridge`, `plugin`. Vault-**independent**
 (always run, even on an uninitialized dir): `native-deps` (install health —
-reported first), `git` (a git repo can exist before `ledger setup`), `mcp`
+first of this group, i.e. right after the config/permissions gate), `git` (a
+git repo can exist before `ledger setup`), `mcp`
 (install health, not vault state), `versions`, `sync-artifacts` (it can still
 scan `.ledger/` / `.git/` if present, and reports `ok` if there's nothing to
 scan). The `skipped` state already exists in setup's `StepState` vocabulary;
