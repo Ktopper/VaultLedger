@@ -312,6 +312,17 @@ bundle-purity guard are all confirmed inert to this track and untouched.
 - Release automation: CI publish workflow, npm provenance/`--provenance`,
   changesets/version management. First publish is deliberately manual; automate
   from a known-good baseline.
+  - **Decide `workspace:*` vs `workspace:^` at publish time as part of this
+    track** (raised 2026-07-15, deliberately deferred — do not change it
+    ad hoc). pnpm rewrites `workspace:*` to an **exact** sibling version (`0.4.0`,
+    no caret), so a published cli's sibling copies are *frozen* until cli itself
+    republishes. That's why the version-skew handled in the integration-guides
+    spec (`2026-07-15-…-integration-guides-design.md` §2.8) is **structural, not
+    incidental**: a single-package bump necessarily desynchronizes cli from its
+    own pinned deps. `workspace:^` would relax it (siblings float within a
+    minor) at the cost of looser guarantees about what a consumer actually
+    resolves. This is release policy — make the call here, deliberately, rather
+    than rediscovering it at the next single-package fast-follow.
 - Obsidian community-store submission (separate track; external review).
 - The three security-skim fast-follows (read-gate/stdio batch) — cheap separate
   cycle, not publish-blocking.

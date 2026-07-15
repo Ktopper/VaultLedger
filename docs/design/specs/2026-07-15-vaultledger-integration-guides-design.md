@@ -172,15 +172,25 @@ just fixed for `native-deps`, and it would land in the same release as the
 guides that tell users to trust doctor.
 
 **Fix:** `compareVersions` compares **`major.minor`**, not the full version
-string. Patch-level skew between independently-versioned sibling packages is
-normal and harmless; the check still catches what it was built for (a stale
-global cli vs an `npx @latest` mcp-server drifting across a minor/major).
+string.
+
+**Why `major.minor` is the *correct* granularity, not merely a pragmatic
+loosening:** pre-1.0, semver shifts the compatibility boundary down a level — in
+`0.x`, the **minor** is the breaking-change position and the patch is the
+compatible one. So comparing `major.minor` aligns the check with what
+"compatible" actually *means* for 0.x packages, and it stays sensible post-1.0
+(cross-minor drift between a stale global cli and an `npx @latest` server is
+precisely the real-drift signal worth a warn).
 
 - `0.4.1` vs `0.4.0` → **no warn** (fold the exact versions into the existing
   `info` detail line, which already prints both).
 - `0.4.x` vs `0.5.x` → `warn` (unchanged intent).
-- Tests: equal → info; patch-differs → info (regression test for this exact
-  0.4.1-vs-0.4.0 case); minor-differs → warn; major-differs → warn.
+- **The parse must tolerate prerelease suffixes:** `0.4.1-beta.1` parses as
+  `0.4`. Cheap now; annoying the first time a beta tag exists.
+- Tests: equal → info; **patch-differs → info** (regression test for this exact
+  0.4.1-vs-0.4.0 case); minor-differs → warn; major-differs → warn;
+  **prerelease (`0.4.1-beta.1` vs `0.4.0`) → info** (parses to `0.4` on both
+  sides).
 
 **Do not "fix" this by bumping all four packages to 0.4.1 instead.** That would
 republish three unchanged packages purely to sync a number, re-invoke the
@@ -274,6 +284,13 @@ verified against the docs, not yet run against a live Hermes install.**
   pruned"**, not "always literally npx". A PATH-resolved bin name is durable;
   `~/.npm/_npx/<hash>/…` is not. (The `command: "npx"` form is shown as the
   no-global-install alternative.)
+  - **Carry the §2.5 nvm caveat here as one parenthetical.** This page actively
+    *recommends* the global form, and §2.5 names global-under-nvm as the one
+    accepted breakage — a global bin is version-scoped, so switching Node
+    orphans it. The guide's strongest recommendation must not carry the spec's
+    one named breakage unmentioned: *"if you use nvm, reinstall
+    `@vault-ledger/mcp-server` after switching Node versions — global bins are
+    Node-version-scoped."* One half-sentence, not a section.
 - Reload: `hermes chat` (restart) or `/reload-mcp`.
 - **Tool naming:** tools register as `mcp_<server>_<tool>` with hyphens/dots →
   underscores — ours appear as `mcp_vaultledger_memory_recall`,
