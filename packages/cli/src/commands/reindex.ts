@@ -1,4 +1,4 @@
-import { reindex, type ReindexResult } from "@vaultledger/core";
+import { reindex, type ReindexResult } from "@vault-ledger/core";
 import { loadContext, type LoadContextDeps } from "../context.js";
 
 export interface ReindexOptions {

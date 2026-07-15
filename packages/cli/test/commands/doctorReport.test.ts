@@ -4,7 +4,7 @@ import { renderDoctorReport, type CheckResult } from "../../src/commands/doctorR
 const CHECKS: CheckResult[] = [
   { name: "config", status: "ok", detail: "valid (vault_ab12)" },
   { name: "journal", status: "warn", detail: "not built yet", remediation: "run `ledger reindex`" },
-  { name: "mcp", status: "fail", detail: "not resolvable", remediation: "reinstall @vaultledger/cli" },
+  { name: "mcp", status: "fail", detail: "not resolvable", remediation: "reinstall @vault-ledger/cli" },
   { name: "permissions", status: "skipped", detail: "no initialized vault" },
   { name: "versions", status: "info", detail: "cli 0.4.0, mcp 0.4.0" },
 ];

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { resolvesToThisModule, explainNativeBindingError } from "@vaultledger/core";
+import { resolvesToThisModule, explainNativeBindingError } from "@vault-ledger/core";
 import { Command } from "commander";
 // Re-exported so the committed bin launcher (bin/ledger.mjs) can use it in its
 // own `main().catch` backstop — the launcher is the real entrypoint.
@@ -343,7 +343,7 @@ export async function main(): Promise<void> {
 // `node dist/index.js` invoked directly), never when imported by tests OR by
 // the bin launcher (which calls the exported `main()` above instead — see its
 // doc comment for why this guard is false in that case). See
-// `resolvesToThisModule` in `@vaultledger/core` (hoisted there since
+// `resolvesToThisModule` in `@vault-ledger/core` (hoisted there since
 // `packages/mcp-server/src/index.ts` needs the identical symlink-aware guard)
 // for the pnpm-bin-shim / realpath rationale.
 const isMainModule = resolvesToThisModule(process.argv[1], import.meta.url);

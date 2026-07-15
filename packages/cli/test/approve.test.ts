@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createPatch } from "diff";
-import { hashFile } from "@vaultledger/core";
+import { hashFile } from "@vault-ledger/core";
 import { loadContext } from "../src/context.js";
 import { approveCommand } from "../src/commands/approve.js";
 import { makeInitializedVault, type TestVault } from "./helpers.js";

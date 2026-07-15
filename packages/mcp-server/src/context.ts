@@ -20,7 +20,7 @@ import {
   vaultLockDir,
   type LedgerConfig,
   type SweepResult,
-} from "@vaultledger/core";
+} from "@vault-ledger/core";
 
 export interface ServerContext {
   vaultRoot: string;

@@ -50,7 +50,7 @@ packages/
 ```
 
 **Data flow:** Obsidian plugin (client, in the vault's Electron process) → HTTP
-over `127.0.0.1` → `packages/server` (fastify) → `@vaultledger/core` → vault +
+over `127.0.0.1` → `packages/server` (fastify) → `@vault-ledger/core` → vault +
 Git + journal. The plugin never touches files or the journal directly; **every
 mutation goes through the broker**, per the standing instructions.
 

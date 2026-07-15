@@ -1,15 +1,15 @@
 {
-  "name": "@vaultledger/obsidian-plugin",
+  "name": "@vault-ledger/obsidian-plugin",
   "version": "0.4.0",
   "type": "module",
   "private": true,
   "//": "This is a leaf Obsidian plugin, not a library: Obsidian loads it via manifest.json -> the esbuild-bundled main.js, and no other workspace package imports it. So there is deliberately no main/types/exports here — those previously pointed at a pre-Phase-4 stub (dist/index.js) and were misleading residue.",
   "scripts": { "build": "node esbuild.config.mjs", "test": "vitest run" },
-  "dependencies": { "@vaultledger/core": "workspace:*" },
+  "dependencies": { "@vault-ledger/core": "workspace:*" },
   "devDependencies": {
     "obsidian": "^1.7.2",
     "esbuild": "^0.25.0",
-    "@vaultledger/server": "workspace:*",
+    "@vault-ledger/server": "workspace:*",
     "diff": "^8.0.3",
     "jsdom": "^25.0.0"
   }

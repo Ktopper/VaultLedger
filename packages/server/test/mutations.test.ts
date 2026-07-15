@@ -3,7 +3,7 @@ import type { FastifyInstance } from "fastify";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createPatch } from "diff";
-import { hashBytes, hashFile } from "@vaultledger/core";
+import { hashBytes, hashFile } from "@vault-ledger/core";
 import { buildBridge } from "../src/app.js";
 import { makeTestVault, openTestVault, type TestVault } from "./helpers.js";
 

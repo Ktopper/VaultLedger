@@ -1,8 +1,8 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { BrokerError, readConfig, vaultLockDir } from "@vaultledger/core";
-import { startBridge } from "@vaultledger/server";
+import { BrokerError, readConfig, vaultLockDir } from "@vault-ledger/core";
+import { startBridge } from "@vault-ledger/server";
 import { isPidAlive } from "./pid.js";
 
 export interface ServeOptions {
@@ -85,7 +85,7 @@ function writeBridgeFile(appDir: string, bridgePath: string, data: BridgeFile): 
 }
 
 /**
- * Start the local HTTP bridge (`@vaultledger/server`'s startBridge) over
+ * Start the local HTTP bridge (`@vault-ledger/server`'s startBridge) over
  * `vaultDir` and publish a runtime discovery file — `<app-support>/<vaultId>
  * /bridge.json` — the Obsidian plugin reads to find {port, token}. The
  * discovery file is written OUTSIDE the vault (app-support, not `.ledger/`)

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { journalPath, readConfig } from "@vaultledger/core";
+import { journalPath, readConfig } from "@vault-ledger/core";
 import { loadContext } from "../src/context.js";
 import { reindexCommand } from "../src/commands/reindex.js";
 import { makeInitializedVault, type TestVault } from "./helpers.js";

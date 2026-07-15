@@ -7,7 +7,7 @@ import { buildOptions } from "../esbuild.config.mjs";
 
 /**
  * BUNDLE PURITY GUARD (the invariant that crashes the plugin on load if
- * broken). `@vaultledger/core`'s barrel does `export * from
+ * broken). `@vault-ledger/core`'s barrel does `export * from
  * "./journal/db.js"`, which imports better-sqlite3 — and its transitive graph
  * pulls in simple-git and proper-lockfile too. Bundled into the plugin's
  * CJS `main.js`, better-sqlite3 emits an UNCONDITIONAL top-level require of a
@@ -15,7 +15,7 @@ import { buildOptions } from "../esbuild.config.mjs";
  * would throw the instant Obsidian loads it.
  *
  * bridgeClient.ts avoids this by importing its two value symbols
- * (readConfig/vaultLockDir) from the narrow "@vaultledger/core/config"
+ * (readConfig/vaultLockDir) from the narrow "@vault-ledger/core/config"
  * subpath (fs/path only) rather than the barrel. This test fails loudly if a
  * future value-import from the barrel re-pulls the native graph into the
  * bundle. It builds with the SAME esbuild options `pnpm build` uses (imported

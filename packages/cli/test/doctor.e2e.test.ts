@@ -4,13 +4,12 @@ import {
   mkdirSync,
   mkdtempSync,
   readdirSync,
-  readFileSync,
   rmSync,
   statSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
-import { journalPath, openJournal, probeGitRepo, readConfig } from "@vaultledger/core";
+import { journalPath, openJournal, probeGitRepo, readConfig } from "@vault-ledger/core";
 import { runDoctor } from "../src/commands/doctor.js";
 import type { CheckResult } from "../src/commands/doctorReport.js";
 import { makeInitializedVault, type TestVault } from "./helpers.js";

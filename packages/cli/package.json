@@ -1,5 +1,5 @@
 {
-  "name": "@vaultledger/cli",
+  "name": "@vault-ledger/cli",
   "version": "0.4.0",
   "type": "module",
   "description": "VaultLedger CLI — set up and govern an AI agent's Obsidian-vault memory (ledger setup/approve/undo)",
@@ -30,11 +30,11 @@
     "commander": "^12.1.0",
     "diff": "^8.0.3",
     "yaml": "^2.5.0",
-    "@vaultledger/core": "workspace:*",
-    "@vaultledger/server": "workspace:*",
-    "@vaultledger/mcp-server": "workspace:*"
+    "@vault-ledger/core": "workspace:*",
+    "@vault-ledger/server": "workspace:*",
+    "@vault-ledger/mcp-server": "workspace:*"
   },
   "devDependencies": {
-    "@vaultledger/obsidian-plugin": "workspace:*"
+    "@vault-ledger/obsidian-plugin": "workspace:*"
   }
 }

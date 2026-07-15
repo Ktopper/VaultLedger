@@ -32,7 +32,7 @@ function makeFixture(options: FixtureOptions = {}): string {
   mkdirSync(join(dir, "dist"), { recursive: true });
 
   const pkg = {
-    name: "@vaultledger/fixture",
+    name: "@vault-ledger/fixture",
     version: "0.0.0",
     type: "module",
     main: "./dist/index.js",

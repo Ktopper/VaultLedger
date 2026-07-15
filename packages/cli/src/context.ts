@@ -18,7 +18,7 @@ import {
   reconcile,
   vaultLockDir,
   type LedgerConfig,
-} from "@vaultledger/core";
+} from "@vault-ledger/core";
 
 export interface LedgerContext {
   vaultRoot: string;

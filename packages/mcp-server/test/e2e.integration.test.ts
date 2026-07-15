@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createPatch } from "diff";
-import { undoSession, UNSAFE_NO_LOCK } from "@vaultledger/core";
+import { undoSession, UNSAFE_NO_LOCK } from "@vault-ledger/core";
 import { loadServerContext, type ServerContext } from "../src/context.js";
 import { createServer } from "../src/index.js";
 import { makeTestVault, type TestVault } from "./helpers.js";

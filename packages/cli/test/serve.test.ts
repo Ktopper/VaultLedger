@@ -13,7 +13,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { appSupportBase, readConfig } from "@vaultledger/core";
+import { appSupportBase, readConfig } from "@vault-ledger/core";
 import { run } from "../src/index.js";
 import { serveCommand, type ServeHandle } from "../src/commands/serve.js";
 import { makeInitializedVault, type TestVault } from "./helpers.js";

@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { configPath, readConfig } from "@vaultledger/core";
+import { configPath, readConfig } from "@vault-ledger/core";
 import { buildMcpConfig, mergeMcpConfig, resolveMcpServerEntry, writeMcpConfig } from "../setup/mcpConfig.js";
 import { checkPluginFreshness, installPlugin } from "../setup/plugin.js";
 import { promptYesNo } from "../prompt.js";

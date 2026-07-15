@@ -1,4 +1,4 @@
-import { BrokerError, undoSession, undoTransaction } from "@vaultledger/core";
+import { BrokerError, undoSession, undoTransaction } from "@vault-ledger/core";
 import { loadContext, type LoadContextDeps } from "../context.js";
 
 export interface UndoOptions {

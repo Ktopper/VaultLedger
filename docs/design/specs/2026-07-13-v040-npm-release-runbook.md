@@ -79,7 +79,7 @@ node scripts/verify-publish.mjs
 
 This packs the four publishable packages (`core`, `server`, `mcp-server`,
 `cli` — never the private `obsidian-plugin`) via
-`pnpm -r --filter '!@vaultledger/obsidian-plugin' pack` into a scratch
+`pnpm -r --filter '!@vault-ledger/obsidian-plugin' pack` into a scratch
 directory outside the repo, lists each tarball's contents, and asserts:
 
 - **present:** `dist/` with `.js` + `.d.ts` (+ source/declaration maps);
@@ -87,9 +87,9 @@ directory outside the repo, lists each tarball's contents, and asserts:
   `package.json`.
 - **absent:** `src/`, `test/`, `tsconfig*`, `*.tsbuildinfo`, any
   iCloud-duplicate (`" 2."`-pattern) file, any `.env*` file.
-- every `@vaultledger/*` range in each packed `package.json` reads exactly
+- every `@vault-ledger/*` range in each packed `package.json` reads exactly
   `0.4.0` (the `workspace:*` rewrite happened).
-- **independently:** `@vaultledger/obsidian-plugin` does not appear in any
+- **independently:** `@vault-ledger/obsidian-plugin` does not appear in any
   package's packed `dependencies` (it may appear in `devDependencies` —
   harmless).
 
@@ -126,8 +126,8 @@ membership, or access rights. Never pass `--no-git-checks` here either.
 This is the first step that touches the npm registry, but it is still fully
 reversible (no publish happens here).
 
-1. Create the `vaultledger` npm organization if it doesn't already exist:
-   npmjs.com → **Add Organization** → name `vaultledger` → free/public tier.
+1. Create the `vault-ledger` npm organization if it doesn't already exist:
+   npmjs.com → **Add Organization** → name `vault-ledger` → free/public tier.
    Ensure **2FA is enabled** on your npm account before doing this.
 2. Log in:
    ```bash
@@ -136,11 +136,11 @@ reversible (no publish happens here).
 3. Prove the session and scope rights actually exist:
    ```bash
    npm whoami
-   npm org ls vaultledger
+   npm org ls vault-ledger
    ```
 
 - [ ] `npm whoami` prints your npm username.
-- [ ] `npm org ls vaultledger` shows you as a member/owner of the `vaultledger`
+- [ ] `npm org ls vault-ledger` shows you as a member/owner of the `vault-ledger`
       org.
 
 Without the org existing and your account holding rights on it, every
@@ -151,25 +151,25 @@ publish below fails with a scope-permission error regardless of
 
 ## Step 5 — Human gate: the publish, canary-first
 
-Publish `@vaultledger/core` alone first:
+Publish `@vault-ledger/core` alone first:
 
 ```bash
-pnpm --filter @vaultledger/core publish --access public
+pnpm --filter @vault-ledger/core publish --access public
 ```
 
 Verify it landed on the registry:
 
 ```bash
-npm view @vaultledger/core@0.4.0
+npm view @vault-ledger/core@0.4.0
 ```
 
 Then publish the remaining three **one at a time, in this exact
 runtime-dependency order** (NOT `pnpm -r publish`):
 
 ```bash
-pnpm --filter @vaultledger/server publish --access public
-pnpm --filter @vaultledger/mcp-server publish --access public
-pnpm --filter @vaultledger/cli publish --access public
+pnpm --filter @vault-ledger/server publish --access public
+pnpm --filter @vault-ledger/mcp-server publish --access public
+pnpm --filter @vault-ledger/cli publish --access public
 ```
 
 **Do NOT use `pnpm -r publish --access public` here.** `server` and
@@ -177,7 +177,7 @@ pnpm --filter @vaultledger/cli publish --access public
 so the workspace graph has `cli↔server` / `cli↔mcp-server` cycles. `pnpm -r
 publish` topo-sorts over the whole graph (devDeps included) and a cycle makes
 the order undefined — it can push `cli` to the registry **before**
-`server`/`mcp-server`, and anyone who `npm install`s `@vaultledger/cli` in
+`server`/`mcp-server`, and anyone who `npm install`s `@vault-ledger/cli` in
 that gap gets a 404 on the missing sibling. The canary shrinks that window to
 just `core`; publishing `cli` **last**, after its runtime deps are already
 live, closes it entirely. `cli` must be the final publish.
@@ -185,13 +185,13 @@ live, closes it entirely. `cli` must be the final publish.
 **2FA note:** with auth-and-writes 2FA, each upload prompts for a valid OTP,
 and a TOTP window can lapse between packages, leaving a partial publish. Each
 per-package publish is *individually* rerun-safe (publish skips a version
-already on the registry), so recovery is: `npm view @vaultledger/<pkg>@0.4.0`
+already on the registry), so recovery is: `npm view @vault-ledger/<pkg>@0.4.0`
 in the order above and resume from the first one that 404s — no all-or-nothing
 run, and never re-attempt an already-live package.
 
-- [ ] `@vaultledger/core@0.4.0` published and verified via `npm view`.
-- [ ] `@vaultledger/server@0.4.0`, then `@vaultledger/mcp-server@0.4.0`, then
-      **last** `@vaultledger/cli@0.4.0` — each published in that order.
+- [ ] `@vault-ledger/core@0.4.0` published and verified via `npm view`.
+- [ ] `@vault-ledger/server@0.4.0`, then `@vault-ledger/mcp-server@0.4.0`, then
+      **last** `@vault-ledger/cli@0.4.0` — each published in that order.
 
 ---
 
@@ -210,23 +210,23 @@ inside `~/dev/VaultLedger` or any clone — a fresh `mkdir` elsewhere):
 ```bash
 cd "$(mktemp -d)"
 
-npx @vaultledger/cli@0.4.0 --help
+npx @vault-ledger/cli@0.4.0 --help
 ```
 
 Expect: the full command list renders (setup, approve, undo, serve, etc.).
 
 ```bash
-npx @vaultledger/cli@0.4.0 setup ./fresh-temp-vault
+npx @vault-ledger/cli@0.4.0 setup ./fresh-temp-vault
 ```
 
 Expect: the full v0.4 setup flow — zone review, MCP block emitted, and a
 green **`smoke verified`** line. This transitively proves
-`resolveMcpServerEntry` resolves `@vaultledger/mcp-server`'s entry from
+`resolveMcpServerEntry` resolves `@vault-ledger/mcp-server`'s entry from
 `node_modules` (not a repo-relative path) — the one behavior this cycle
 changes the packaging context of.
 
 ```bash
-npx @vaultledger/cli@0.4.0 setup ./fresh-temp-vault --install-plugin
+npx @vault-ledger/cli@0.4.0 setup ./fresh-temp-vault --install-plugin
 ```
 
 Expect: the new WU-1 **degraded message** (pointing at the Obsidian
@@ -252,7 +252,7 @@ docs/design/specs/2026-07-13-v040-npm-release-notes.md
 
 - Published version per package (should all read `0.4.0`).
 - Timestamp of publish.
-- `npm view @vaultledger/<pkg>@0.4.0` output or a summary of it, per package.
+- `npm view @vault-ledger/<pkg>@0.4.0` output or a summary of it, per package.
 - Confirmation that Step 6's smoke test passed.
 
 ---
@@ -266,7 +266,7 @@ if no dependents), so a clean re-do of the same version is not possible.
 Recover **forward** instead:
 
 ```bash
-npm deprecate @vaultledger/<pkg>@0.4.0 "broken — use 0.4.1"
+npm deprecate @vault-ledger/<pkg>@0.4.0 "broken — use 0.4.1"
 ```
 
 Then ship the fix as `0.4.1` through this same runbook (Steps 0–6 again,
@@ -296,20 +296,20 @@ pnpm -r publish --dry-run
 # Step 4
 npm login
 npm whoami
-npm org ls vaultledger
+npm org ls vault-ledger
 
 # Step 5 — per-package, in dependency order (NOT `pnpm -r publish`; cli LAST)
-pnpm --filter @vaultledger/core publish --access public
-npm view @vaultledger/core@0.4.0
-pnpm --filter @vaultledger/server publish --access public
-pnpm --filter @vaultledger/mcp-server publish --access public
-pnpm --filter @vaultledger/cli publish --access public
+pnpm --filter @vault-ledger/core publish --access public
+npm view @vault-ledger/core@0.4.0
+pnpm --filter @vault-ledger/server publish --access public
+pnpm --filter @vault-ledger/mcp-server publish --access public
+pnpm --filter @vault-ledger/cli publish --access public
 
 # Step 6 (from a fresh empty temp dir, not the repo)
 cd "$(mktemp -d)"
-npx @vaultledger/cli@0.4.0 --help
-npx @vaultledger/cli@0.4.0 setup ./fresh-temp-vault
-npx @vaultledger/cli@0.4.0 setup ./fresh-temp-vault --install-plugin
+npx @vault-ledger/cli@0.4.0 --help
+npx @vault-ledger/cli@0.4.0 setup ./fresh-temp-vault
+npx @vault-ledger/cli@0.4.0 setup ./fresh-temp-vault --install-plugin
 
 # Step 7: append results to
 # docs/design/specs/2026-07-13-v040-npm-release-notes.md

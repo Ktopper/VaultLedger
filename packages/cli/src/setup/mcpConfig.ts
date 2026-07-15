@@ -5,11 +5,11 @@ import { dirname } from "node:path";
 /**
  * Resolve the built mcp-server entry via Node module resolution — works in
  * the monorepo via the workspace symlink (packages/cli depends on
- * @vaultledger/mcp-server) AND under a future npx/npm install, with no
+ * @vault-ledger/mcp-server) AND under a future npx/npm install, with no
  * repo-relative path math. Returns an absolute path to the built
  * `dist/index.js`, or null if the package isn't resolvable / isn't built.
  *
- * Approach: plain `require.resolve("@vaultledger/mcp-server")`. The
+ * Approach: plain `require.resolve("@vault-ledger/mcp-server")`. The
  * package's package.json declares both `main` and `exports["."].default`
  * pointing at `./dist/index.js`, and Node's CJS resolver honors the
  * `exports` map's `default` condition for `require.resolve` — so this
@@ -19,7 +19,7 @@ import { dirname } from "node:path";
 export function resolveMcpServerEntry(): string | null {
   const require = createRequire(import.meta.url);
   try {
-    const entry = require.resolve("@vaultledger/mcp-server");
+    const entry = require.resolve("@vault-ledger/mcp-server");
     return existsSync(entry) ? entry : null;
   } catch {
     return null;

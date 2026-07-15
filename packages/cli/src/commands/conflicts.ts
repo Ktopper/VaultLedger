@@ -1,4 +1,4 @@
-import { BrokerError, Conflicts, checkContradictions, type EnrichedConflict } from "@vaultledger/core";
+import { BrokerError, Conflicts, checkContradictions, type EnrichedConflict } from "@vault-ledger/core";
 import { loadContext, type LoadContextDeps } from "../context.js";
 
 // Statuses a memory can hold that mean it's dead — forgotten/reverted/retired

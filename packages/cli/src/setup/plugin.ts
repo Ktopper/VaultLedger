@@ -4,10 +4,10 @@ import { dirname, join } from "node:path";
 import type { StepResult } from "./types.js";
 
 /**
- * Resolve the `@vaultledger/obsidian-plugin` package ROOT via Node module
+ * Resolve the `@vault-ledger/obsidian-plugin` package ROOT via Node module
  * resolution. The package is `private` with no `main`/`exports` (it's a
  * leaf Obsidian plugin, not a library any workspace package imports), so a
- * bare `require.resolve("@vaultledger/obsidian-plugin")` throws
+ * bare `require.resolve("@vault-ledger/obsidian-plugin")` throws
  * MODULE_NOT_FOUND. Resolving the `package.json` subpath instead works
  * because there's no `exports` map gating it, and its dirname IS the
  * package root — where esbuild's `outfile` puts the bundled `main.js` and
@@ -17,7 +17,7 @@ import type { StepResult } from "./types.js";
 export function resolvePluginRoot(): string | null {
   const require = createRequire(import.meta.url);
   try {
-    return dirname(require.resolve("@vaultledger/obsidian-plugin/package.json"));
+    return dirname(require.resolve("@vault-ledger/obsidian-plugin/package.json"));
   } catch {
     return null;
   }
@@ -43,7 +43,7 @@ function readVersion(path: string): string | null {
 /**
  * `ledger setup --install-plugin`: copy the built Obsidian review-plugin
  * bundle (`manifest.json` + `main.js`, plus `styles.css` if present) from
- * the `@vaultledger/obsidian-plugin` package root into
+ * the `@vault-ledger/obsidian-plugin` package root into
  * `<vault>/.obsidian/plugins/vaultledger/`.
  *
  * This is the ONE sanctioned human-initiated exception to the
@@ -123,7 +123,7 @@ export async function installPlugin(
  * installed it in the first place.
  *
  * - Not installed (no dest manifest) → `null` — nothing to report.
- * - Installed, but the `@vaultledger/obsidian-plugin` package doesn't
+ * - Installed, but the `@vault-ledger/obsidian-plugin` package doesn't
  *   resolve (or its manifest is missing/unbuilt/corrupt) → `null` rather
  *   than throwing; we can't compare versions we can't read, and a probe run
  *   on every `ledger setup` invocation must never crash the whole command

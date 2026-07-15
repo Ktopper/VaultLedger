@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import { execSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { vaultLockDir, withVaultLock } from "@vaultledger/core";
+import { vaultLockDir, withVaultLock } from "@vault-ledger/core";
 import { loadContext } from "../src/context.js";
 import { undoCommand } from "../src/commands/undo.js";
 import { makeInitializedVault, type TestVault } from "./helpers.js";

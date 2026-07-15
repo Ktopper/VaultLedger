@@ -11,7 +11,7 @@ import {
   mintVaultId,
   permissionsPath,
   writeConfig,
-} from "@vaultledger/core";
+} from "@vault-ledger/core";
 import { resolveMcpServerEntry } from "../../src/setup/mcpConfig.js";
 import { interpretStatus, smokeCheck } from "../../src/setup/smoke.js";
 

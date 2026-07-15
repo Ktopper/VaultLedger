@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-// Value imports come from the narrow "@vaultledger/core/config" subpath
+// Value imports come from the narrow "@vault-ledger/core/config" subpath
 // (fs/path only — no better-sqlite3/simple-git) rather than the package's
 // main barrel: the barrel's "export *" chain pulls in journal/db.ts, which
 // imports better-sqlite3's native addon. Bundled into main.js (this plugin's
@@ -9,7 +9,7 @@ import { join } from "node:path";
 // instant Obsidian loads it. The type-only imports below are erased
 // entirely at compile time (no runtime import at all), so they're safe to
 // pull from the full barrel for its richer public type surface.
-import { readConfig, vaultLockDir } from "@vaultledger/core/config";
+import { readConfig, vaultLockDir } from "@vault-ledger/core/config";
 import type {
   ApprovalRow,
   EnrichedConflict,
@@ -18,7 +18,7 @@ import type {
   QueryMemoriesFilters,
   RecallResult,
   TransactionRow,
-} from "@vaultledger/core";
+} from "@vault-ledger/core";
 
 /**
  * Thrown when the bridge cannot be reached at all: no discovery file, a
@@ -36,7 +36,7 @@ export class BridgeUnavailableError extends Error {
 }
 
 /** The `{error}` body shape every non-2xx bridge response carries (see
- * `@vaultledger/server`'s `buildBridge` error handler / errorBody). */
+ * `@vault-ledger/server`'s `buildBridge` error handler / errorBody). */
 export interface BridgeErrorBody {
   code: string;
   message: string;
@@ -62,7 +62,7 @@ export interface StatusResult {
 }
 
 /** An approval row plus the rendered diff of its held operation (GET
- * /approvals shape — see `@vaultledger/server`'s render.ts). */
+ * /approvals shape — see `@vault-ledger/server`'s render.ts). */
 export type ApprovalWithDiff = ApprovalRow & { diff: string };
 
 export interface ProvenanceResult {

@@ -5,7 +5,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import { checkPluginFreshness, installPlugin, resolvePluginRoot } from "../../src/setup/plugin.js";
 
 /**
- * `installPlugin` copies the REAL built `@vaultledger/obsidian-plugin`
+ * `installPlugin` copies the REAL built `@vault-ledger/obsidian-plugin`
  * bundle for the "created" happy path (no faking that part — the plugin
  * must actually be built via `pnpm -C packages/obsidian-plugin build`
  * before this suite runs). The not-built / not-found / styles-optional

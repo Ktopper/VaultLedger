@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { formatMessage } from "@vaultledger/core";
+import { formatMessage } from "@vault-ledger/core";
 import { loadContext } from "../src/context.js";
 import { backfillEntityCommand } from "../src/commands/backfillEntity.js";
 import { makeInitializedVault, type TestVault } from "./helpers.js";

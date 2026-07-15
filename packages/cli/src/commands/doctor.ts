@@ -13,7 +13,7 @@ import {
   type GitProbe,
   type JournalProbe,
   type NativeProbe,
-} from "@vaultledger/core";
+} from "@vault-ledger/core";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
@@ -106,8 +106,8 @@ export function mapMcpProbe(entry: string | null): CheckResult {
     return {
       name: "mcp",
       status: "fail",
-      detail: "@vaultledger/mcp-server is not resolvable — the cli install itself looks broken",
-      remediation: "reinstall `@vaultledger/cli`, or from a source clone run `pnpm bootstrap`",
+      detail: "@vault-ledger/mcp-server is not resolvable — the cli install itself looks broken",
+      remediation: "reinstall `@vault-ledger/cli`, or from a source clone run `pnpm bootstrap`",
     };
   }
   return {
@@ -193,7 +193,7 @@ export function compareVersions(input: {
 /**
  * Read the cli's own version and the mcp-server's version, then compare.
  * NOTE: the mcp-server version is resolved by walking up from the resolved
- * bare entry — NOT `require.resolve("@vaultledger/mcp-server/package.json")`,
+ * bare entry — NOT `require.resolve("@vault-ledger/mcp-server/package.json")`,
  * which throws ERR_PACKAGE_PATH_NOT_EXPORTED (no `./package.json` exports entry).
  */
 function checkVersions(): CheckResult {
@@ -205,7 +205,7 @@ function checkVersions(): CheckResult {
     const cliVersion = cliPkg.version;
     const enginesNode = typeof cliPkg.engines?.node === "string" ? cliPkg.engines.node : undefined;
     // dist/index.js → dist → package root
-    const mcpPkg = join(dirname(require.resolve("@vaultledger/mcp-server")), "..", "package.json");
+    const mcpPkg = join(dirname(require.resolve("@vault-ledger/mcp-server")), "..", "package.json");
     const mcpVersion = JSON.parse(readFileSync(mcpPkg, "utf8")).version as string;
     return compareVersions({ cliVersion, mcpVersion, nodeVersion: process.version, enginesNode });
   } catch {
@@ -214,8 +214,8 @@ function checkVersions(): CheckResult {
     return {
       name: "versions",
       status: "warn",
-      detail: "could not resolve @vaultledger/mcp-server version — cli install may be broken",
-      remediation: "reinstall @vaultledger/cli",
+      detail: "could not resolve @vault-ledger/mcp-server version — cli install may be broken",
+      remediation: "reinstall @vault-ledger/cli",
     };
   }
 }

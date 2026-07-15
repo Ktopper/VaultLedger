@@ -1,4 +1,4 @@
-import { auditMemories, type AuditResult } from "@vaultledger/core";
+import { auditMemories, type AuditResult } from "@vault-ledger/core";
 import { loadContext, type LoadContextDeps } from "../context.js";
 
 export interface AuditOptions {

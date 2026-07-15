@@ -203,12 +203,12 @@ the remediation.
 
 ### 3.5 MCP wiring
 - **`mcp`** — `resolveMcpServerEntry()` resolves the built
-  `@vaultledger/mcp-server` entry. Since WU-1, `@vaultledger/cli`
-  *runtime-depends* on `@vaultledger/mcp-server`, so a failure here does **not**
+  `@vault-ledger/mcp-server` entry. Since WU-1, `@vault-ledger/cli`
+  *runtime-depends* on `@vault-ledger/mcp-server`, so a failure here does **not**
   mean "the user forgot to install the server" — it means the **cli install
   itself is broken**. *Unresolvable → `fail`, remediation "reinstall
-  `@vaultledger/cli`, or from a source clone run `pnpm bootstrap`".* Do **not**
-  prescribe `npm i -g @vaultledger/mcp-server` — a global-install instruction
+  `@vault-ledger/cli`, or from a source clone run `pnpm bootstrap`".* Do **not**
+  prescribe `npm i -g @vault-ledger/mcp-server` — a global-install instruction
   is wrong here and sits oddly next to the npx-first docs. Detail line notes:
   *"an `.mcp.json` using the `npx` server form does not depend on this
   resolution."*
@@ -300,7 +300,7 @@ the remediation.
     serving).
 
 ### 3.10 Versions & environment
-- **`versions`** — reports `@vaultledger/cli` and `@vaultledger/mcp-server`
+- **`versions`** — reports `@vault-ledger/cli` and `@vault-ledger/mcp-server`
   versions (`info`), AND checks **skew**: post-npm-publish, a stale global cli
   vs an `npx @latest` mcp-server is a real state, and skew is exactly what a
   doctor exists to notice. Versions disagree → `warn` ("cli vX vs mcp-server
@@ -347,7 +347,7 @@ shape is identical:
 ✓ git             — repo present, HEAD at a15ff96
 ✓ zone-integrity  — 3 Private folders all excluded; .ledger/** excluded
 · journal    warn — not built yet → run `ledger reindex`
-✗ mcp             — @vaultledger/mcp-server not resolvable → reinstall @vaultledger/cli
+✗ mcp             — @vault-ledger/mcp-server not resolvable → reinstall @vault-ledger/cli
 · lock       warn — stale mutation lock (>20s) → remove <path> if no ledger process runs
 · bridge     info — not running → `ledger serve` to start
 ℹ versions        — cli 0.4.0, mcp-server 0.4.0, node 22.3.0
