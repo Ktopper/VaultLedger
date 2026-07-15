@@ -1,7 +1,13 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { configPath, readConfig } from "@vault-ledger/core";
-import { buildMcpConfig, mergeMcpConfig, resolveMcpServerEntry, writeMcpConfig } from "../setup/mcpConfig.js";
+import {
+  buildMcpConfig,
+  isEphemeralEntry,
+  mergeMcpConfig,
+  resolveMcpServerEntry,
+  writeMcpConfig,
+} from "../setup/mcpConfig.js";
 import { checkPluginFreshness, installPlugin } from "../setup/plugin.js";
 import { promptYesNo } from "../prompt.js";
 import { renderReport } from "../setup/report.js";
@@ -131,6 +137,13 @@ export function defaultSteps(): SetupSteps {
           entry: null,
           result: { step: "mcp", state: "failed", detail: "mcp-server not built — run: pnpm bootstrap" },
         };
+      }
+      if (isEphemeralEntry(entry)) {
+        // Disclosure: the emitted block deliberately differs from the resolved
+        // path. Placed here — not in printableBlock — because the --write-mcp
+        // success path never calls printableBlock, and that's the path the
+        // Claude Code guide recommends.
+        out("· emitted the npx form — this run resolved from an ephemeral npx/dlx cache path that can be pruned");
       }
       if (opts.writeMcp) {
         const existing = existsSync(opts.writeMcp) ? readFileSync(opts.writeMcp, "utf8") : null;

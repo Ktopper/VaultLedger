@@ -118,6 +118,26 @@ describe.skipIf(!distBuilt)("defaultSteps().configureMcp (real entry resolution)
     expect(written.mcpServers.vaultledger.args).toEqual([entry, "--vault", vault]);
   });
 
+  // Characterization/regression guard, NOT fail-first: there is no disclosure
+  // line today, so this is green on write. It pins that the line never fires on
+  // a STABLE entry — this monorepo resolves to a physical workspace path, where
+  // claiming "emitted the npx form" would be a lie AND the block genuinely does
+  // carry the physical path. Covers both branches because `--write-mcp`'s
+  // success path and print-by-default emit through different code.
+  test("stable entry (this monorepo): NO npx-form disclosure, on either branch", async () => {
+    dir = mkdtempSync(join(tmpdir(), "vl-defaultsteps-"));
+    const target = join(dir, ".mcp.json");
+    const steps = defaultSteps();
+
+    const written: string[] = [];
+    await steps.configureMcp(vault, baseOpts({ writeMcp: target }), (s) => written.push(s));
+    expect(written.some((s) => /npx form/.test(s))).toBe(false);
+
+    const printed: string[] = [];
+    await steps.configureMcp(vault, baseOpts(), (s) => printed.push(s));
+    expect(printed.some((s) => /npx form/.test(s))).toBe(false);
+  });
+
   test("idempotent re-run: second call against the now-existing file reports already and does NOT rewrite it", async () => {
     dir = mkdtempSync(join(tmpdir(), "vl-defaultsteps-"));
     const target = join(dir, ".mcp.json");
