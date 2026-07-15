@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "vitest";
 import type { FastifyInstance } from "fastify";
-import type { ConflictRow, MemoryRow } from "@vaultledger/core";
+import type { ConflictRow, MemoryRow } from "@vault-ledger/core";
 import { buildBridge } from "../src/app.js";
 import { makeTestVault, openTestVault, type TestVault } from "./helpers.js";
 

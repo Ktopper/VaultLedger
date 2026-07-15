@@ -14,8 +14,8 @@ import {
   readConfig,
   vaultLockDir,
   writeConfig,
-} from "@vaultledger/core";
-import { startBridge, type RunningBridge } from "@vaultledger/server";
+} from "@vault-ledger/core";
+import { startBridge, type RunningBridge } from "@vault-ledger/server";
 import { BridgeClient, BridgeUnavailableError } from "../src/bridgeClient.js";
 
 const RAW_MANIFEST = `version: 1

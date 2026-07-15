@@ -1,4 +1,4 @@
-import { BrokerError, type ApprovalRow } from "@vaultledger/core";
+import { BrokerError, type ApprovalRow } from "@vault-ledger/core";
 import { createPatch } from "diff";
 import { loadContext, type LoadContextDeps } from "../context.js";
 

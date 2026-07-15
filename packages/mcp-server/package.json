@@ -1,5 +1,5 @@
 {
-  "name": "@vaultledger/mcp-server",
+  "name": "@vault-ledger/mcp-server",
   "version": "0.4.0",
   "type": "module",
   "description": "VaultLedger MCP server — the memory tools an AI agent runs",
@@ -27,13 +27,13 @@
   "publishConfig": { "access": "public" },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
-    "@vaultledger/core": "workspace:*",
+    "@vault-ledger/core": "workspace:*",
     "zod": "^3.23.0",
     "zod-to-json-schema": "^3.23.0",
     "yaml": "^2.5.0"
   },
   "devDependencies": {
-    "@vaultledger/cli": "workspace:*",
+    "@vault-ledger/cli": "workspace:*",
     "diff": "^8.0.3",
     "gray-matter": "^4.0.3"
   }

@@ -25,9 +25,9 @@ cp packages/obsidian-plugin/main.js "<vault>/.obsidian/plugins/vaultledger/"
 
 **Expected:** `main.js` builds with no esbuild errors (~20KB — it should NOT
 be large; if it balloons back up into the hundreds of KB, something is
-pulling `@vaultledger/core`'s native-dependent modules — better-sqlite3,
+pulling `@vault-ledger/core`'s native-dependent modules — better-sqlite3,
 simple-git — back into the bundle. Check that value imports still come
-from `@vaultledger/core/config`, not the full barrel).
+from `@vault-ledger/core/config`, not the full barrel).
 
 In Obsidian: Settings → Community plugins → make sure "Restricted mode" is
 off → the "VaultLedger" plugin should appear in the installed list → enable it.

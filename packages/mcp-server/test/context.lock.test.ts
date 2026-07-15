@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { execSync } from "node:child_process";
-import { vaultLockDir, withVaultLock } from "@vaultledger/core";
+import { vaultLockDir, withVaultLock } from "@vault-ledger/core";
 import { loadServerContext } from "../src/context.js";
 import { makeTestVault, type TestVault } from "./helpers.js";
 

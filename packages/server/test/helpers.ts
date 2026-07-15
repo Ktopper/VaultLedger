@@ -12,7 +12,7 @@ import {
   writeConfig,
   type OpenVaultDeps,
   type VaultContext,
-} from "@vaultledger/core";
+} from "@vault-ledger/core";
 
 export interface TestVault {
   vaultDir: string;

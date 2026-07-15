@@ -105,7 +105,7 @@ temp + rename) and never a half-copied plugin (WU-4).
 
 **`resolveMcpServerEntry()`** — resolve the built server through **Node module
 resolution**, not repo-relative math: `createRequire(import.meta.url).resolve(
-"@vaultledger/mcp-server")` (falling back to the package's `bin`/`main` →
+"@vault-ledger/mcp-server")` (falling back to the package's `bin`/`main` →
 `dist/index.js`). In the monorepo this resolves via the workspace symlink; under
 a future `npx vaultledger` it resolves via the installed dep — **same code, no
 rewrite when the distribution track lands.** Returns an **absolute** path.
@@ -189,15 +189,15 @@ over a hidden env var). `parseVaultArg` is unaffected; the flag is orthogonal.
 ## WU-4 — `--install-plugin`: opt-in copy + a deliberate constitutional amendment
 
 `--install-plugin` copies the built plugin from the
-`@vaultledger/obsidian-plugin` package into
+`@vault-ledger/obsidian-plugin` package into
 `<vault>/.obsidian/plugins/vaultledger/`.
 
 - **Resolution (do NOT reuse the WU-2 recipe).** The plugin package is `private`
   and deliberately has **no `main`/`exports`** (and no root `index.js`), so a
-  bare-specifier `resolve("@vaultledger/obsidian-plugin")` throws
+  bare-specifier `resolve("@vault-ledger/obsidian-plugin")` throws
   `MODULE_NOT_FOUND`. Resolve the package **root** instead:
   `dirname(createRequire(import.meta.url).resolve(
-  "@vaultledger/obsidian-plugin/package.json"))` — permitted precisely because
+  "@vault-ledger/obsidian-plugin/package.json"))` — permitted precisely because
   there's no `exports` gate on the subpath. Copy from that **package root**:
   esbuild's `outfile` is root `main.js` and `manifest.json` sits at the root.
   **Do not copy from `dist/`** — that's unrelated `tsc` output, not the plugin

@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema, type CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { resolvesToThisModule, explainNativeBindingError } from "@vaultledger/core";
+import { resolvesToThisModule, explainNativeBindingError } from "@vault-ledger/core";
 // Re-exported so the committed bin launcher (bin/vaultledger-mcp.mjs) can use
 // it in its own `main().catch` without a second dependency-resolution path —
 // the launcher is the real entrypoint, so the isMainModule block below never
@@ -164,7 +164,7 @@ export async function main(): Promise<void> {
 
 // Only run main() when this file is the process entrypoint (the `bin`
 // script), not when a test imports `createServer`/`listToolNames`/
-// `parseVaultArg` from it. See `resolvesToThisModule` in `@vaultledger/core`
+// `parseVaultArg` from it. See `resolvesToThisModule` in `@vault-ledger/core`
 // (hoisted there since `packages/cli/src/index.ts` needs the identical
 // symlink-aware guard) for the pathToFileURL / realpath rationale.
 const isMainModule = resolvesToThisModule(process.argv[1], import.meta.url);

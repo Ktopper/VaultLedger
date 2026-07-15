@@ -3,7 +3,7 @@
 //
 // Packs the 4 publishable workspace packages (core, server, mcp-server, cli —
 // NOT the private obsidian-plugin) into a scratch dir with
-// `pnpm -r --filter '!@vaultledger/obsidian-plugin' pack`, then inspects each
+// `pnpm -r --filter '!@vault-ledger/obsidian-plugin' pack`, then inspects each
 // tarball's actual contents (`tar -tzf`) and packed `package.json` to prove
 // what a real `pnpm -r publish` would ship. This is the mechanical check that
 // runs *before* the irreversible publish (WU-4 step 2) — see
@@ -18,10 +18,10 @@
 //     package.json.
 //   - absent: src/, test/, tsconfig*, *.tsbuildinfo, any " 2."-pattern
 //     (iCloud-duplicate) file, any .env* file.
-//   - every @vaultledger/* range in the packed package.json reads exactly
+//   - every @vault-ledger/* range in the packed package.json reads exactly
 //     "0.4.0" (the workspace:* rewrite happened; no literal "workspace:"
 //     remains).
-//   - independently: @vaultledger/obsidian-plugin does NOT appear in the
+//   - independently: @vault-ledger/obsidian-plugin does NOT appear in the
 //     packed package.json's "dependencies" (it MAY appear in
 //     devDependencies — harmless, registry installs never install a
 //     dependency's devDeps). This is checked separately from the "reads
@@ -39,10 +39,10 @@ const REPO_ROOT = join(__dirname, "..");
 
 // name -> expected bin entry filename under bin/, or undefined if no bin.
 const PACKAGES = {
-  "@vaultledger/core": undefined,
-  "@vaultledger/server": undefined,
-  "@vaultledger/mcp-server": "vaultledger-mcp.mjs",
-  "@vaultledger/cli": "ledger.mjs",
+  "@vault-ledger/core": undefined,
+  "@vault-ledger/server": undefined,
+  "@vault-ledger/mcp-server": "vaultledger-mcp.mjs",
+  "@vault-ledger/cli": "ledger.mjs",
 };
 
 const ICLOUD_DUPE_RE = / [0-9]+(\.|$)/;
@@ -185,7 +185,7 @@ function verifyPackage(pkgName, binName, tarballPath, results) {
     const deps = packedPkg[field];
     if (!deps || typeof deps !== "object") continue;
     for (const [depName, range] of Object.entries(deps)) {
-      if (!depName.startsWith("@vaultledger/")) continue;
+      if (!depName.startsWith("@vault-ledger/")) continue;
       if (typeof range !== "string" || range.includes("workspace:")) {
         sawUnrewrittenWorkspace = true;
         fail(
@@ -203,21 +203,21 @@ function verifyPackage(pkgName, binName, tarballPath, results) {
     }
   }
   if (!sawUnrewrittenWorkspace) {
-    pass(pkgName, results, "all @vaultledger/* ranges rewritten to 0.4.0 (no literal workspace:)");
+    pass(pkgName, results, "all @vault-ledger/* ranges rewritten to 0.4.0 (no literal workspace:)");
   }
 
   // Independent check (WU-1 regression guard): obsidian-plugin must never
   // appear in packed `dependencies`, even though it WOULD read a valid
   // "0.4.0" after rewrite and so would pass the check above alone.
   const runtimeDeps = packedPkg.dependencies;
-  if (runtimeDeps && typeof runtimeDeps === "object" && "@vaultledger/obsidian-plugin" in runtimeDeps) {
+  if (runtimeDeps && typeof runtimeDeps === "object" && "@vault-ledger/obsidian-plugin" in runtimeDeps) {
     fail(
       pkgName,
       results,
-      "@vaultledger/obsidian-plugin appears in packed dependencies (private/unpublished package would 404 for consumers) — this is the WU-1 regression guard",
+      "@vault-ledger/obsidian-plugin appears in packed dependencies (private/unpublished package would 404 for consumers) — this is the WU-1 regression guard",
     );
   } else {
-    pass(pkgName, results, "@vaultledger/obsidian-plugin absent from packed dependencies");
+    pass(pkgName, results, "@vault-ledger/obsidian-plugin absent from packed dependencies");
   }
 }
 
@@ -238,7 +238,7 @@ function main() {
         [
           "-r",
           "--filter",
-          "!@vaultledger/obsidian-plugin",
+          "!@vault-ledger/obsidian-plugin",
           "pack",
           "--pack-destination",
           scratchDir,
@@ -258,11 +258,11 @@ function main() {
     }
 
     for (const [pkgName, binName] of Object.entries(PACKAGES)) {
-      const shortName = pkgName.replace("@vaultledger/", "");
+      const shortName = pkgName.replace("@vault-ledger/", "");
       const results = [];
 
-      // pnpm names tarballs like vaultledger-core-0.4.0.tgz.
-      const expectedPrefix = `vaultledger-${shortName}-`;
+      // pnpm names tarballs like vault-ledger-core-0.4.0.tgz.
+      const expectedPrefix = `vault-ledger-${shortName}-`;
       const candidates = readTarballCandidates(scratchDir, expectedPrefix);
       if (candidates.length !== 1) {
         results.push({

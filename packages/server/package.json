@@ -1,5 +1,5 @@
 {
-  "name": "@vaultledger/server",
+  "name": "@vault-ledger/server",
   "version": "0.4.0",
   "type": "module",
   "description": "VaultLedger localhost review bridge (ledger serve)",
@@ -25,13 +25,13 @@
   "engines": { "node": ">=20" },
   "publishConfig": { "access": "public" },
   "dependencies": {
-    "@vaultledger/core": "workspace:*",
+    "@vault-ledger/core": "workspace:*",
     "fastify": "^5.0.0",
     "diff": "^8.0.3",
     "gray-matter": "^4.0.3"
   },
   "devDependencies": {
     "yaml": "^2.5.0",
-    "@vaultledger/cli": "workspace:*"
+    "@vault-ledger/cli": "workspace:*"
   }
 }

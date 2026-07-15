@@ -26,7 +26,7 @@ Git, and queues protected-zone writes for human approval.
 ## Quickstart
 
 ```sh
-npx @vaultledger/cli@latest setup /path/to/your/vault
+npx @vault-ledger/cli@latest setup /path/to/your/vault
 ```
 
 No clone, no `pnpm install` — `npx` fetches the package and runs it. Point it
@@ -46,7 +46,7 @@ Paste the printed block into Claude Code's `.mcp.json` (merging with anything
 already there), or have `setup --write-mcp <path>` write it for you:
 
 ```json
-{ "mcpServers": { "vaultledger": { "command": "npx", "args": ["-y", "-p", "@vaultledger/mcp-server", "vaultledger-mcp", "--vault", "/path/to/your/vault"] } } }
+{ "mcpServers": { "vaultledger": { "command": "npx", "args": ["-y", "-p", "@vault-ledger/mcp-server", "vaultledger-mcp", "--vault", "/path/to/your/vault"] } } }
 ```
 
 Working on VaultLedger itself, or want to run it from a clone instead of npm?
@@ -130,8 +130,8 @@ pnpm install
 pnpm build
 ```
 
-This builds `@vaultledger/core`, `@vaultledger/cli` (the `ledger` bin), and
-`@vaultledger/mcp-server` (the `vaultledger-mcp` bin) via `tsc --build`. (`pnpm
+This builds `@vault-ledger/core`, `@vault-ledger/cli` (the `ledger` bin), and
+`@vault-ledger/mcp-server` (the `vaultledger-mcp` bin) via `tsc --build`. (`pnpm
 bootstrap` does this plus the Obsidian plugin build, in one command — see
 [From source / contributing](#from-source--contributing).)
 

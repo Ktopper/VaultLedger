@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { execFileSync } from "node:child_process";
-import { loadContext } from "@vaultledger/cli";
+import { loadContext } from "@vault-ledger/cli";
 import { startBridge, type RunningBridge } from "../src/start.js";
 import { makeTestVault, type TestVault } from "./helpers.js";
 
@@ -27,10 +27,10 @@ function gitStatusPorcelain(dir: string): string {
 /**
  * Task 2.5's load-bearing test: the fastify bridge (startBridge, listening
  * for real on 127.0.0.1) and a SECOND, independently-loaded context
- * (`loadContext` from `@vaultledger/cli` — the CLI's real non-openVault
+ * (`loadContext` from `@vault-ledger/cli` — the CLI's real non-openVault
  * wiring path, used here instead of the MCP server's `loadServerContext`
- * because that function isn't re-exported from `@vaultledger/mcp-server`'s
- * public entrypoint; `loadContext` IS re-exported from `@vaultledger/cli`'s
+ * because that function isn't re-exported from `@vault-ledger/mcp-server`'s
+ * public entrypoint; `loadContext` IS re-exported from `@vault-ledger/cli`'s
  * index, so it's a genuine second real host wired independently of
  * `openVault`) both operate on the SAME vault + SAME injected HOME
  * concurrently: the bridge serves real HTTP `GET /memories` reads over its

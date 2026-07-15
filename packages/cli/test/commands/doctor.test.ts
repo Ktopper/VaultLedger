@@ -2,7 +2,7 @@ import { describe, expect, test, afterEach } from "vitest";
 import { mkdtempSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PermissionsManifest, vaultLockDir, LOCK_CONFIG, permissionsPath } from "@vaultledger/core";
+import { PermissionsManifest, vaultLockDir, LOCK_CONFIG, permissionsPath } from "@vault-ledger/core";
 import { makeInitializedVault, type TestVault } from "../helpers.js";
 import { initCommand } from "../../src/commands/init.js";
 import {

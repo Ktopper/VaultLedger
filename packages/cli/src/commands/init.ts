@@ -13,7 +13,7 @@ import {
   writeConfig,
   type PermissionsManifest,
   type VaultProfile,
-} from "@vaultledger/core";
+} from "@vault-ledger/core";
 
 export interface InitOptions {
   confirm: boolean;

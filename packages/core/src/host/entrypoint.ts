@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
  * (`packages/cli/src/index.ts`, `packages/mcp-server/src/index.ts`) to guard
  * "only auto-run main() when this file is the process's actual entry point,
  * never when a test imports it" — hoisted here once both depend on
- * `@vaultledger/core` anyway, rather than duplicating the guard verbatim in
+ * `@vault-ledger/core` anyway, rather than duplicating the guard verbatim in
  * each bin.
  *
  * Compares via `pathToFileURL` (not a bare `file://${argv1}` template) so
@@ -19,7 +19,7 @@ import { pathToFileURL } from "node:url";
  *
  * `realpathSync` on `argv1` is load-bearing whenever the file is launched
  * through a workspace-linked symlink (e.g. pnpm's bin shim,
- * `node_modules/@vaultledger/<pkg> -> ../../packages/<pkg>`): Node's ESM
+ * `node_modules/@vault-ledger/<pkg> -> ../../packages/<pkg>`): Node's ESM
  * loader resolves `moduleUrl` to the REAL path, but `argv1` keeps the
  * symlinked path verbatim — `pathToFileURL` alone doesn't resolve symlinks,
  * so a bare comparison silently mismatches and the bin looks installed, runs,

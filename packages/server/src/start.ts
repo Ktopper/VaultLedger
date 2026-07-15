@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { openVault, type VaultContext } from "@vaultledger/core";
+import { openVault, type VaultContext } from "@vault-ledger/core";
 import { buildBridge } from "./app.js";
 
 export interface StartBridgeOptions {

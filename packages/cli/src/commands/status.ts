@@ -1,4 +1,4 @@
-import type { ApprovalRow, TransactionRow } from "@vaultledger/core";
+import type { ApprovalRow, TransactionRow } from "@vault-ledger/core";
 import { loadContext, type LoadContextDeps } from "../context.js";
 
 export interface StatusResult {

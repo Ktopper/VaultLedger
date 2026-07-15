@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { BrokerError, type ConflictRow, type EnrichedConflict, type MemoryRow } from "@vaultledger/core";
+import { BrokerError, type ConflictRow, type EnrichedConflict, type MemoryRow } from "@vault-ledger/core";
 import { conflictsCommand } from "../src/commands/conflicts.js";
 import { loadContext } from "../src/context.js";
 import { makeInitializedVault, type TestVault } from "./helpers.js";

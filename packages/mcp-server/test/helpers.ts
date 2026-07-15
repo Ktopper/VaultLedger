@@ -9,7 +9,7 @@ import {
   mintVaultId,
   permissionsPath,
   writeConfig,
-} from "@vaultledger/core";
+} from "@vault-ledger/core";
 import type { LoadServerContextDeps } from "../src/context.js";
 
 export interface TestVault {

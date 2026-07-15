@@ -13,7 +13,7 @@ import {
   undoTransaction,
   type RejectionCode,
   type VaultContext,
-} from "@vaultledger/core";
+} from "@vault-ledger/core";
 import { renderApprovalDiff } from "./render.js";
 
 /**

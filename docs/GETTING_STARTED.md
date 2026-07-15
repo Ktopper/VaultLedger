@@ -23,10 +23,10 @@ That's it — `npx` ships with Node, so there's nothing else to install.
 ## 1. Run `ledger setup` against your vault
 
 ```sh
-npx @vaultledger/cli@latest setup /path/to/your/vault
+npx @vault-ledger/cli@latest setup /path/to/your/vault
 ```
 
-`npx` downloads `@vaultledger/cli` on first run (nothing installed globally,
+`npx` downloads `@vault-ledger/cli` on first run (nothing installed globally,
 nothing to uninstall later) and runs `ledger setup` against your vault.
 Point it at an existing Obsidian vault (or any folder of markdown — Obsidian
 itself isn't required to use VaultLedger). `setup` first **scans** the vault
@@ -95,14 +95,14 @@ proved the broker, the journal, and the zone manifest are sound.
   "mcpServers": {
     "vaultledger": {
       "command": "npx",
-      "args": ["-y", "-p", "@vaultledger/mcp-server", "vaultledger-mcp", "--vault", "/absolute/path/to/your/vault"]
+      "args": ["-y", "-p", "@vault-ledger/mcp-server", "vaultledger-mcp", "--vault", "/absolute/path/to/your/vault"]
     }
   }
 }
 ```
 
 (The bin name `vaultledger-mcp` differs from the package name
-`@vaultledger/mcp-server`, so the `-p <package> <bin>` form is what tells
+`@vault-ledger/mcp-server`, so the `-p <package> <bin>` form is what tells
 `npx` which command to run.)
 
 Paste it into Claude Code's `.mcp.json` (merging with anything already
@@ -111,7 +111,7 @@ merges into an existing file rather than clobbering it, so any other MCP
 servers you've already configured are untouched:
 
 ```sh
-npx @vaultledger/cli@latest setup /path/to/your/vault --write-mcp ./.mcp.json
+npx @vault-ledger/cli@latest setup /path/to/your/vault --write-mcp ./.mcp.json
 ```
 
 **Restart Claude Code** so it picks up the new server.
@@ -119,7 +119,7 @@ npx @vaultledger/cli@latest setup /path/to/your/vault --write-mcp ./.mcp.json
 ## 4. Install the review plugin (optional but recommended)
 
 ```sh
-npx @vaultledger/cli@latest setup /path/to/your/vault --install-plugin
+npx @vault-ledger/cli@latest setup /path/to/your/vault --install-plugin
 ```
 
 This copies the built Obsidian plugin into
@@ -152,11 +152,11 @@ actually restarted) first — VaultLedger itself already proved it works.
 
 - [README](../README.md) — full architecture, the review surface, and
   contradiction detection.
-- `npx @vaultledger/cli@latest status /path/to/your/vault` — zones, pending
+- `npx @vault-ledger/cli@latest status /path/to/your/vault` — zones, pending
   approvals, recent transactions.
-- `npx @vaultledger/cli@latest approve /path/to/your/vault` — review and
+- `npx @vault-ledger/cli@latest approve /path/to/your/vault` — review and
   approve/reject queued trusted-zone edits.
-- `npx @vaultledger/cli@latest conflicts /path/to/your/vault` —
+- `npx @vault-ledger/cli@latest conflicts /path/to/your/vault` —
   contradictions the agent's writes have flagged.
 - Re-running `ledger setup` any time is safe and diagnostic: an
   already-initialized vault, current MCP config, and a healthy smoke check
@@ -175,7 +175,7 @@ pnpm bootstrap
 `pnpm bootstrap` runs everything in one shot: installs dependencies (which
 also links the `ledger`/`vaultledger-mcp` bins — they're committed launcher
 scripts, so pnpm links them on the very first `install`, before anything is
-built), builds `@vaultledger/core`/`cli`/`mcp-server` (`tsc --build`), then
+built), builds `@vault-ledger/core`/`cli`/`mcp-server` (`tsc --build`), then
 builds the Obsidian plugin (a separate esbuild step — the plugin's `main.js`
 is gitignored and `tsc --build` doesn't produce it). If you're on **pnpm
 10+**, it may pause with an approval prompt for `better-sqlite3`'s native
@@ -202,7 +202,7 @@ exec` is what finds it (from the repo root; it resolves via the root
 `node_modules/.bin`). If you'd rather type a bare `ledger`, either run
 `pnpm -C packages/cli link --global` once, or add a shell alias.
 
-From here, every `npx @vaultledger/cli@latest <cmd>` command above has a
+From here, every `npx @vault-ledger/cli@latest <cmd>` command above has a
 from-source equivalent: `pnpm exec ledger <cmd>` (same arguments), run from
 the repo root. The MCP config block `setup` prints from a clone uses the
 repo-dist form instead of `npx`:

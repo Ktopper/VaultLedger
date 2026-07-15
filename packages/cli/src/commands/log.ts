@@ -1,4 +1,4 @@
-import type { TransactionRow } from "@vaultledger/core";
+import type { TransactionRow } from "@vault-ledger/core";
 import { loadContext, type LoadContextDeps } from "../context.js";
 
 export interface LogFilters {

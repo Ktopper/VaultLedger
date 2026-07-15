@@ -12,8 +12,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createPatch } from "diff";
 import matter from "gray-matter";
-import { hashFile, LedgerGit } from "@vaultledger/core";
-import { initCommand, undoCommand } from "@vaultledger/cli";
+import { hashFile, LedgerGit } from "@vault-ledger/core";
+import { initCommand, undoCommand } from "@vault-ledger/cli";
 import { loadServerContext, type ServerContext } from "../src/context.js";
 import { createServer } from "../src/index.js";
 

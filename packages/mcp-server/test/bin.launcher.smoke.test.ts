@@ -13,7 +13,7 @@ import {
   mintVaultId,
   permissionsPath,
   writeConfig,
-} from "@vaultledger/core";
+} from "@vault-ledger/core";
 import { listToolNames } from "../src/index.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));

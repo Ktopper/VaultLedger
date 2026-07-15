@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { hashFile } from "@vaultledger/core";
+import { hashFile } from "@vault-ledger/core";
 import { createPatch } from "diff";
 import { join } from "node:path";
 import { buildBridge } from "../src/app.js";

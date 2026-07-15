@@ -23,7 +23,7 @@ import {
   permissionsPath,
   readConfig,
   vaultLockDir,
-} from "@vaultledger/core";
+} from "@vault-ledger/core";
 import { setupCommand } from "../src/commands/setup.js";
 import { defaultSteps } from "../src/commands/setup.js";
 import { resolveMcpServerEntry } from "../src/setup/mcpConfig.js";

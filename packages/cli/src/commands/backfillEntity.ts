@@ -1,4 +1,4 @@
-import { backfillEntity, type BackfillEntityResult } from "@vaultledger/core";
+import { backfillEntity, type BackfillEntityResult } from "@vault-ledger/core";
 import { loadContext, type LoadContextDeps } from "../context.js";
 
 export interface BackfillEntityOptions {

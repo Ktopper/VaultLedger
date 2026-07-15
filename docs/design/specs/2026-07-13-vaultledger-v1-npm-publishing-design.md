@@ -5,7 +5,7 @@
 should-fixes found and folded in below)
 **Context:** Second track of the v1.0 push (after v0.4 onboarding). The
 2026-07-12 security skim cleared external distribution; this cycle makes
-`npx @vaultledger/cli setup <vault>` and `npx -p @vaultledger/mcp-server
+`npx @vault-ledger/cli setup <vault>` and `npx -p @vault-ledger/mcp-server
 vaultledger-mcp` work for a stranger with no clone and no build. Scope decision
 (2026-07-13): **npm registry only** — the Obsidian community-store submission is
 a separate, mostly non-code track with weeks-long external review, and release
@@ -38,12 +38,12 @@ Four packages, all currently at 0.4.0:
 
 | Package | Bin | Role on npm |
 |---|---|---|
-| `@vaultledger/core` | — | the broker library (dep of everything) |
-| `@vaultledger/server` | — | the `ledger serve` bridge (dep of cli) |
-| `@vaultledger/mcp-server` | `vaultledger-mcp` | the MCP entry agents run |
-| `@vaultledger/cli` | `ledger` | the human entry (`setup`, `approve`, `undo`, …) |
+| `@vault-ledger/core` | — | the broker library (dep of everything) |
+| `@vault-ledger/server` | — | the `ledger serve` bridge (dep of cli) |
+| `@vault-ledger/mcp-server` | `vaultledger-mcp` | the MCP entry agents run |
+| `@vault-ledger/cli` | `ledger` | the human entry (`setup`, `approve`, `undo`, …) |
 
-`@vaultledger/obsidian-plugin` stays `private: true` and unpublished — its
+`@vault-ledger/obsidian-plugin` stays `private: true` and unpublished — its
 distribution channel is the Obsidian store (separate track); it is a leaf
 esbuild bundle, not a library, and nothing published imports it at runtime.
 
@@ -53,9 +53,9 @@ concrete `0.4.0` range in the packed manifest across dependencies,
 devDependencies, optionalDependencies, and peerDependencies; npm would ship the
 literal `workspace:*`, which no consumer can resolve.
 
-**Prerequisite (blocking, human):** the `@vaultledger` scope must exist on npm
+**Prerequisite (blocking, human):** the `@vault-ledger` scope must exist on npm
 before anything can publish under it. Kris creates a free npm **organization**
-named `vaultledger` (Add Organization → free/public tier) under his npm account,
+named `vault-ledger` (Add Organization → free/public tier) under his npm account,
 with 2FA enabled on the account. Without the org, every publish fails with a
 scope-permission error regardless of `--access public`.
 
@@ -63,28 +63,28 @@ scope-permission error regardless of `--access public`.
 
 ## WU-1 — the cli → plugin untangle
 
-`packages/cli/package.json` lists `"@vaultledger/obsidian-plugin":
+`packages/cli/package.json` lists `"@vault-ledger/obsidian-plugin":
 "workspace:*"` under `dependencies` (added in v0.4 so `installPlugin` could
 resolve the plugin package's built `manifest.json` + `main.js`). This doesn't
-block the publish command itself (pnpm packs `@vaultledger/cli` without
+block the publish command itself (pnpm packs `@vault-ledger/cli` without
 complaint), but it ships a **broken package**: the packed manifest lists
-`@vaultledger/obsidian-plugin@0.4.0` in `dependencies`, which was never
-published, so every consumer's `npm install @vaultledger/cli` 404s. That's the
+`@vault-ledger/obsidian-plugin@0.4.0` in `dependencies`, which was never
+published, so every consumer's `npm install @vault-ledger/cli` 404s. That's the
 failure to prevent. (Note the WU-4.1 test run is what catches a regression here
 before the irreversible publish — pack/dry-run don't refuse it.)
 
 **Change:** move the entry from `dependencies` → `devDependencies`.
 
 - **Monorepo users keep `--install-plugin`:** devDependencies are installed in
-  the workspace, so the plugin symlink under `node_modules/@vaultledger/` is
+  the workspace, so the plugin symlink under `node_modules/@vault-ledger/` is
   present exactly as before; `installPlugin`'s resolution is unchanged for
   anyone running from a clone. One accepted cosmetic consequence: pnpm rewrites
   `workspace:*` in devDependencies too, so the *published* cli manifest carries
-  `devDependencies: { "@vaultledger/obsidian-plugin": "0.4.0" }` — a package
+  `devDependencies: { "@vault-ledger/obsidian-plugin": "0.4.0" }` — a package
   that doesn't exist on npm. Harmless to consumers (registry installs never
   install a dependency's devDeps); noted here so nobody later reads it as a
   publish bug.
-- **npm-installed users degrade gracefully:** an `npm install @vaultledger/cli`
+- **npm-installed users degrade gracefully:** an `npm install @vault-ledger/cli`
   does not pull devDependencies, so the plugin package is absent.
   `installPlugin` already has a not-found path; today its message points at the
   monorepo build (`pnpm -C packages/obsidian-plugin build`), which is nonsense
@@ -158,7 +158,7 @@ no build-time copy step to go stale or get skipped).
 
 **Per-package `README.md`:** only `obsidian-plugin` has one today; the four
 published packages would have blank npm pages. Each gets a short README —
-what the package is, the one-command install/use (`npx @vaultledger/cli setup
+what the package is, the one-command install/use (`npx @vault-ledger/cli setup
 <vault>` for cli; the `.mcp.json` block for mcp-server; "you probably want the
 cli" pointers for core/server) — linking to the repo README and
 `docs/GETTING_STARTED.md` for everything else. Short and stable beats
@@ -213,7 +213,7 @@ command is run by (or explicitly authorized by) Kris.
    inside it would dirty the tree and fail the git check).
 1. **Clean build:** `pnpm install` → `pnpm build` (fresh `dist/` everywhere).
 2. **Pack + inspect (mechanical, per package):** on this pnpm (11.9),
-   `pnpm -r --filter '!@vaultledger/obsidian-plugin' pack
+   `pnpm -r --filter '!@vault-ledger/obsidian-plugin' pack
    --pack-destination "$SCRATCH"` works directly and produces exactly the 4
    non-plugin tarballs (verified 2026-07-13 — the old `pnpm#4351` "no recursive
    pack" caveat is stale for this version; note that unfiltered `pnpm -r pack`
@@ -225,7 +225,7 @@ command is run by (or explicitly authorized by) Kris.
    declared; `LICENSE` + `README.md` present; **absent:** `src/`, `test/`,
    `tsconfig*`, `*.tsbuildinfo`, any `" 2."`-pattern file, anything matching
    `.env*`. Also extract each packed `package.json` and assert every
-   `@vaultledger/*` range reads `0.4.0` — pnpm applies the `workspace:*`
+   `@vault-ledger/*` range reads `0.4.0` — pnpm applies the `workspace:*`
    rewrite on `pack` as well as `publish`, so this inspection is
    representative of the real publish.
 3. **Dry-run:** `pnpm -r publish --dry-run` from the workspace root. Scope of
@@ -234,12 +234,12 @@ command is run by (or explicitly authorized by) Kris.
    registry and does not require login (npm removed the dry-run auth check;
    npm/cli#2445), so it proves nothing about auth, org, or access.
 4. **Registry-side preflight (first registry contact, still reversible):**
-   Kris creates the `vaultledger` npm org (see prerequisite), runs
-   `npm login` (2FA), then `npm whoami` and `npm org ls vaultledger` to prove
+   Kris creates the `vault-ledger` npm org (see prerequisite), runs
+   `npm login` (2FA), then `npm whoami` and `npm org ls vault-ledger` to prove
    the session and scope rights actually exist — without this, the first auth
    test would be the irreversible publish itself.
-5. **Human gate — the publish, canary-first:** publish `@vaultledger/core`
-   alone, verify it on the registry (`npm view @vaultledger/core@0.4.0`), then
+5. **Human gate — the publish, canary-first:** publish `@vault-ledger/core`
+   alone, verify it on the registry (`npm view @vault-ledger/core@0.4.0`), then
    publish the remaining three as **four explicit per-package publishes in
    runtime-dependency order** — `core` → `server` → `mcp-server` → `cli` — NOT
    `pnpm -r publish`. **Why not recursive:** `server` and `mcp-server` each
@@ -247,22 +247,22 @@ command is run by (or explicitly authorized by) Kris.
    graph contains `cli↔server` and `cli↔mcp-server` cycles. `pnpm -r publish`
    topologically sorts over the full graph (devDeps included), and a cycle
    makes that order undefined — it can put `cli` on the registry before
-   `server`/`mcp-server`, and a consumer who `npm install`s `@vaultledger/cli`
+   `server`/`mcp-server`, and a consumer who `npm install`s `@vault-ledger/cli`
    in that gap gets a 404 on the missing runtime sibling. Canary-first shrinks
    the window (only `core` precedes) but does not close it; four ordered
    publishes close it entirely at zero cost, since a dependent is never
    published before its runtime deps exist. Kris runs these himself or
    explicitly authorizes each. Each per-package publish is *individually*
    rerun-safe (publish skips a version already on the registry), so a 2FA/OTP
-   lapse mid-sequence is recovered by `npm view @vaultledger/<pkg>@0.4.0` in
+   lapse mid-sequence is recovered by `npm view @vault-ledger/<pkg>@0.4.0` in
    the same order and resuming from the first 404 — no all-or-nothing run.
 6. **Post-publish smoke (clean environment):** from an empty temp dir with no
    workspace on the path:
-   - `npx @vaultledger/cli@0.4.0 --help` → command list renders;
-   - `npx @vaultledger/cli@0.4.0 setup <fresh-temp-vault>` → full v0.4 flow:
+   - `npx @vault-ledger/cli@0.4.0 --help` → command list renders;
+   - `npx @vault-ledger/cli@0.4.0 setup <fresh-temp-vault>` → full v0.4 flow:
      zone review, MCP block emitted, **`smoke verified`** green line. This
      transitively proves `resolveMcpServerEntry` (built packaging-safe in v0.4
-     WU-2) resolves `@vaultledger/mcp-server`'s entry from `node_modules`
+     WU-2) resolves `@vault-ledger/mcp-server`'s entry from `node_modules`
      rather than a repo-relative path — the one v0.4 behavior this cycle
      changes the context of;
    - `--install-plugin` on the same vault → the new WU-1 degraded message, not
@@ -271,7 +271,7 @@ command is run by (or explicitly authorized by) Kris.
    directory as a short release note (`docs/design/specs/2026-07-13-v040-npm-release-notes.md`).
 
 If step 6 fails on an already-published package, recover **forward**: run
-`npm deprecate @vaultledger/<pkg>@0.4.0 "broken — use 0.4.1"` so the registry
+`npm deprecate @vault-ledger/<pkg>@0.4.0 "broken — use 0.4.1"` so the registry
 warns anyone who installs it, then ship the fix as **0.4.1**. Never
 unpublish/republish 0.4.0 — a version number can't be reused on npm even after
 unpublish, so a clean re-do of the same version is impossible; deprecate-then-
@@ -284,12 +284,12 @@ supersede is the only real recovery.
 The whole point of publishing is that strangers skip clone+bootstrap:
 
 - **`README.md`:** Quickstart becomes
-  `npx @vaultledger/cli@latest setup /path/to/your/vault` (one line, no clone);
+  `npx @vault-ledger/cli@latest setup /path/to/your/vault` (one line, no clone);
   the `git clone <this repo's URL>` placeholder (which was never a real URL)
   moves into a "from source / contributing" section further down with the real
   `https://github.com/Ktopper/VaultLedger.git`. The MCP config example switches
   to the npx form (`"command": "npx", "args": ["-y", "-p",
-  "@vaultledger/mcp-server", "vaultledger-mcp", "--vault", "<vault>"]`) with
+  "@vault-ledger/mcp-server", "vaultledger-mcp", "--vault", "<vault>"]`) with
   the repo-dist form kept as the from-source variant.
 - **`docs/GETTING_STARTED.md`:** same inversion — npm path first (install
   Node ≥20 → `npx … setup` → done), clone+bootstrap demoted to the contributor

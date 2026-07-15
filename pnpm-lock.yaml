@@ -14,10 +14,10 @@ importers:
       '@types/node':
         specifier: ^22.5.0
         version: 22.20.0
-      '@vaultledger/cli':
+      '@vault-ledger/cli':
         specifier: workspace:*
         version: link:packages/cli
-      '@vaultledger/mcp-server':
+      '@vault-ledger/mcp-server':
         specifier: workspace:*
         version: link:packages/mcp-server
       eslint:
@@ -38,13 +38,13 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: ^1.0.0
         version: 1.29.0(zod@3.25.76)
-      '@vaultledger/core':
+      '@vault-ledger/core':
         specifier: workspace:*
         version: link:../core
-      '@vaultledger/mcp-server':
+      '@vault-ledger/mcp-server':
         specifier: workspace:*
         version: link:../mcp-server
-      '@vaultledger/server':
+      '@vault-ledger/server':
         specifier: workspace:*
         version: link:../server
       commander:
@@ -57,7 +57,7 @@ importers:
         specifier: ^2.5.0
         version: 2.9.0
     devDependencies:
-      '@vaultledger/obsidian-plugin':
+      '@vault-ledger/obsidian-plugin':
         specifier: workspace:*
         version: link:../obsidian-plugin
 
@@ -103,7 +103,7 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: ^1.0.0
         version: 1.29.0(zod@3.25.76)
-      '@vaultledger/core':
+      '@vault-ledger/core':
         specifier: workspace:*
         version: link:../core
       yaml:
@@ -116,7 +116,7 @@ importers:
         specifier: ^3.23.0
         version: 3.25.2(zod@3.25.76)
     devDependencies:
-      '@vaultledger/cli':
+      '@vault-ledger/cli':
         specifier: workspace:*
         version: link:../cli
       diff:
@@ -128,11 +128,11 @@ importers:
 
   packages/obsidian-plugin:
     dependencies:
-      '@vaultledger/core':
+      '@vault-ledger/core':
         specifier: workspace:*
         version: link:../core
     devDependencies:
-      '@vaultledger/server':
+      '@vault-ledger/server':
         specifier: workspace:*
         version: link:../server
       diff:
@@ -150,7 +150,7 @@ importers:
 
   packages/server:
     dependencies:
-      '@vaultledger/core':
+      '@vault-ledger/core':
         specifier: workspace:*
         version: link:../core
       diff:
@@ -163,7 +163,7 @@ importers:
         specifier: ^4.0.3
         version: 4.0.3
     devDependencies:
-      '@vaultledger/cli':
+      '@vault-ledger/cli':
         specifier: workspace:*
         version: link:../cli
       yaml:

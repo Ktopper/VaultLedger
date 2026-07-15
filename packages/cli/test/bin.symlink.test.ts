@@ -10,7 +10,7 @@ import { afterEach, describe, expect, test } from "vitest";
  * `isMainModule` check compares `import.meta.url` (which Node resolves to the
  * REAL path) against `process.argv[1]` (kept verbatim). pnpm's `ledger` bin
  * shim launches `dist/index.js` through a symlink
- * (node_modules/@vaultledger/cli -> ../../packages/cli), so before the
+ * (node_modules/@vault-ledger/cli -> ../../packages/cli), so before the
  * `realpathSync(argv[1])` fix, `run()` never fired and the bin exited 0 with
  * NO output. This test reproduces exactly that shape — spawn the built entry
  * through a temp symlink — and asserts `main()` actually ran (real help
@@ -39,7 +39,7 @@ describe.skipIf(!distBuilt)("ledger bin launched through a symlink (pnpm bin-shi
   test("main() runs — real --help output over a symlinked entry, exit 0", () => {
     linkDir = mkdtempSync(join(tmpdir(), "vl-bin-symlink-"));
     // A symlink that resolves to the real built entry, exactly how pnpm's bin
-    // shim reaches it (node_modules/@vaultledger/cli -> packages/cli).
+    // shim reaches it (node_modules/@vault-ledger/cli -> packages/cli).
     const linkPath = join(linkDir, "ledger-link.js");
     symlinkSync(distEntry, linkPath);
 

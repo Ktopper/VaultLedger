@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "vitest";
-import { vaultLockDir, withVaultLock } from "@vaultledger/core";
+import { vaultLockDir, withVaultLock } from "@vault-ledger/core";
 import { loadContext } from "../src/context.js";
 import { makeInitializedVault, type TestVault } from "./helpers.js";
 

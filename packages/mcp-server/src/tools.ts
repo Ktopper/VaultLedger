@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { BrokerError, Confidence, recall, redactExcludedZones, type RecallFilters } from "@vaultledger/core";
+import { BrokerError, Confidence, recall, redactExcludedZones, type RecallFilters } from "@vault-ledger/core";
 import type { ServerContext } from "./context.js";
 
 /** Structured error shape every tool handler returns instead of throwing.
@@ -192,7 +192,7 @@ const LedgerStatusInput = z.object({}).strict();
 
 /**
  * Build the 9 spec tools (design §7 + v0.3b memory_distill/memory_retire) as a thin
- * adapter over `@vaultledger/core`.
+ * adapter over `@vault-ledger/core`.
  * Every handler validates its own args against its zod inputSchema and never
  * throws — invalid args and BrokerError rejections both come back as a
  * structured `{ error }` result, so the transport layer (stdio JSON-RPC) never

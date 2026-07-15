@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { journalPath, openJournal, permissionsPath, readConfig } from "@vaultledger/core";
+import { journalPath, openJournal, permissionsPath, readConfig } from "@vault-ledger/core";
 import { loadContext } from "../src/context.js";
 import { statusCommand } from "../src/commands/status.js";
 import { logCommand } from "../src/commands/log.js";
