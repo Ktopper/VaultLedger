@@ -66,11 +66,30 @@ The physical path is correct *when it is stable*; only the caches are prunable.
 ### 2.4 Detection — `isEphemeralEntry(entry): boolean`
 
 A pure, exported path-segment check (no env sniffing — env is not reliably
-present when the entry is merely *resolved* rather than *executed*). Matches:
+present when the entry is merely *resolved* rather than *executed*).
 
-- **npm's npx cache** — a `_npx` path segment (`~/.npm/_npx/<hash>/…`).
-- **pnpm's dlx cache** — a `dlx-` path segment. `pnpm dlx @vault-ledger/cli
-  setup` is an entirely plausible invocation and its cache is just as prunable.
+**Matching rule (state it precisely — a substring match is a false-positive
+farm):** split the path on the separator, require an **exact, case-sensitive
+segment** match against a known cache segment, **and** require a later
+`node_modules` segment (every real cache entry resolves through one; a user's
+own directory named `dlx` will not).
+
+Cache segments — **empirically verified on this machine, 2026-07-15, not
+assumed**:
+
+| Tool | Real observed path | Segment |
+|---|---|---|
+| npm `npx` | `~/.npm/_npx/de6729f694090229/node_modules/…` | `_npx` |
+| pnpm `dlx` (pnpm 11) | `~/Library/Caches/pnpm/dlx/f9e99c4313084f05f3756fa56ad93726/mrmjt8gl-nf4/node_modules/…` | **`dlx`** |
+
+> **The segment is `dlx`, NOT `dlx-`.** `dlx-<random>` is the *legacy* pnpm (<7)
+> `os.tmpdir()` shape and is kept only as an additional legacy arm. This was
+> caught at spec review by running a real `pnpm dlx` — the original `dlx-`
+> spec would have **missed every modern `pnpm dlx` invocation while a
+> hand-written `dlx-` fixture test passed green**, i.e. reproduced the exact
+> silent failure §2.1 exists to kill, with a green test vouching for it.
+> **Any fixture for this check must be derived from a real observed path, never
+> invented.**
 
 Both branches unit-testable from fixture strings; no filesystem or env needed.
 
@@ -91,8 +110,25 @@ self-disclosure habit (precedent: the `git init` disclosure):
 > `· emitted the npx form — this run resolved from an ephemeral npx/dlx cache
 > path that can be pruned`
 
-`--write-mcp` inherits the fix for free (same builder), so the written file and
-the printed block never disagree.
+**Seam — `defaultSteps.configureMcp` (`packages/cli/src/commands/setup.ts:127-184`),
+NOT `printableBlock`.** `printableBlock` (`:109-116`) looks like "the step that
+prints the block", but the **`--write-mcp` success path (`:161-177`) never calls
+it** — it calls `writeMcpConfig` and returns a `StepResult`. A disclosure placed
+in `printableBlock` would fire on the print path and the merge-refused fallback
+(`:139`, `:179`) and be **silent on `--write-mcp` success** — precisely the path
+§3.3 recommends. `configureMcp` already holds both `entry` and the `out` sink
+and dominates both branches; emit the line there, once, gated on
+`isEphemeralEntry(entry)`.
+
+`--write-mcp` inherits the *block shape* for free (both construction sites —
+`printableBlock:110` and `mergeMcpConfig:105` — go through `buildMcpConfig`), so
+the written file and the printed block never disagree.
+
+**Known limitation (stated, not discovered later):** the disclosure is invisible
+under `--json`. `StepResult` is `{step, state, detail}` only
+(`packages/cli/src/setup/types.ts`) and json mode routes human output to stderr
+(`commands/setup.ts:50`), so a scripted consumer won't see the swap. Accepted —
+the swap changes the emitted config, which the consumer *does* receive.
 
 ### 2.7 Tests
 
@@ -104,6 +140,61 @@ the printed block never disagree.
   existing merge tests must stay green — the block shape changed, the merge
   semantics did not).
 - The disclosure line appears only on the swap.
+- **`mergeMcpConfig(null, vault, <ephemeral entry>)` → npx-form block.** This is
+  the assertion that actually defends §2.6's "the write path inherits the fix"
+  promise — the other tests only exercise `buildMcpConfig` directly.
+- **False-positive guard:** `~/projects/dlx/my-app/node_modules/…` → `false`
+  (a user directory legitimately named `dlx`), alongside the monorepo-workspace
+  → `false` case.
+
+---
+
+## 2.8 Required companion fix — the version-skew check must tolerate a patch bump
+
+**This is a self-inflicted false signal that §7's single-package publish
+creates, and it must ship in the same 0.4.1.**
+
+After a cli-only bump, a consumer installing `@vault-ledger/cli@0.4.1` gets
+`@vault-ledger/mcp-server@0.4.0` (cli's `workspace:*` dep rewrites to the
+sibling's local `0.4.0`, which is correct and already live). But doctor's
+`checkVersions` reads the cli's own version (`0.4.1`) and the resolved
+mcp-server's version (`0.4.0`), and `compareVersions` warns on **any** string
+inequality:
+
+```ts
+if (cliVersion !== mcpVersion) → warn "version skew"
+```
+
+So **every `npx @vault-ledger/cli@latest doctor <vault>` on a perfectly healthy
+0.4.1 install would print a version-skew warning** — and `--strict` would exit
+`1`. That is doctor crying wolf: the exact mirror of the false-clean-bill we
+just fixed for `native-deps`, and it would land in the same release as the
+guides that tell users to trust doctor.
+
+**Fix:** `compareVersions` compares **`major.minor`**, not the full version
+string. Patch-level skew between independently-versioned sibling packages is
+normal and harmless; the check still catches what it was built for (a stale
+global cli vs an `npx @latest` mcp-server drifting across a minor/major).
+
+- `0.4.1` vs `0.4.0` → **no warn** (fold the exact versions into the existing
+  `info` detail line, which already prints both).
+- `0.4.x` vs `0.5.x` → `warn` (unchanged intent).
+- Tests: equal → info; patch-differs → info (regression test for this exact
+  0.4.1-vs-0.4.0 case); minor-differs → warn; major-differs → warn.
+
+**Do not "fix" this by bumping all four packages to 0.4.1 instead.** That would
+republish three unchanged packages purely to sync a number, re-invoke the
+four-package ordering ritual §7 exists to avoid, and paper over a check that is
+simply too strict.
+
+### 2.9 The npx form stays unpinned (a decision, not an omission)
+
+The emitted `args` are `["-y","-p","@vault-ledger/mcp-server","vaultledger-mcp",…]`
+— **unpinned**, matching the form `README.md` and `GETTING_STARTED.md` already
+publish. Pinning would freeze a spawned server at the cli's release-time
+version and quietly rot; floating keeps the server current, and §2.8 makes
+patch drift a non-event. Revisit only if a real cross-minor incompatibility
+appears — at which point the §2.8 check is exactly what surfaces it.
 
 ---
 
@@ -154,6 +245,13 @@ when step 2 fails. Say this in one half-sentence per guide, not a lecture.
 - Cross-ref the Obsidian review plugin (`setup --install-plugin`).
 - **Trust model:** Claude Code prompts for tool approval per its own settings;
   VaultLedger's guarantees do not depend on that — the broker gates regardless.
+- **Half-sentence the page must carry** (since it recommends both the
+  hand-pasted block *and* `--write-mcp`): `mergeMcpConfig` lets our
+  `command`/`args` **overwrite** an existing `vaultledger` entry
+  (`mcpConfig.ts:131`) while preserving siblings and your extra keys (`env`,
+  `disabled`). So if you hand-wrote the npx form and later run `--write-mcp`
+  from a *stable* install, your block is rewritten to the path form. That's
+  §2.3 working as designed — but say it, don't let them discover it.
 
 ### 3.4 Hermes (`hermes.md`)
 
@@ -230,11 +328,20 @@ get followed.
 3. **Cite or supersede an existing belief; don't write a competing duplicate** —
    *because a duplicating agent generates conflict-queue noise, while a
    superseding one generates lineage the contradiction detector can use.*
-4. **Propose promotion when a fact is confirmed** (scratch → working →
-   canonical) — *because canonical is the belief the system will defend; it
-   needs a human's approval by design, and yours is the proposal.*
-5. **Prefer `memory_retire` (with a reason) over `memory_forget`** — *because
-   retired stays queryable in history; forget tombstones it.*
+   (Mechanically: `memory_retire` takes `superseded_by`, and `memory_distill`
+   documents that *a retired source may still be cited* — that's what makes
+   supersede-don't-duplicate real rather than advisory. Rules 3 and 5 are one
+   idea.)
+4. **Promote when confirmed — `scratch→working` applies immediately;
+   `working→canonical` is a proposal a human approves** — *because canonical is
+   the belief the system will defend, so that hop is the one that needs a
+   human.* (Corrected at spec review: the earlier "propose promotion" phrasing
+   implied **both** hops queue. Per `tools.ts:296` only the second does.)
+5. **Prefer `memory_retire` over `memory_forget`** — *because retired stays
+   queryable in history and can still be cited; forget tombstones it.*
+   (Both tools **require** a `reason` — `RetireInput`/`ForgetInput` are each
+   `z.string().min(1)` — so do NOT phrase this as "retire, with a reason" as if
+   that distinguished them. The distinction is what survives.)
 6. **Never edit vault files directly — every write goes through the tools** —
    *because the broker is the only thing that makes a change attributable and
    reversible; a direct write is an unattributable change `ledger undo` can't
@@ -315,11 +422,17 @@ The fix lives **entirely in `@vault-ledger/cli`**. Therefore:
   `pnpm -r publish --dry-run`, then the single publish, then the npx smoke on
   the Mac.
 
-**Implementation note to verify:** `scripts/verify-publish.mjs` asserts
-"all `@vault-ledger/*` ranges rewritten to `0.4.0`". A cli at `0.4.1` still has
-**deps** at `0.4.0`, so that assertion should pass unchanged — but confirm the
-script doesn't *also* assert each package's own `version === "0.4.0"`; if it
-does, it needs to tolerate a per-package bump before the 0.4.1 publish.
+**Implementation note — RESOLVED at spec review, no change needed:**
+`scripts/verify-publish.mjs` asserts **only dependency ranges**, never a
+package's own version — the check is `range !== "0.4.0"` (`:196`), reached only
+for `depName.startsWith("@vault-ledger/")` (`:182-204`), and there is no
+`packedPkg.version` assertion anywhere. Tarball discovery uses the version-less
+prefix `vault-ledger-cli-` (`:265, :296-300`), so `…-0.4.1.tgz` still matches.
+**A cli-only 0.4.1 bump passes `verify-publish.mjs` unchanged.**
+
+**But §2.8 is a hard prerequisite of this publish** — a cli-only bump makes
+doctor's version check warn on every healthy install. Ship §2.8 in the same
+0.4.1 or don't ship the bump.
 
 ---
 
@@ -331,10 +444,14 @@ does, it needs to tolerate a per-package bump before the 0.4.1 publish.
 - `packages/cli/test/skillParity.test.ts`
 
 **Modify:**
-- `packages/cli/src/setup/mcpConfig.ts` — add `isEphemeralEntry`, branch
-  `buildMcpConfig`
-- `packages/cli/src/commands/setup.ts` (or the step that prints the block) — the
-  §2.6 disclosure line
+- `packages/cli/src/setup/mcpConfig.ts` — add `isEphemeralEntry` (§2.4), branch
+  `buildMcpConfig` (§2.2)
+- `packages/cli/src/commands/setup.ts` — the §2.6 disclosure line, in
+  **`defaultSteps.configureMcp` (`:127-184`)**, NOT `printableBlock`
+- `packages/cli/src/commands/doctor.ts` — **§2.8 required companion fix:**
+  `compareVersions` compares `major.minor`, not the full string
 - `packages/cli/test/setup/mcpConfig.test.ts` — the §2.7 tests
+- `packages/cli/test/commands/doctor.test.ts` — the §2.8 tests (incl. the
+  0.4.1-vs-0.4.0 patch-skew regression test)
 - `packages/cli/package.json` — version → `0.4.1`
 - `README.md`, `docs/GETTING_STARTED.md` — link the guides
