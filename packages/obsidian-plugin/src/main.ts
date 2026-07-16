@@ -1,7 +1,9 @@
-import { FileSystemAdapter, Plugin, type WorkspaceLeaf } from "obsidian";
+import { FileSystemAdapter, Plugin, requestUrl, type WorkspaceLeaf } from "obsidian";
 import { ApprovalsView, APPROVALS_VIEW_TYPE } from "./views/approvals.js";
 import { ActivityView, ACTIVITY_VIEW_TYPE } from "./views/activity.js";
 import { registerProvenanceHover } from "./hover.js";
+import { makeRequestUrlTransport } from "./requestUrlTransport.js";
+import { refreshOnReveal } from "./reveal.js";
 
 /**
  * VaultLedger review plugin entry point (design v0.2 Phase 4). A THIN
@@ -12,9 +14,24 @@ import { registerProvenanceHover } from "./hover.js";
  * verification checklist.
  */
 export default class VaultLedgerPlugin extends Plugin {
+  /**
+   * A `fetch`-shaped transport backed by Obsidian's `requestUrl`, built once at
+   * load and threaded into every `BridgeClient.fromVault` site (views + hover).
+   * This is what makes the views work inside real Obsidian: a plain browser
+   * `fetch` from the `app://obsidian.md` origin fires a CORS preflight the
+   * bridge doesn't answer, blocking every request; `requestUrl` bypasses it.
+   */
+  readonly transport: typeof fetch = makeRequestUrlTransport(requestUrl);
+
   async onload(): Promise<void> {
-    this.registerView(APPROVALS_VIEW_TYPE, (leaf) => new ApprovalsView(leaf, () => this.getVaultRoot()));
-    this.registerView(ACTIVITY_VIEW_TYPE, (leaf) => new ActivityView(leaf, () => this.getVaultRoot()));
+    this.registerView(
+      APPROVALS_VIEW_TYPE,
+      (leaf) => new ApprovalsView(leaf, () => this.getVaultRoot(), this.transport),
+    );
+    this.registerView(
+      ACTIVITY_VIEW_TYPE,
+      (leaf) => new ActivityView(leaf, () => this.getVaultRoot(), this.transport),
+    );
 
     this.addRibbonIcon("check-check", "VaultLedger: Approval Queue", () => {
       void this.activateView(APPROVALS_VIEW_TYPE);
@@ -38,7 +55,7 @@ export default class VaultLedgerPlugin extends Plugin {
       },
     });
 
-    registerProvenanceHover(this, () => this.getVaultRoot());
+    registerProvenanceHover(this, () => this.getVaultRoot(), this.transport);
   }
 
   /**
@@ -72,5 +89,16 @@ export default class VaultLedgerPlugin extends Plugin {
     if (leaf) {
       await workspace.revealLeaf(leaf);
     }
+
+    // Refresh-on-reveal: re-revealing an EXISTING leaf does NOT re-run the
+    // view's onOpen, so its contents would otherwise be stale. A brand-new
+    // leaf fetches via onOpen and must not be double-refreshed. (Decision
+    // extracted + unit-tested in reveal.ts.)
+    refreshOnReveal(existing.length, () => {
+      const view = leaf?.view;
+      if (view instanceof ApprovalsView || view instanceof ActivityView) {
+        void view.refresh();
+      }
+    });
   }
 }

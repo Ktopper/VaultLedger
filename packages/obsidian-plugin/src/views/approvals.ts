@@ -15,6 +15,11 @@ export class ApprovalsView extends ItemView {
   constructor(
     leaf: WorkspaceLeaf,
     private readonly getVaultRoot: () => string,
+    // The plugin's Obsidian-`requestUrl`-backed transport. Threaded into
+    // `fromVault` so bridge calls dodge the CORS preflight that (with a plain
+    // browser `fetch`) blocks every request from the app:// origin — the whole
+    // reason the views were empty inside real Obsidian.
+    private readonly transport: typeof fetch,
   ) {
     super(leaf);
   }
@@ -43,11 +48,17 @@ export class ApprovalsView extends ItemView {
   async refresh(): Promise<void> {
     const { contentEl } = this;
     contentEl.empty();
-    contentEl.createEl("h2", { text: "Approval Queue" });
+
+    const header = contentEl.createDiv({ cls: "vl-approval-header" });
+    header.createEl("h2", { text: "Approval Queue" });
+    const refreshBtn = header.createEl("button", { text: "Refresh", cls: "vl-refresh-btn" });
+    refreshBtn.addEventListener("click", () => {
+      void this.refresh();
+    });
 
     let client: BridgeClient;
     try {
-      client = await BridgeClient.fromVault(this.getVaultRoot());
+      client = await BridgeClient.fromVault(this.getVaultRoot(), { fetch: this.transport });
     } catch (e) {
       this.renderUnavailable(e);
       return;

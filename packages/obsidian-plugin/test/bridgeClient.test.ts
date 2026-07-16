@@ -85,6 +85,33 @@ async function makeTestVault(rand: () => string = () => "test1234"): Promise<Tes
 
 const TOKEN = "test-token-abc123";
 
+/** The core-computed on-disk path `ledger serve` publishes bridge.json to and
+ * `fromVault` re-reads on every (re)discovery. */
+function bridgeJsonPathFor(vaultDir: string, env: NodeJS.ProcessEnv): string {
+  const { vaultId } = readConfig(vaultDir);
+  return join(vaultLockDir(vaultId, env), "bridge.json");
+}
+
+/** Atomically (write-tmp + rename) publish a bridge.json at the same path
+ * `ledger serve` uses — the discovery substrate reconnect re-reads. */
+function writeBridgeJson(
+  vaultDir: string,
+  env: NodeJS.ProcessEnv,
+  port: number,
+  token: string,
+  now: () => string,
+): void {
+  const bridgeJsonPath = bridgeJsonPathFor(vaultDir, env);
+  mkdirSync(join(bridgeJsonPath, ".."), { recursive: true });
+  const tmpPath = `${bridgeJsonPath}.tmp`;
+  writeFileSync(
+    tmpPath,
+    JSON.stringify({ port, token, pid: process.pid, startedAt: now() }),
+    "utf8",
+  );
+  renameSync(tmpPath, bridgeJsonPath);
+}
+
 let vault: TestVault | undefined;
 let bridge: RunningBridge | undefined;
 
@@ -377,5 +404,69 @@ describe("BridgeClient", () => {
     };
     const client = new BridgeClient("http://127.0.0.1:9", TOKEN, { fetch: abortingFetch });
     await expect(client.status()).rejects.toBeInstanceOf(BridgeUnavailableError);
+  });
+
+  test("reconnects: a request failing on port A re-discovers bridge.json (port B + rotated token) and succeeds on B", async () => {
+    vault = await makeTestVault();
+    const clock = makeClock();
+    const ROTATED = "rotated-token-xyz";
+    // The REAL bridge that will be discovered on retry runs with a ROTATED
+    // token — the exact `ledger serve --rotate-token` / bridge-restart shape.
+    bridge = await startBridge(vault.vaultDir, {
+      token: ROTATED,
+      now: clock.now,
+      genId: clock.genId,
+      env: vault.env,
+    });
+
+    // bridge.json initially points to a DEAD port A with the OLD token, so the
+    // client fromVault builds against A.
+    writeBridgeJson(vault.vaultDir, vault.env, 1, TOKEN, clock.now);
+    const client = await BridgeClient.fromVault(vault.vaultDir, { env: vault.env });
+
+    // Bridge "restarts" on port B with the rotated token: rewrite bridge.json.
+    writeBridgeJson(vault.vaultDir, vault.env, bridge.port, ROTATED, clock.now);
+
+    // First attempt hits dead port A → reconnect re-reads bridge.json → retries
+    // on B WITH the rotated token. A wrong token would come back as a typed 401
+    // (ok:false), so ok:true proves the rotated token was picked up.
+    const status = await client.status();
+    expect(status.ok).toBe(true);
+  });
+
+  test("reconnects: request fails and bridge.json is gone → BridgeUnavailableError", async () => {
+    vault = await makeTestVault();
+    const clock = makeClock();
+
+    writeBridgeJson(vault.vaultDir, vault.env, 1, TOKEN, clock.now);
+    const client = await BridgeClient.fromVault(vault.vaultDir, { env: vault.env });
+
+    // Bridge gone entirely: remove the discovery file. First attempt fails on
+    // dead port A → re-discovery finds no bridge.json → BridgeUnavailableError.
+    rmSync(bridgeJsonPathFor(vault.vaultDir, vault.env), { force: true });
+    await expect(client.status()).rejects.toBeInstanceOf(BridgeUnavailableError);
+  });
+
+  test("reconnects: retry against port B also fails → BridgeUnavailableError with exactly two attempts (no recursion)", async () => {
+    vault = await makeTestVault();
+    const clock = makeClock();
+
+    let calls = 0;
+    const countingFetch: typeof fetch = () => {
+      calls += 1;
+      return Promise.reject(new Error("ECONNREFUSED"));
+    };
+
+    writeBridgeJson(vault.vaultDir, vault.env, 1, TOKEN, clock.now);
+    const client = await BridgeClient.fromVault(vault.vaultDir, {
+      env: vault.env,
+      fetch: countingFetch,
+    });
+
+    // Re-discovery finds a DIFFERENT (still dead) port B; the single retry
+    // against it also fails. Exactly two #doRequest attempts — no recursion.
+    writeBridgeJson(vault.vaultDir, vault.env, 2, TOKEN, clock.now);
+    await expect(client.status()).rejects.toBeInstanceOf(BridgeUnavailableError);
+    expect(calls).toBe(2);
   });
 });

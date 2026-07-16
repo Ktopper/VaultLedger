@@ -6,7 +6,7 @@ import type { ProposedOperation } from "../schemas/operation.js";
 import type { ApprovalRow, Journal, TransactionRow } from "../journal/journal.js";
 import { resolveZone } from "../zones.js";
 import { assertHashFormat, hashBytes, hashFile } from "./hash.js";
-import { applyPatch } from "./patch.js";
+import { applyPatch, assertPatchParseable } from "./patch.js";
 import { assertStructurePreserved, governedProvenanceChanged } from "./lint.js";
 import { assertContainedAndReadable, writeContainedFile } from "./containment.js";
 import { formatMessage, type LedgerGit } from "./git.js";
@@ -441,6 +441,14 @@ export class Broker {
     // FORBIDDEN_ZONE, matching applyRevise's ordering.
     const expectedHash = assertHashFormat(op.expected_hash);
     const normalizedOp: ProposeEditOp = { ...op, expected_hash: expectedHash };
+
+    // Parse-validate the patch BEFORE it enqueues — an unapplyable patch (V4A /
+    // `*** Begin Patch`) must never enter the queue only to fail at every
+    // approval surface. retriable:true so the agent can fix-and-retry; apply-time
+    // keeps the default false (a human at the approval surface can't fix by
+    // retrying). Same SYNTAX_BREAK code both sites (defense in depth — the queue
+    // can hold pre-fix proposals; the applier never assumes propose validated).
+    assertPatchParseable(op.patch, true);
 
     const approvalId = this.genId("apr");
     const row: ApprovalRow = {

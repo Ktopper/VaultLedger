@@ -135,12 +135,20 @@ export interface BridgeClientDeps {
 export class BridgeClient {
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
+  // `baseUrl`/`token` are NOT readonly: a dead-port failure triggers
+  // re-discovery from bridge.json (a bridge restart / `--rotate-token` moves
+  // the port and rotates the token), and reconnect rewrites both in place.
+  private baseUrl: string;
+  private token: string;
+  // Re-discovery substrate — populated ONLY when built via `fromVault` (the
+  // one path that holds a vaultRoot to re-read bridge.json from). A client
+  // built via the bare constructor has no vaultRoot, so its reconnect is a
+  // no-op (fails as today); production always uses `fromVault`.
+  private reconnect?: { vaultRoot: string; env?: NodeJS.ProcessEnv };
 
-  constructor(
-    private readonly baseUrl: string,
-    private readonly token: string,
-    deps?: BridgeClientDeps,
-  ) {
+  constructor(baseUrl: string, token: string, deps?: BridgeClientDeps) {
+    this.baseUrl = baseUrl;
+    this.token = token;
     // Bind to globalThis so a default `fetch` isn't called with the wrong
     // `this` (undici's fetch throws "Illegal invocation" otherwise).
     this.fetchImpl = deps?.fetch ?? fetch.bind(globalThis);
@@ -159,8 +167,31 @@ export class BridgeClient {
     vaultRoot: string,
     deps?: { env?: NodeJS.ProcessEnv } & BridgeClientDeps,
   ): Promise<BridgeClient> {
+    const { baseUrl, token } = BridgeClient.discover(vaultRoot, deps?.env);
+    const client = new BridgeClient(baseUrl, token, {
+      fetch: deps?.fetch,
+      timeoutMs: deps?.timeoutMs,
+    });
+    // Remember where to re-read bridge.json from so a dead-port failure can
+    // re-discover (see `request`). The injected fetch/timeout on `client`
+    // persist across the reconnect — only baseUrl/token change.
+    client.reconnect = { vaultRoot, env: deps?.env };
+    return client;
+  }
+
+  /**
+   * Read `<app-support>/<vaultId>/bridge.json` (the path `ledger serve`
+   * publishes to) and return the live `{baseUrl, token}`. Shared by the
+   * initial `fromVault` discovery AND the reconnect path, so a bridge restart
+   * that moved the port / rotated the token is picked up identically. Throws
+   * `BridgeUnavailableError` for a missing/unreadable/malformed file.
+   */
+  private static discover(
+    vaultRoot: string,
+    env?: NodeJS.ProcessEnv,
+  ): { baseUrl: string; token: string } {
     const { vaultId } = readConfig(vaultRoot);
-    const bridgePath = join(vaultLockDir(vaultId, deps?.env), "bridge.json");
+    const bridgePath = join(vaultLockDir(vaultId, env), "bridge.json");
 
     if (!existsSync(bridgePath)) {
       throw new BridgeUnavailableError("bridge not running — run `ledger serve`");
@@ -179,23 +210,43 @@ export class BridgeClient {
       throw new BridgeUnavailableError(`bridge discovery file malformed at ${bridgePath}`);
     }
 
-    return new BridgeClient(`http://127.0.0.1:${parsed.port}`, parsed.token, {
-      fetch: deps?.fetch,
-      timeoutMs: deps?.timeoutMs,
-    });
+    return { baseUrl: `http://127.0.0.1:${parsed.port}`, token: parsed.token };
   }
 
   /**
-   * Shared fetch + response-shaping path every typed method funnels through.
-   * A network-level failure (bridge process down, port unreachable, ...) OR a
-   * timeout (bridge alive but wedged, never replying within `timeoutMs`)
-   * throws `BridgeUnavailableError` — that's the ONE place in this class a
-   * throw is the right contract, since it means there is no response at all
-   * to shape into a `BridgeResult`. The timeout is enforced via
-   * `AbortSignal.timeout`, so a hung bridge fails a view's refresh in bounded
-   * time instead of hanging it forever.
+   * The path every typed method funnels through: one `doRequest`, and on a
+   * BridgeUnavailableError (the bridge unreachable at the current baseUrl) a
+   * single re-discovery + retry. See the catch block for the exact
+   * two-attempts-max contract.
    */
   private async request<T>(path: string, init?: RequestInit): Promise<BridgeResult<T>> {
+    try {
+      return await this.doRequest<T>(path, init);
+    } catch (e) {
+      // Only a genuinely unreachable bridge throws here (see `doRequest`). A
+      // dead port after a restart / `--rotate-token`, or a wedged bridge, both
+      // surface as BridgeUnavailableError — re-discover from bridge.json ONCE
+      // and retry exactly once against the fresh baseUrl/token. This retry
+      // calls `doRequest` DIRECTLY (never re-enters this wrapper) → at most two
+      // attempts, no recursion. A client with no reconnect substrate (bare
+      // constructor), a failed re-discovery, or a still-failing retry all
+      // propagate the BridgeUnavailableError unchanged.
+      if (!(e instanceof BridgeUnavailableError) || !this.reconnect) throw e;
+      const { baseUrl, token } = BridgeClient.discover(
+        this.reconnect.vaultRoot,
+        this.reconnect.env,
+      );
+      this.baseUrl = baseUrl;
+      this.token = token;
+      return await this.doRequest<T>(path, init);
+    }
+  }
+
+  /** Exactly one fetch against the CURRENT baseUrl/token, shaped into a
+   * `BridgeResult`. The one place a throw is the right contract: a
+   * network-level failure or timeout means there's no response to shape, so it
+   * throws `BridgeUnavailableError` for `request` to (re)discover + retry on. */
+  private async doRequest<T>(path: string, init?: RequestInit): Promise<BridgeResult<T>> {
     let res: Response;
     try {
       res = await this.fetchImpl(`${this.baseUrl}${path}`, {
@@ -235,7 +286,10 @@ export class BridgeClient {
     }
     const error: BridgeErrorBody = {
       code: body.error?.code ?? "UNKNOWN",
-      message: body.error?.message ?? res.statusText ?? "request failed",
+      // `||` (not `??`) on statusText: the requestUrl transport builds a Response
+      // with no statusText, so it's "" (not nullish) — a `??` chain would surface
+      // a BLANK message for a non-JSON error body instead of "request failed".
+      message: body.error?.message ?? (res.statusText || "request failed"),
       retriable: body.error?.retriable,
     };
     return { ok: false, error, status: res.status };

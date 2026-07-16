@@ -45,6 +45,39 @@ node packages/cli/dist/index.js serve <vault>
 **Expected:** a line like `VaultLedger bridge on http://127.0.0.1:<port>
 (token in <app-support>/<vaultId>/bridge.json)`. Leave this running.
 
+## 2a. Real-Obsidian CORS transport gate (REQUIRED — do not skip)
+
+This is the release gate for 0.4.1. It catches the exact failure unit tests
+structurally CANNOT: unit tests run in Node, where there is no browser origin
+and no CORS preflight, so a transport that works in vitest can still be blocked
+inside real Obsidian. Before 0.4.1 the plugin used a browser `fetch` carrying
+`Authorization` + `Content-Type` headers; from the `app://obsidian.md` origin
+that fires a CORS preflight (`OPTIONS`) the bridge doesn't answer, so EVERY
+request was blocked before auth and every view rendered empty. 0.4.1 routes all
+bridge calls through Obsidian's `requestUrl`, which is not subject to the
+preflight.
+
+**Steps:**
+
+1. With the bridge running (section 2), queue at least one real approval against
+   the SAME vault (see section 3.1 below — a `propose_edit` to a trusted note
+   that comes back queued).
+2. Open the developer console (Cmd/Ctrl+Shift+I) and keep it visible.
+3. Open the Approval Queue view (ribbon icon or "VaultLedger: Open Approval
+   Queue").
+
+**PASS:** the view POPULATES — it lists the queued approval (zone, reason,
+session, colored diff). No CORS / preflight error in the console.
+
+**FAIL (the regression this gate exists for):** the view is EMPTY (e.g. shows
+"No pending approvals." despite a real queued item, or nothing at all) AND the
+console shows a CORS / preflight error such as *"Access to fetch at
+'http://127.0.0.1:PORT/approvals' from origin 'app://obsidian.md' has been
+blocked by CORS policy: Response to preflight request doesn't pass access
+control check"* or a failed `OPTIONS` request. That empty-view + console-CORS
+pairing is the preflight-block signature. If you see it, the requestUrl
+transport is not in effect — do NOT ship the build.
+
 ## 3. Approval Queue view
 
 1. Using an agent/MCP client (or `ctx.broker.apply({op:"propose_edit", ...})`
