@@ -33,22 +33,37 @@ on what "parseable" means (single source of truth):
 
 ```ts
 // patch.ts — extracted from applyPatch's current parse guard.
+// NOTE: patch.ts currently imports only `StructuredPatchHunk` from "diff";
+// this extraction must ALSO import `StructuredPatch` (the per-file parse type
+// parsePatch returns).
+import { applyPatch as diffApply, parsePatch, type StructuredPatch, type StructuredPatchHunk } from "diff";
+
+/** ONE format-naming hint, appended to BOTH rejection messages (0-hunks and
+ * multi-file) so the code an agent sees is `SYNTAX_BREAK` regardless of site,
+ * and the message always tells it the expected shape — agents guess otherwise. */
+const PATCH_FORMAT_HINT =
+  "patch must be a unified diff (`---`/`+++` file headers, `@@` hunks) for a single file — " +
+  "the V4A / `*** Begin Patch` style is NOT accepted";
+
 export function assertPatchParseable(patchText: string, retriable = false): StructuredPatch[] {
   const parsed = parsePatch(patchText);
   if (parsed.length === 0 || parsed.every((f) => f.hunks.length === 0)) {
-    throw new BrokerError("SYNTAX_BREAK", PATCH_FORMAT_MSG, retriable);
+    throw new BrokerError("SYNTAX_BREAK", `no parseable hunks — ${PATCH_FORMAT_HINT}`, retriable);
   }
   if (parsed.length !== 1) {
-    throw new BrokerError("SYNTAX_BREAK",
-      `patch spans ${parsed.length} files; only single-file patches are supported. ${PATCH_FORMAT_HINT}`,
-      retriable);
+    throw new BrokerError(
+      "SYNTAX_BREAK",
+      `patch spans ${parsed.length} files; only single-file patches are supported — ${PATCH_FORMAT_HINT}`,
+      retriable,
+    );
   }
   return parsed;
 }
 ```
 
-where `PATCH_FORMAT_MSG` NAMES the expected format (agents guess otherwise):
-> `patch is not a valid unified diff (expected \`---\`/\`+++\` headers and \`@@\` hunks); got no parseable hunks — note the V4A / \`*** Begin Patch\` style is NOT accepted.`
+(A V4A `*** Begin Patch` string parses to 1 file / **0 hunks** — verified with
+jsdiff at spec review — so it's the empty-hunk clause, checked first, that
+catches it.)
 
 - **`applyProposeEdit` calls `assertPatchParseable(op.patch, /* retriable */ true)`** — after the `MALFORMED_HASH` guard, before it enqueues. So an unapplyable proposal **can never enter the queue**, and the agent gets a **`retriable:true`** rejection it can fix-and-retry on. (`brokerError` already forwards `e.toRejection()`, which carries `retriable`; `BrokerError`'s constructor takes a per-call override — `SYNTAX_BREAK` defaults to `false` in the RETRIABLE map, so the `true` here is explicit and scoped to the propose site.)
 - **`applyPatch` keeps calling `assertPatchParseable(patchText)`** (default `retriable:false`) as its first step, then does its existing ordering/landing checks on the returned parse. **The apply-time check MUST stay** — defense in depth: the queue can carry proposals enqueued *before* this fix (Kris's vault has three right now), and the applier must never assume propose validated. Apply-time semantics unchanged: a human at the approval surface can't fix a patch by retrying, so it stays non-retriable.
@@ -104,13 +119,25 @@ with a valid unified-diff patch still enqueues (no regression).
 2. **Refresh affordance** — a "Refresh" button in the Approval Queue (and
    Activity) view header, wired to `refresh()`.
 3. **Reconnect on dead bridge** — `BridgeClient.fromVault` captures `vaultRoot` +
-   `env` so the client can **re-discover**. On a **connection failure** (dead
-   port — the throw that today becomes `BridgeUnavailableError`), the request
-   method **re-reads `bridge.json`** (picking up a restarted bridge's new **port
-   AND token** — so `--rotate-token` is handled too), updates its baseUrl+token,
-   and **retries the request once**. If discovery finds no bridge, or the retry
-   also fails, THEN `BridgeUnavailableError` (unchanged surface for "truly not
-   running"). One reconnect attempt, then fail — no reconnect storm.
+   `env` on the instance so the client can **re-discover**. On a **connection
+   failure** (dead port — the throw that today becomes `BridgeUnavailableError`),
+   the client **re-reads `bridge.json`** (picking up a restarted bridge's new
+   **port AND token** — so `--rotate-token` is handled too), updates its
+   baseUrl+token, and **retries the request once**. If discovery finds no bridge,
+   or the retry also fails, THEN `BridgeUnavailableError` (unchanged surface for
+   "truly not running").
+   - **Mechanism — no recursion/storm:** the current single private `request()`
+     (all 15 methods funnel through it) becomes a thin wrapper over an inner
+     `#doRequest(...)` that performs exactly one fetch. `request()` calls
+     `#doRequest` **at most twice**: once; on a connection-failure throw, it
+     re-discovers then calls `#doRequest` **once more** (the retry does NOT go
+     back through the reconnect wrapper). A persistently-dead port therefore
+     fails after exactly two attempts, never recurses.
+   - **Only a `fromVault`-built client can reconnect** (it holds `vaultRoot`/`env`).
+     A client built with the bare `new BridgeClient(url, token)` constructor has
+     nothing to re-discover from, so its reconnect is a no-op → it fails as
+     today. That's fine (production always uses `fromVault`), but the tests must
+     build via `fromVault` (see below).
 
 Together these cover the repro "a pane opened before the bridge starts, then it
 starts": reveal-refresh or the button re-discovers; and a mid-session restart is
@@ -120,15 +147,22 @@ transparently reconnected.
 
 The plugin **does** have test coverage — `packages/obsidian-plugin/test/bridgeClient.test.ts`
 has 8 tests and already fakes a live bridge (a real port + injected `fetch`),
-including a "network failure (bridge down) → `BridgeUnavailableError`" case. The
+including a "network failure (bridge down) → `BridgeUnavailableError`" case
+(:339) and `fromVault` discovery via a written `bridge.json` (:296-321). The
 `approvals.ts` view is what lacks coverage. **Extend the existing bridgeClient
-harness** for the reconnect tests — do NOT stand up parallel scaffolding:
-- request against port A fails (connection error) → client re-discovers (fake
-  discovery now returns port B + a rotated token) → retries → succeeds on B.
-- request fails AND re-discovery finds no bridge → `BridgeUnavailableError`.
+harness** for the reconnect tests — do NOT stand up parallel scaffolding.
+**The reconnect tests MUST build the client via `fromVault`** (only that path
+captures `vaultRoot`/`env` and can re-discover — the harness's existing
+failure tests use the bare `new BridgeClient(url, token)` constructor, which
+cannot reconnect), and rewrite `bridge.json` (port A → port B, rotated token)
+between calls using the harness's existing bridge-file/bridge-start helpers:
+- request against port A fails (connection error) → client re-discovers (rewrite
+  `bridge.json` to port B + a rotated token) → retries → succeeds on B, using
+  the rotated token (auth follows).
+- request fails AND re-discovery finds no bridge (`bridge.json` removed) →
+  `BridgeUnavailableError`.
 - request fails AND the retry against B also fails → `BridgeUnavailableError`
-  (one attempt, then give up).
-- a rotated token from re-discovery is used on the retry (auth follows).
+  (exactly two attempts, then give up — no recursion).
 
 The reveal-refresh gets a unit test on the extracted decision; the header
 Refresh button is view-coupled (Obsidian API) and is validated by build +
@@ -175,7 +209,8 @@ rebuild (`main.js`) required — `tsc` doesn't produce it.
 - `packages/obsidian-plugin/src/views/approvals.ts` (+ `activity.ts`) — Refresh button.
 - `packages/obsidian-plugin/src/bridgeClient.ts` — re-discover + retry-once on connection failure; `fromVault` captures vaultRoot/env.
 - `packages/obsidian-plugin/test/bridgeClient.test.ts` — extend with reconnect tests.
-- `packages/obsidian-plugin/manifest.json`, `package.json`, `versions.json` — 0.4.1 + minAppVersion.
+- `packages/obsidian-plugin/manifest.json` (0.4.0→0.4.1; `minAppVersion` is `1.5.0`), `package.json` (→0.4.1) — modify.
+- `packages/obsidian-plugin/versions.json` — **CREATE** (does not exist yet): `{ "0.4.1": "1.5.0" }` (plugin-version → minAppVersion). Store-track-only — `checkPluginFreshness`/`--install-plugin` compare `manifest.json` only, not this file.
 
 ## Non-goals
 - Not reworking the approval view's rendering or adding view unit-test infra beyond the extracted reveal-refresh decision.
