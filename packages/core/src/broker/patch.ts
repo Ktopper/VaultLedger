@@ -34,6 +34,18 @@ export function assertPatchParseable(patchText: string, retriable = false): Stru
   return parsed;
 }
 
+/** Classify a parsed single-file patch by its /dev/null headers. Creation and
+ * deletion are the unified-diff conventions (`--- /dev/null` / `+++ /dev/null`);
+ * anything else is an edit. Header-based (NOT oldLines===0, which a legit
+ * insert-at-top of an existing file also has). Assumes a single-file parse
+ * (assertPatchParseable guarantees it). */
+export function patchTargetKind(parsed: StructuredPatch[]): "create" | "edit" | "delete" {
+  const f = parsed[0]!;
+  if (f.oldFileName === "/dev/null") return "create";
+  if (f.newFileName === "/dev/null") return "delete";
+  return "edit";
+}
+
 /** Signature jsdiff's `applyPatch` calls per matchable hunk line — matches
  * `ApplyPatchOptions["compareLine"]` from diff@8's own bundled types (diff@8
  * ships its own `.d.ts`, so `@types/diff` is no longer consulted). `operation`
