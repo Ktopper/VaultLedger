@@ -358,7 +358,7 @@ export function buildTools(ctx: ServerContext): ToolDef[] {
     {
       name: "vault_propose_edit",
       description:
-        "Propose a patch to a trusted-zone note. Always queued for human approval; rejected outright for excluded paths.",
+        "Propose a patch to a trusted-zone note. Always queued for human approval; rejected outright for excluded paths. patch must be a unified diff (--- / +++ file headers, @@ hunks) for a single file — NOT *** Begin Patch / V4A style.",
       inputSchema: ProposeEditInput,
       handler: (rawArgs) =>
         guarded(async () => {
