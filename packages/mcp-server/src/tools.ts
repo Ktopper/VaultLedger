@@ -213,7 +213,8 @@ export function buildTools(ctx: ServerContext): ToolDef[] {
     {
       name: "memory_recall",
       description:
-        "Retrieve memories and their provenance from the journal, optionally filtered by entity, tag, status, or since a timestamp.",
+        "Retrieve memories and their provenance from the journal, optionally filtered by entity, tag, status, or since a timestamp." +
+        " Returns each memory's note body (bounded; large bodies are truncated or omitted under a total budget — see contentState).",
       inputSchema: RecallInput,
       handler: (rawArgs) =>
         guarded(async () => {
@@ -224,7 +225,7 @@ export function buildTools(ctx: ServerContext): ToolDef[] {
           // journal-indexed (exact matches); there is no free-text search in
           // v0.1, so there is deliberately no `query` param.
           const filters: RecallFilters = { entity, tag, status, since, limit };
-          const memories = recall(ctx.journal, filters, ctx.now, ctx.manifest);
+          const memories = recall(ctx.journal, filters, ctx.now, ctx.manifest, { vaultRoot: ctx.vaultRoot });
           return { memories };
         }),
     },

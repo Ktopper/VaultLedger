@@ -470,6 +470,37 @@ describe("buildTools", () => {
     const error = result.error as { code: string };
     expect(error.code).toBe("INVALID_ARGS");
   });
+
+  test("memory_recall returns the note CONTENT, not just the receipt (the core-loop bug)", async () => {
+    const { tools } = await setup();
+    await tools.get("memory_remember")!.handler({
+      content: "The launch target is MARKER-7ce14142.",
+      entity: "launch",
+      reason: "seed",
+    });
+    const result = await tools.get("memory_recall")!.handler({ entity: "launch" });
+    expect(result.error).toBeUndefined();
+    const memories = result.memories as Array<{ content?: string | null; contentState?: string }>;
+    const mem = memories[0]!;
+    // The assertion v0.1's e2e never made: a fresh recall can STATE the value.
+    expect(mem.content).toContain("MARKER-7ce14142");
+    expect(mem.contentState).toBe("full");
+  });
+
+  test("retired memories recalled via status:'retired' include content too (0.4.1 enum + 0.4.2 content compose)", async () => {
+    const { tools } = await setup();
+    const r = await tools.get("memory_remember")!.handler({
+      content: "Old plan: MARKER-retired-9.",
+      entity: "plan",
+      reason: "seed",
+    });
+    await tools.get("memory_promote")!.handler({ id: r.id, target_status: "working", reason: "confirmed" });
+    await tools.get("memory_retire")!.handler({ id: r.id, reason: "superseded" });
+    const recalled = await tools.get("memory_recall")!.handler({ status: "retired", entity: "plan" });
+    expect(recalled.error).toBeUndefined();
+    const memories = recalled.memories as Array<{ content?: string | null }>;
+    expect(memories[0]!.content).toContain("MARKER-retired-9");
+  });
 });
 
 describe("parseVaultArg", () => {
