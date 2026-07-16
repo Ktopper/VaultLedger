@@ -156,6 +156,14 @@ so unbounded content would flood agent context. This is the output-side mirror:
     `omitted`, and **do not read the file**. Otherwise read →
     `full`/`truncated`/`missing`. So a past-budget memory with a deleted file is
     `omitted` (never read), not `missing` — budget wins, no wasted I/O.
+  - **First-overflow-stops, NOT best-fit packing (invariant — do not
+    "optimize").** Once a memory overflows the budget, every lower-authority
+    memory after it is `omitted` **even if its (smaller) content would have
+    fit**. This is deliberate: best-fit packing would let a small `scratch`
+    memory get content while a larger, higher-authority `working` one is denied,
+    breaking the invariant the whole rationale rests on — **if a memory has
+    content, everything more authoritative than it does too**. A future
+    "let the small one through" refactor silently violates that; §3 pins it.
 - **Byte-safe truncation:** the cap is measured in **bytes** (`Buffer.byteLength`,
   consistent with the input side), but the cut lands on a UTF-8 char boundary at
   or below the byte cap — it never splits a multibyte character (no U+FFFD
@@ -168,11 +176,16 @@ so unbounded content would flood agent context. This is the output-side mirror:
 ### 2.5 Failure = degrade, never throw
 
 The journal is a **disposable index** (rebuilt from the vault + git); a row can
-outlive its file. A missing or unreadable note — or an `assertContainedAnd
-Readable` throw from a concurrent change — yields `contentState:"missing"`,
-`content:null` for *that one memory*; the recall as a whole still succeeds. The
-read is wrapped per-memory in try/catch. Missing is distinct from truncated and
-from omitted (§2.3), so drift is legible rather than looking like a size limit.
+outlive its file. The **read + parse** is wrapped per-memory in try/catch, so
+ALL of these yield `contentState:"missing"`, `content:null` for *that one
+memory* while the recall as a whole succeeds:
+- an absent/unreadable note file (`readFileSync` → `ENOENT`);
+- an `assertContainedAndReadable` throw from a concurrent change;
+- **invalid-YAML frontmatter that makes `matter()` throw** — a parse failure is
+  a per-memory degrade, not a recall-killing exception.
+
+Missing is distinct from truncated and from omitted (§2.3), so drift is legible
+rather than looking like a size limit.
 
 ---
 
@@ -202,6 +215,18 @@ Plus unit coverage on `recall` with injected small caps:
   scratch memory is *newer* (higher in the returned array). This is the test
   that pins the "sheds least-authoritative first" rule against a naive
   fill-in-return-order regression.
+- **monotonicity — first-overflow-stops, not best-fit** (comment the test:
+  *non-packing is intentional*): after a memory overflows the budget, a smaller
+  lower-authority memory further down is `omitted` **even though its content
+  would have fit**. Pins the invariant (if X has content, everything more
+  authoritative has content) against a "let the small one through" refactor.
+- **budget-beats-missing precedence:** a memory that is BOTH past-budget AND has
+  a deleted file reads `omitted`, not `missing` — the file is never read
+  (§2.4). Pins the precedence a refactor could silently flip.
+- **malformed frontmatter degrades, doesn't throw:** a note whose frontmatter is
+  invalid YAML (so `matter()` throws) yields `contentState:"missing"` for *that
+  one memory* while the recall as a whole succeeds — proving the §2.5 per-memory
+  try/catch covers parse failures, not just absent files.
 - frontmatter is stripped (a note with a `ledger:` block → content has no `---`).
 
 ---
