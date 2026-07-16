@@ -503,6 +503,37 @@ describe("Broker", () => {
     expect(journal.listApprovals().length).toBe(0);
   });
 
+  test("propose_edit with a V4A '*** Begin Patch' patch throws retriable SYNTAX_BREAK and queues nothing", async () => {
+    const { broker, journal, vaultRoot } = await makeBroker();
+    const original = "trusted content\n";
+    writeFileSync(join(vaultRoot, "note-v4a.md"), original, "utf8");
+
+    // A V4A / `*** Begin Patch` patch: jsdiff's parsePatch yields 0 hunks for
+    // it, so it would queue clean and only die at approval as SYNTAX_BREAK.
+    const v4a =
+      "*** Begin Patch\n*** Update File: note-v4a.md\n@@\n-trusted content\n+edited content\n*** End Patch\n";
+
+    let thrown: unknown;
+    try {
+      await broker.apply({
+        op: "propose_edit",
+        path: "note-v4a.md",
+        expected_hash: hashBytes(Buffer.from(original, "utf8")),
+        patch: v4a,
+        reason: "suggest an addition",
+        session: "s1",
+      });
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(BrokerError);
+    expect((thrown as BrokerError).code).toBe("SYNTAX_BREAK");
+    expect((thrown as BrokerError).retriable).toBe(true);
+    expect((thrown as Error).message).toMatch(/unified diff|Begin Patch|not accepted/i);
+    // The unapplyable proposal must never have entered the queue.
+    expect(journal.listApprovals().length).toBe(0);
+  });
+
   // -------------------------------------------------------------------
   // archive (used by the memory store's forget flow)
   // -------------------------------------------------------------------
