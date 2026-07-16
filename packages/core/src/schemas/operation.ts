@@ -21,7 +21,10 @@ export const ReviseOp = z
   .object({
     op: z.literal("revise"),
     path: z.string().min(1),
-    expected_hash: z.string().min(1),
+    // Optional at the schema layer; the broker enforces it conditionally —
+    // required for an edit, forbidden for a creation (`--- /dev/null`). A
+    // hash-less edit is rejected in the broker (MALFORMED_HASH), not here.
+    expected_hash: z.string().min(1).optional(),
     patch: z.string().min(1),
     entity: z.string().optional(),
     ...commonOpFields,

@@ -6,7 +6,7 @@ import type { ProposedOperation } from "../schemas/operation.js";
 import type { ApprovalRow, Journal, TransactionRow } from "../journal/journal.js";
 import { resolveZone } from "../zones.js";
 import { assertHashFormat, hashBytes, hashFile } from "./hash.js";
-import { applyPatch, assertPatchParseable } from "./patch.js";
+import { applyPatch, assertPatchParseable, patchTargetKind } from "./patch.js";
 import { assertStructurePreserved, governedProvenanceChanged } from "./lint.js";
 import { assertContainedAndReadable, writeContainedFile } from "./containment.js";
 import { formatMessage, type LedgerGit } from "./git.js";
@@ -241,28 +241,53 @@ export class Broker {
       throw new BrokerError("TARGET_EXISTS", `target already exists: ${op.path}`);
     }
 
-    const contentBuf = Buffer.from(op.content, "utf8");
+    return this.createFile(op.path, abs, op.content, op.session, op.reason, approvalId);
+  }
+
+  /**
+   * The shared file-create + commit + transaction implementation used by BOTH
+   * `applyCreate` (the direct `create` op) and `applyRevise`'s apply-create
+   * branch (an approved `--- /dev/null` creation proposal). Records the
+   * transaction as `op:"create"` (hash_before:null) — the commit is the file's
+   * first git appearance, which is exactly what makes `undo` (git revert)
+   * DELETE the file. Caller has already performed containment (`abs`) and any
+   * TARGET_EXISTS / zone check; this method does no zone or existence guarding.
+   */
+  private async createFile(
+    path: string,
+    abs: string,
+    content: string,
+    session: string,
+    reason: string,
+    approvalId: string | null,
+  ): Promise<AppliedResult> {
+    const contentBuf = Buffer.from(content, "utf8");
+    // Create intermediate dirs (spec §4): writeContainedFile does NOT mkdir
+    // (its temp openSync in dirname(abs) ENOENTs if the parent is absent), and
+    // a creation into an absent parent (Testing/new.md, Testing/ absent) is a
+    // supported case. abs is containment-verified, so dirname(abs) lands
+    // strictly under the verified ancestor.
     mkdirSync(dirname(abs), { recursive: true });
     // VL-SEC-S1-02: re-verify containment and write via temp+rename rather
     // than a direct writeFileSync(abs, ...) — see writeContainedFile.
-    writeContainedFile(this.vaultRoot, this.manifest, op.path, contentBuf);
+    writeContainedFile(this.vaultRoot, this.manifest, path, contentBuf);
 
     const message = formatMessage({
       op: "create",
-      basename: basename(op.path),
-      session: op.session,
+      basename: basename(path),
+      session,
     });
-    const commitSha = await this.git.commitFile(op.path, message);
+    const commitSha = await this.git.commitFile(path, message);
 
     const txnId = this.genId("txn");
     const txn: TransactionRow = {
       id: txnId,
       op: "create",
-      path: op.path,
+      path,
       hash_before: null,
       hash_after: hashBytes(contentBuf),
-      session: op.session,
-      reason: op.reason,
+      session,
+      reason,
       memory_id: null,
       commit_sha: commitSha,
       approval_id: approvalId,
@@ -271,7 +296,7 @@ export class Broker {
     };
     this.journal.recordTransaction(txn);
 
-    return { ok: true, txnId, commitSha, path: op.path };
+    return { ok: true, txnId, commitSha, path };
   }
 
   private async applyRevise(
@@ -297,6 +322,32 @@ export class Broker {
     if (zone !== "agent" && zone !== "scratch" && zone !== "trusted") {
       // defensive: guards against a future 5th ZoneName being added.
       throw new BrokerError("FORBIDDEN_ZONE", `cannot revise in zone '${zone}': ${op.path}`);
+    }
+
+    // Pairing gate at apply time (spec §5): detect the diff kind BEFORE the
+    // hash check (ordering pin — assertHashFormat(undefined) would otherwise
+    // wrongly reject a hash-less creation). Apply RECOMPUTES from the patch and
+    // never trusts the queue. retriable defaults false here (a human at the
+    // approval surface can't fix by retrying).
+    const parsedR = assertPatchParseable(op.patch);
+    const kindR = patchTargetKind(parsedR);
+    if (kindR === "delete") {
+      throw new BrokerError("SYNTAX_BREAK", "file deletion is not supported", false);
+    }
+    if (kindR === "create") {
+      // Re-assert absence under the caller-held vault lock (spec §3): a file
+      // that appeared since propose is a clean conflict, never an overwrite and
+      // never jsdiff's silent prepend (we always apply to "", not the file).
+      if (existsSync(abs)) {
+        throw new BrokerError("TARGET_EXISTS", `target appeared since propose: ${op.path}`, false);
+      }
+      const after = applyPatch("", op.patch, this.patchThreshold);
+      // Early return via the shared create path (txn op:"create" → undo
+      // deletes). Skips the edit-only guards (assertStructurePreserved,
+      // governedProvenanceChanged) and the baseline data-loss commit — all
+      // nonsensical for a file that never existed. Option B already guaranteed
+      // at propose that a creation carries no governed provenance.
+      return await this.createFile(op.path, abs, after, op.session, op.reason, approvalId);
     }
 
     // Format guard (MALFORMED_HASH) before existsSync/hash compare: reject a
@@ -420,8 +471,10 @@ export class Broker {
   private applyProposeEdit(op: ProposeEditOp): QueuedResult {
     // Reject a traversal path even though propose_edit only queues (never
     // writes): the held operation is applied later, so an escaping path must
-    // never enter the approval queue in the first place.
-    this.resolveAbs(op.path);
+    // never enter the approval queue in the first place. resolveAbs returns
+    // the containment-verified would-be abs (the target may not exist yet — a
+    // creation), used by the pairing gate below.
+    const abs = this.resolveAbs(op.path);
 
     const zone = resolveZone(op.path, this.manifest);
     if (zone === "excluded") {
@@ -431,24 +484,82 @@ export class Broker {
       );
     }
 
-    // Format guard (MALFORMED_HASH) before it enqueues: a malformed
-    // expected_hash (e.g. a bare hex digest missing the `sha256:` prefix)
-    // must never enter the approval queue, where it would only surface as a
-    // confusing STALE_HASH at approve-time. Normalize to lowercase and store
-    // that normalized value in the held op so an uppercase-but-correct hash
-    // still matches at approve-time. Checked after the zone/containment
-    // guards above so a forbidden/escaping path still surfaces its own
-    // FORBIDDEN_ZONE, matching applyRevise's ordering.
-    const expectedHash = assertHashFormat(op.expected_hash);
-    const normalizedOp: ProposeEditOp = { ...op, expected_hash: expectedHash };
-
     // Parse-validate the patch BEFORE it enqueues — an unapplyable patch (V4A /
     // `*** Begin Patch`) must never enter the queue only to fail at every
     // approval surface. retriable:true so the agent can fix-and-retry; apply-time
     // keeps the default false (a human at the approval surface can't fix by
     // retrying). Same SYNTAX_BREAK code both sites (defense in depth — the queue
     // can hold pre-fix proposals; the applier never assumes propose validated).
-    assertPatchParseable(op.patch, true);
+    // Ordering pin (spec §3): parse → detect kind → THEN conditional hash. The
+    // hash check MUST follow the kind branch — assertHashFormat(undefined) throws
+    // MALFORMED_HASH, so a hash-less creation would be wrongly rejected if the
+    // hash ran first.
+    const parsed = assertPatchParseable(op.patch, true);
+    const kind = patchTargetKind(parsed);
+
+    // The pairing gate (spec §1): jsdiff silently CORRUPTS on a diff/target
+    // mismatch, so an unapplyable/mismatched proposal must never queue.
+    if (kind === "delete") {
+      // A `+++ /dev/null` deletion would otherwise empty the note (jsdiff yields
+      // ""); deletion-as-a-feature is out of scope. Retriable so the agent learns.
+      throw new BrokerError(
+        "SYNTAX_BREAK",
+        "file deletion via vault_propose_edit is not supported",
+        true,
+      );
+    }
+    if (kind === "create") {
+      if (existsSync(abs)) {
+        // A creation diff onto an existing file would PREPEND — reject it.
+        throw new BrokerError("TARGET_EXISTS", `creation diff, but ${op.path} already exists`, true);
+      }
+      if (op.expected_hash != null) {
+        // Symmetric hash enforcement: a creation targets a file that does not
+        // exist, so an expected_hash is a category error — reject it.
+        throw new BrokerError("MALFORMED_HASH", `a creation takes no expected_hash (${op.path})`, true);
+      }
+      // Dry-run: a creation's output is fully determined by the patch alone —
+      // prove it applies to "" now, so no unapplyable creation ever queues
+      // (upgrades the invariant from "parseable" to "applyable").
+      let newContent: string;
+      try {
+        newContent = applyPatch("", op.patch, this.patchThreshold);
+      } catch {
+        throw new BrokerError(
+          "SYNTAX_BREAK",
+          `creation patch does not apply to an empty file: ${op.path}`,
+          true,
+        );
+      }
+      // Option B (spec §4a): a `vault_propose_edit` creation is a plain document;
+      // governed provenance (a `ledger:` block / top-level `entity`) is minted by
+      // the memory tools, not by file creation. REUSE the guard's predicate (the
+      // existing governedProvenanceChanged with an empty `before`) — not a new
+      // regex — so the two definitions of "governed provenance" can never diverge.
+      if (governedProvenanceChanged("", newContent)) {
+        throw new BrokerError(
+          "LEDGER_GUARD",
+          `a new file created via vault_propose_edit is a plain document; governed provenance ` +
+            `(a ledger: block / top-level entity) is minted by the memory tools, not by file creation: ${op.path}`,
+          true,
+        );
+      }
+    } else {
+      // edit: the target MUST exist, and a well-formed expected_hash is required
+      // (the edit path is not weakened — a hash-less edit is MALFORMED_HASH).
+      if (!existsSync(abs)) {
+        throw new BrokerError("NOT_FOUND", `edit diff, but ${op.path} does not exist`, true);
+      }
+      assertHashFormat(op.expected_hash);
+    }
+
+    // Enqueue the normalized op. A creation stores expected_hash: undefined
+    // (JSON.stringify drops it). For an edit, normalize the hash to lowercase and
+    // store that so an uppercase-but-correct hash still matches at approve-time.
+    const normalizedOp: ProposeEditOp =
+      op.expected_hash != null
+        ? { ...op, expected_hash: assertHashFormat(op.expected_hash) }
+        : op;
 
     const approvalId = this.genId("apr");
     const row: ApprovalRow = {

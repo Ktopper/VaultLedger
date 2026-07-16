@@ -56,6 +56,37 @@ describe("ProposedOperation", () => {
     }
   });
 
+  test("revise op parses WITHOUT expected_hash but WITH patch (schema-optional; broker enforces conditionally)", () => {
+    const input = {
+      op: "revise",
+      path: "Notes/foo.md",
+      patch: "--- /dev/null\n+++ b/Notes/foo.md\n@@ -0,0 +1,1 @@\n+hi\n",
+      reason: "create",
+      session: "sess-1",
+    };
+    const parsed = ProposedOperation.parse(input);
+    expect(parsed.op).toBe("revise");
+    if (parsed.op === "revise") {
+      expect(parsed.expected_hash).toBeUndefined();
+      expect(parsed.patch).toContain("/dev/null");
+    }
+  });
+
+  test("propose_edit op parses WITHOUT expected_hash but WITH patch (creation form)", () => {
+    const input = {
+      op: "propose_edit",
+      path: "Notes/foo.md",
+      patch: "--- /dev/null\n+++ b/Notes/foo.md\n@@ -0,0 +1,1 @@\n+hi\n",
+      reason: "propose creation",
+      session: "sess-1",
+    };
+    const parsed = ProposedOperation.parse(input);
+    expect(parsed.op).toBe("propose_edit");
+    if (parsed.op === "propose_edit") {
+      expect(parsed.expected_hash).toBeUndefined();
+    }
+  });
+
   test("propose_edit op parses when expected_hash and patch present", () => {
     const input = {
       op: "propose_edit",
