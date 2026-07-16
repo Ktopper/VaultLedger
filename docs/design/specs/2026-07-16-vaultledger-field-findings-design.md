@@ -94,9 +94,88 @@ with a valid unified-diff patch still enqueues (no regression).
 
 ---
 
-## WU-2 — Plugin view staleness (obsidian-plugin)
+## WU-2 — Plugin views empty in real Obsidian (obsidian-plugin)
 
-### The bug (three failure modes)
+### ROOT CAUSE (found after the initial staleness framing — supersedes it as the PRIMARY bug)
+
+The views are not merely *stale* — inside real Obsidian they are **never
+populated at all**. `BridgeClient.request()` (`bridgeClient.ts:198`) sends the
+bridge request via **browser `fetch`** with `Authorization: Bearer <token>` and
+`Content-Type: application/json` headers. Both are **non-simple** headers, so
+from the plugin's `app://obsidian.md` origin the browser fires a **CORS
+preflight (`OPTIONS`)** first. The bridge (`@vault-ledger/server`) correctly
+does **not** answer preflights — it is a localhost, token-authed, browser-origin-
+ignorant server — so the preflight fails and **every view request is blocked
+before auth ever happens**. Console evidence attached to the finding.
+
+This reorders WU-2: the **transport fix (below) is the primary bug** — without
+it the views never work in Obsidian at all. The three staleness fixes
+(refresh-on-reveal, refresh button, reconnect) are real and still wanted, but
+they layer *on top* of a transport that actually reaches the bridge.
+
+### Fix 0 (PRIMARY) — a `requestUrl`-backed transport
+
+Obsidian ships `requestUrl()` — an HTTP function that runs in Electron's **main
+process, not the browser renderer**, so it makes **no CORS preflight**. Route
+the plugin's bridge calls through it:
+
+- **Keep the existing injectable transport seam.** `BridgeClientDeps.fetch`
+  (`bridgeClient.ts:133`, defaulting to `fetch.bind(globalThis)`) is already the
+  seam the 8 existing tests and the planned reconnect logic depend on — **do not
+  churn it**. `bridgeClient.ts` stays `obsidian`-free and Node-testable.
+- **Inject a `requestUrl`-backed adapter from `main.ts` at plugin load.**
+  `main.ts` already imports from `"obsidian"`; add a small
+  `requestUrlTransport` (its own plugin-only module, e.g.
+  `src/requestUrlTransport.ts`, which imports `requestUrl` from `"obsidian"`)
+  that is `typeof fetch`-compatible: maps `init` → `requestUrl` params, sets
+  `throw: false` so a non-2xx returns its status (matching how `request()`
+  reads `res.status`/`res.ok`), and returns a real `Response`
+  (`new Response(bodyText, { status, headers })`) so `request()`'s existing
+  `res.ok`/`res.json()`/`res.status` handling is unchanged. `BridgeClient.fromVault`
+  is called with `{ fetch: requestUrlTransport }` from `main.ts`.
+- **Preserve timeout semantics manually.** `requestUrl` has **no** timeout /
+  `AbortSignal` support (today's `request()` relies on `AbortSignal.timeout`).
+  The adapter must enforce the timeout itself — race the `requestUrl` promise
+  against a timer and reject with an `AbortError`/`TimeoutError`-named error, so
+  `request()`'s existing timeout branch (`:213-217`) still maps it to the
+  "bridge wedged" message. Confirm the wedged-timeout test still passes through
+  the adapter.
+- **LOAD-BEARING: the transport must reach every `fromVault` call site, which is
+  inside the VIEWS, not `main.ts`.** `approvals.ts`/`activity.ts` `refresh()`
+  each call `BridgeClient.fromVault(this.getVaultRoot())` themselves — those are
+  where the real requests originate. If the transport is injected only where
+  `main.ts` happens to build a client but the views keep calling `fromVault`
+  with the default (browser) fetch, the views stay broken. So the plugin holds
+  the `requestUrlTransport` (created in `main.ts` at load) and every view's
+  `fromVault` call is given it (view gets it via its plugin reference /
+  constructor). `fromVault`'s `deps` already accepts `fetch` — thread it through.
+
+**REJECTED ALTERNATIVE — do NOT add CORS headers to the bridge.** Answering the
+preflight (`Access-Control-Allow-Origin`/`-Headers` on `@vault-ledger/server`)
+would "fix" it too, but it makes the security-critical bridge browser-origin-
+aware and invites a class of cross-origin reasoning the server deliberately
+avoids. The bridge stays localhost + token + origin-ignorant **by design**; the
+plugin adapts its transport to that, not the reverse.
+
+### META-FINDING — why this shipped, and the gate that stops the next one
+
+The 8 `bridgeClient` unit tests exercise the client from **Node**, where there
+is **no browser and no CORS preflight** — so a transport that works perfectly in
+tests is blocked in real Obsidian. **The plugin was never verified inside a real
+Obsidian install.** SMOKE.md exists but its checklist did not catch empty views.
+Two additions:
+1. **Now:** add a SMOKE.md item that explicitly opens the Approval Queue view in
+   a **real Obsidian** against a running `ledger serve` **with a queued
+   approval**, and asserts the view **populates** (a preflight block shows as an
+   empty view + a console CORS error — exactly what a "does it show the pending
+   approval?" step catches).
+2. **Store-submission track:** a **real-Obsidian verification gate** — no plugin
+   release is "done" on unit tests alone; it must be loaded into Obsidian and
+   its views confirmed to populate against a live bridge.
+
+### The staleness fixes (SECONDARY — still wanted, layered on the new transport)
+
+Three failure modes, unchanged by the transport fix (they compose on top of it):
 
 1. The Approval Queue view refreshes only on `onOpen` (first creation,
    `approvals.ts:34`). `activateView` (`main.ts:60-73`) **reveals an existing
@@ -204,11 +283,15 @@ rebuild (`main.js`) required — `tsc` doesn't produce it.
 - Tests: `packages/core/test/broker/patch.test.ts` (or broker test) + a propose-time rejection test.
 - Version: core/mcp-server package.json, `core/src/index.ts` VERSION, `mcp-server/src/index.ts` SERVER_VERSION, `core/test/placeholder.test.ts`.
 
+**Create (WU-2):**
+- `packages/obsidian-plugin/src/requestUrlTransport.ts` — the `requestUrl`-backed, `typeof fetch`-compatible adapter (imports `requestUrl` from `"obsidian"`; manual timeout). Keeps `obsidian` out of `bridgeClient.ts`.
+
 **Modify (WU-2):**
-- `packages/obsidian-plugin/src/main.ts` — reveal → refresh.
-- `packages/obsidian-plugin/src/views/approvals.ts` (+ `activity.ts`) — Refresh button.
-- `packages/obsidian-plugin/src/bridgeClient.ts` — re-discover + retry-once on connection failure; `fromVault` captures vaultRoot/env.
+- `packages/obsidian-plugin/src/main.ts` — inject `requestUrlTransport` into `BridgeClient.fromVault` (Fix 0); reveal → refresh (Fix 1).
+- `packages/obsidian-plugin/src/views/approvals.ts` (+ `activity.ts`) — Refresh button (Fix 2); thread the injected transport into the `fromVault` calls these views make (so the views' own `fromVault` uses `requestUrl`, not browser fetch — this is the load-bearing part of Fix 0).
+- `packages/obsidian-plugin/src/bridgeClient.ts` — re-discover + retry-once on connection failure (`request()` → inner `#doRequest`); `fromVault` captures vaultRoot/env. **Stays `obsidian`-free** (uses the injected transport).
 - `packages/obsidian-plugin/test/bridgeClient.test.ts` — extend with reconnect tests.
+- `packages/obsidian-plugin/SMOKE.md` — add the real-Obsidian "views populate against a live bridge" item (the meta-finding gate).
 - `packages/obsidian-plugin/manifest.json` (0.4.0→0.4.1; `minAppVersion` is `1.5.0`), `package.json` (→0.4.1) — modify.
 - `packages/obsidian-plugin/versions.json` — **CREATE** (does not exist yet): `{ "0.4.1": "1.5.0" }` (plugin-version → minAppVersion). Store-track-only — `checkPluginFreshness`/`--install-plugin` compare `manifest.json` only, not this file.
 
