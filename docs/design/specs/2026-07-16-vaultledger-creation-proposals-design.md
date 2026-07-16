@@ -100,6 +100,25 @@ known):
   propose and approve is a **conflict → clean `TARGET_EXISTS` rejection**, never
   an overwrite and never jsdiff's silent prepend.
 
+- **ORDERING (pin at BOTH sites — spec-review): parse patch → detect kind →
+  THEN conditionally enforce hash.** `assertHashFormat` runs *unconditionally*
+  today at `broker.ts:308` (applyRevise) and `:442` (applyProposeEdit), and
+  `assertHashFormat(undefined)` throws `MALFORMED_HASH`. With `expected_hash`
+  schema-optional, a hash-less creation would be rejected as malformed *before*
+  the kind branch unless the kind detection moves ahead of the hash check at
+  both sites. So both `applyProposeEdit` and the `applyRevise` creation branch
+  must detect the diff kind first, then apply the §3 conditional hash rules.
+
+- **The race guarantee holds only under the vault lock — state it.** The
+  apply-create branch always applies to `""` (never the file's content), so
+  jsdiff's silent-prepend cannot occur at apply even if the file appeared. The
+  residual — a `renameSync` overwriting a file that appeared after the
+  not-exist re-check — is closed because `apply()` wraps `applyRevise` in
+  `withVaultLock`, serializing propose/approve; the existence re-check must sit
+  **inside that lock window** (it does). Node lacks `RENAME_NOREPLACE`, so
+  existsSync-under-lock is the correct pragmatic guard, consistent with
+  VL-SEC-S1-01.
+
 ## 4. Zone + containment on a would-be path (mostly unchanged) + parent dirs
 
 - `resolveZone(target, manifest)` works on a nonexistent path already —
@@ -123,6 +142,55 @@ known):
   leaves any intermediate directories it created behind** (empty). Git does not
   track empty dirs, and removing them would require tracking what the create
   made vs what pre-existed — not worth it; a stray empty `Testing/` is harmless.
+
+## 4a. Provenance in a creation — a governance decision (FOR THE GATE)
+
+Spec-review ran `governedProvenanceChanged("", <creation whose content has a
+`ledger:` block or top-level `entity:`>)` → **`true`**. An approved-via-queue
+creation reaches `applyRevise` with `approvalId != null`, so
+`internal = approved && approvalId == null` is **false** and the LEDGER_GUARD
+runs — meaning a creation that ships governed provenance is **rejected with a
+confusing `LEDGER_GUARD` comparing against empty**. This must be resolved, and
+*how* is a real governance boundary:
+
+**`vault_propose_edit` is the TRUSTED-zone approval path** (broker.ts:294: a
+direct revise into trusted requires approval → use propose_edit). Trusted-zone
+files are **user documents**, not agent memories — governed memories (with a
+`ledger:` provenance block, an `entity`, a `status`) are minted by
+`memory_remember`/`memory_distill`/`memory_promote`, which carry the lifecycle
+and its approval gates. So:
+
+- **Option B (RECOMMENDED) — a creation may not introduce governed provenance.**
+  Reject at **propose** time (retriable, clear message) a creation whose content
+  carries a `ledger:` block or a top-level `entity:`: *"a new file created via
+  vault_propose_edit is a plain document; governed provenance (a `ledger:` block
+  / top-level `entity`) is minted by the memory tools, not by file creation."*
+  This (1) preserves the LEDGER_GUARD's actual purpose — an agent cannot mint a
+  canonical/governed memory outside the lifecycle by having a human approve a
+  "doc"; (2) fully supports the motivating case (a standards doc is a plain file
+  with no `ledger:` block → passes); (3) turns the confusing apply-time
+  LEDGER_GUARD into a clear propose-time rejection; (4) lets the apply-create
+  branch skip `governedProvenanceChanged` cleanly (propose already guaranteed
+  none). A plain doc with ordinary frontmatter (tags/aliases) is unaffected —
+  `governedProvenanceChanged` only fires on `ledger:`/top-level-`entity`.
+
+- **Option A — skip the guards, allow any frontmatter.** The human approves the
+  whole visible file (a creation has no hidden "before" to smuggle against), so
+  arguably approving a creation-with-`status:canonical` is equivalent to
+  approving a promote. Simpler code, but it opens a **direct-governed-creation
+  path** that bypasses the scratch→working→canonical lifecycle and its
+  contradiction detection — a governance hole worth avoiding.
+
+**Recommendation: Option B.** It's the boundary VaultLedger's ethos points at
+(governance enforced in code, not "whatever a human clicked"). **This is your
+gate call** — it changes what a creation is *allowed to contain*.
+
+Under **either** option, the apply-create branch **early-returns before**
+`assertStructurePreserved` (a harmless no-op on `"" → after`, but skip it),
+`governedProvenanceChanged` (the wrong-reject above), and the **baseline
+data-loss commit** at `broker.ts:374` (`fileAtHead === null → commit a pre-image`
+is nonsensical for a file that never existed — a creation's own commit is its
+first git appearance, which is exactly what makes undo delete it).
 
 ## 5. Apply-create path
 
@@ -167,6 +235,7 @@ is not supported.`
 - **race**: file appears between propose and approve → clean `TARGET_EXISTS` at apply, no overwrite.
 - **nonexistent parent dir** (`Testing/new.md`, `Testing/` absent) → approve creates the dir + file; undo removes the file (empty dir may remain — asserted as the decided behavior).
 - **propose-time dry-run**: a creation diff that parses but cannot apply to `""` → rejected at propose (retriable).
+- **provenance boundary (Option B, if approved at the gate)**: a creation whose content carries a `ledger:` block or a top-level `entity:` → rejected at propose (retriable, clear message); a plain-doc creation with ordinary frontmatter (tags/aliases, no `ledger:`) → succeeds. (Also confirms the apply-create branch does NOT hit LEDGER_GUARD or the baseline data-loss commit.)
 
 ---
 
