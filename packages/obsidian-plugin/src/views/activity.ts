@@ -18,6 +18,9 @@ export class ActivityView extends ItemView {
   constructor(
     leaf: WorkspaceLeaf,
     private readonly getVaultRoot: () => string,
+    // See ApprovalsView: the requestUrl-backed transport, threaded into
+    // `fromVault` so bridge calls dodge the CORS preflight.
+    private readonly transport: typeof fetch,
   ) {
     super(leaf);
   }
@@ -49,6 +52,7 @@ export class ActivityView extends ItemView {
     const tabs = contentEl.createDiv({ cls: "vl-activity-tabs" });
     const activityTab = tabs.createEl("button", { text: "Activity" });
     const conflictsTab = tabs.createEl("button", { text: "Conflicts" });
+    const refreshBtn = tabs.createEl("button", { text: "Refresh", cls: "vl-refresh-btn" });
     activityTab.addEventListener("click", () => {
       this.tab = "activity";
       void this.refresh();
@@ -57,10 +61,13 @@ export class ActivityView extends ItemView {
       this.tab = "conflicts";
       void this.refresh();
     });
+    refreshBtn.addEventListener("click", () => {
+      void this.refresh();
+    });
 
     let client: BridgeClient;
     try {
-      client = await BridgeClient.fromVault(this.getVaultRoot());
+      client = await BridgeClient.fromVault(this.getVaultRoot(), { fetch: this.transport });
     } catch (e) {
       this.renderUnavailable(e);
       return;

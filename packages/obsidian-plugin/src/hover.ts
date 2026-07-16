@@ -14,7 +14,11 @@ const POPOVER_CLASS = "vl-provenance-popover";
  * "which link, which popover, when to remove it". No automated test
  * coverage (no headless Obsidian) — see SMOKE.md.
  */
-export function registerProvenanceHover(plugin: Plugin, getVaultRoot: () => string): void {
+export function registerProvenanceHover(
+  plugin: Plugin,
+  getVaultRoot: () => string,
+  transport: typeof fetch,
+): void {
   plugin.registerHoverLinkSource(HOVER_SOURCE_ID, {
     display: "VaultLedger provenance",
     defaultMod: false,
@@ -39,7 +43,7 @@ export function registerProvenanceHover(plugin: Plugin, getVaultRoot: () => stri
     const dest = plugin.app.metadataCache.getFirstLinkpathDest(href, sourcePath);
     if (!(dest instanceof TFile)) return;
 
-    void showProvenancePopover(getVaultRoot, dest.path, evt, removePopover, (el) => {
+    void showProvenancePopover(getVaultRoot, transport, dest.path, evt, removePopover, (el) => {
       popoverEl = el;
     });
   });
@@ -54,13 +58,14 @@ export function registerProvenanceHover(plugin: Plugin, getVaultRoot: () => stri
 
 async function showProvenancePopover(
   getVaultRoot: () => string,
+  transport: typeof fetch,
   path: string,
   evt: MouseEvent,
   removePopover: () => void,
   setPopover: (el: HTMLElement) => void,
 ): Promise<void> {
   try {
-    const client = await BridgeClient.fromVault(getVaultRoot());
+    const client = await BridgeClient.fromVault(getVaultRoot(), { fetch: transport });
     const result = await client.provenance(path);
     removePopover();
     if (!result.ok || !result.data.ledger) return;
