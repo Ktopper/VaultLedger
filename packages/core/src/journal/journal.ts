@@ -331,7 +331,7 @@ export class Journal {
       SELECT DISTINCT m.* FROM memories m
       ${join}
       ${where}
-      ORDER BY m.created DESC
+      ORDER BY m.created DESC, m.id ASC
       LIMIT @limit
     `;
 
@@ -349,7 +349,7 @@ export class Journal {
     const sql = `
       SELECT m.* FROM memories m
       WHERE lower(trim(m.entity)) = @folded
-      ORDER BY m.created DESC
+      ORDER BY m.created DESC, m.id ASC
       LIMIT @limit
     `;
     return this.db.prepare<Record<string, unknown>, MemoryRow>(sql).all({ folded, limit });

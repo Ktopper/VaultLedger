@@ -1,8 +1,18 @@
+import { readFileSync } from "node:fs";
+import matter from "gray-matter";
 import type { Journal, QueryMemoriesFilters } from "../journal/journal.js";
 import type { PermissionsManifest } from "../schemas/manifest.js";
+import { assertContainedAndReadable } from "../broker/containment.js";
 import { resolveZone } from "../zones.js";
 
 export type RecallFilters = QueryMemoriesFilters;
+
+/** Per-memory content byte cap (§2.4). A belief needing more than this is a
+ * document, not a belief — truncate and let the agent open the note. */
+const CONTENT_MAX_BYTES = 4096;
+/** Total-response content byte budget (§2.4). ~8 full-size memories' worth;
+ * exhausting it omits the least-authoritative content first. */
+const CONTENT_TOTAL_BUDGET_BYTES = 32768;
 
 /** A memory as returned by `recall`, with its tags attached. */
 export interface RecallResult {
@@ -17,6 +27,35 @@ export interface RecallResult {
   supersedes: string | null;
   expires: string | null;
   tags: string[];
+  /** Frontmatter-stripped note body — present only on a content-reading recall
+   * (opts.vaultRoot supplied). `null` when the body could not be attached. */
+  content?: string | null;
+  /** Why `content` is what it is — present only on a content-reading recall.
+   * See spec §2.3. */
+  contentState?: "full" | "truncated" | "missing" | "omitted";
+}
+
+/** Truncate `s` to at most `capBytes` UTF-8 bytes WITHOUT splitting a multibyte
+ * character. A naive Buffer.subarray().toString() yields U+FFFD at a split; this
+ * backs off trailing UTF-8 continuation bytes (0x80–0xBF) so the cut lands on a
+ * char boundary at or below capBytes. */
+export function byteSafeTruncate(s: string, capBytes: number): { text: string; truncated: boolean } {
+  const buf = Buffer.from(s, "utf8");
+  if (buf.length <= capBytes) return { text: s, truncated: false };
+  let end = capBytes;
+  while (end > 0) {
+    const b = buf[end];
+    if (b === undefined || (b & 0xc0) !== 0x80) break;
+    end--;
+  }
+  return { text: buf.subarray(0, end).toString("utf8"), truncated: true };
+}
+
+/** Content-budget priority: canonical > working > everything else. Lower = higher. */
+export function authorityRank(status: string): number {
+  if (status === "canonical") return 0;
+  if (status === "working") return 1;
+  return 2;
 }
 
 // v0.3b: "retired" joins forgotten/reverted here — it's a terminal,
@@ -52,6 +91,7 @@ export function recall(
   filters: RecallFilters,
   now: () => string,
   manifest: PermissionsManifest,
+  opts?: { vaultRoot?: string; contentCap?: number; contentBudget?: number },
 ): RecallResult[] {
   const rows = journal.queryMemories(filters);
   const statusFiltered =
@@ -87,6 +127,54 @@ export function recall(
       expires: row.expires,
       tags: journal.getTags(row.id),
     });
+  }
+
+  if (opts?.vaultRoot) {
+    const vaultRoot = opts.vaultRoot;
+    const cap = opts.contentCap ?? CONTENT_MAX_BYTES;
+    const budget = opts.contentBudget ?? CONTENT_TOTAL_BUDGET_BYTES;
+    // Decide content in AUTHORITY order (canonical>working>rest; then created
+    // DESC; then id) — NOT the returned created-DESC order — so the budget
+    // sheds least-authoritative content first (spec §2.4).
+    const authorityOrder = [...filtered].sort(
+      (a, b) =>
+        authorityRank(a.status) - authorityRank(b.status) ||
+        b.created.localeCompare(a.created) ||
+        a.id.localeCompare(b.id),
+    );
+    const decision = new Map<string, { content: string | null; state: RecallResult["contentState"] }>();
+    let spent = 0;
+    let omitMode = false; // first-overflow-stops: once true, everything after is omitted, UNREAD
+    for (const row of authorityOrder) {
+      if (omitMode) {
+        decision.set(row.id, { content: null, state: "omitted" }); // budget beats missing: no read
+        continue;
+      }
+      let body: string;
+      try {
+        const abs = assertContainedAndReadable(vaultRoot, manifest, row.path);
+        body = matter(readFileSync(abs, "utf8")).content.trim();
+      } catch {
+        decision.set(row.id, { content: null, state: "missing" }); // absent/unreadable/parse-fail — degrade
+        continue;
+      }
+      const { text, truncated } = byteSafeTruncate(body, cap);
+      const bytes = Buffer.byteLength(text, "utf8");
+      if (spent + bytes > budget) {
+        decision.set(row.id, { content: null, state: "omitted" }); // boundary; stop here
+        omitMode = true;
+        continue;
+      }
+      spent += bytes;
+      decision.set(row.id, { content: text, state: truncated ? "truncated" : "full" });
+    }
+    for (const r of results) {
+      const d = decision.get(r.id);
+      if (d) {
+        r.content = d.content;
+        r.contentState = d.state;
+      }
+    }
   }
   return results;
 }
