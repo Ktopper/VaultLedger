@@ -28,8 +28,8 @@ export interface RecallResult {
 }
 ```
 
-`recall()` (`:75-92`) loops the filtered rows, `touchMemory`s each, and pushes
-that shape — **the note file is never opened**. `memory_recall`
+`recall()` (`:50-92`, loop body `:76-90`) loops the filtered rows,
+`touchMemory`s each, and pushes that shape — **the note file is never opened**. `memory_recall`
 (`packages/mcp-server/src/tools.ts:225-228`) returns it verbatim
 (`return { memories }`).
 
@@ -125,17 +125,45 @@ so unbounded content would flood agent context. This is the output-side mirror:
   `contentState:"truncated"` and the agent can open the note. Comfortably under
   the 16 KiB input cap.
 - **Total-response budget — `CONTENT_TOTAL_BUDGET_BYTES = 32768` (32 KiB).**
-  ~8 full-size memories' worth. Memories are filled **in return order**: track
-  cumulative included-content bytes; the first memory whose (already
-  per-memory-capped) content would push the cumulative total over budget — and
-  **every memory after it** — gets `contentState:"omitted"`, `content:null`.
-  Order matters: recall returns most-relevant-first (the query's order), so the
-  omitted tail is the least-relevant, and the "omitted" signal tells the agent
-  to narrow rather than silently dropping beliefs.
-- **Byte-safe truncation:** truncation respects UTF-8 char boundaries — it never
-  splits a multibyte character (no U+FFFD replacement artifacts). The cap is
-  measured in **bytes** (`Buffer.byteLength`), consistent with the input side,
-  but the cut lands on a char boundary at or below the byte cap.
+  ~8 full-size memories' worth. When the budget is exhausted, *something* must
+  be denied its content — and **what gets denied is a design choice this product
+  cannot leave to insertion order.** Recall returns rows `ORDER BY created DESC`
+  (`journal.ts:334`) — newest-first, **no relevance/authority ranking** — so
+  filling content in return order would shed the *oldest* content first, which
+  can be a long-standing **canonical** belief starved by a burst of recent
+  scratch. That is backwards for a broker whose whole thesis is that canonical
+  is the belief the system defends.
+  - **Fill content by authority, not by position.** Compute the content-inclusion
+    decision over the memories ordered by **(status priority, then `created`
+    DESC, then `id`)** — `canonical` > `working` > everything else
+    (scratch/retired/…). Walk that authority order accumulating included bytes;
+    the first memory whose (already per-memory-capped) content would exceed the
+    budget — and every lower-priority memory after it in that order — gets
+    `contentState:"omitted"`, `content:null`. So the budget sheds the
+    **least-authoritative** content first, and the "omitted" signal tells the
+    agent to narrow rather than silently dropping a belief.
+  - **The return array order is UNCHANGED** — still `created DESC` (recall's
+    existing contract; all callers depend on it). Only the *content-inclusion
+    decision* uses authority order. Each returned memory carries its own
+    `contentState`, so a newer scratch memory reading `omitted` sitting above an
+    older canonical reading `full` is legible, not confusing.
+  - **Determinism:** the `id` tiebreak (and adding `, m.id` as a secondary sort
+    key to `queryMemories`, since `created DESC` alone is
+    SQLite-unspecified on ties) makes both the return order and the
+    content-inclusion decision fully deterministic.
+  - **Budget is checked BEFORE the read.** Precedence is explicit: for each
+    memory in authority order, if the running budget is already exhausted →
+    `omitted`, and **do not read the file**. Otherwise read →
+    `full`/`truncated`/`missing`. So a past-budget memory with a deleted file is
+    `omitted` (never read), not `missing` — budget wins, no wasted I/O.
+- **Byte-safe truncation:** the cap is measured in **bytes** (`Buffer.byteLength`,
+  consistent with the input side), but the cut lands on a UTF-8 char boundary at
+  or below the byte cap — it never splits a multibyte character (no U+FFFD
+  artifacts). **Algorithm (name it so nobody ships the naive slice):** a naive
+  `Buffer.from(s).subarray(0, cap).toString("utf8")` produces the forbidden
+  U+FFFD. Instead slice at the byte cap, then walk *back* off any trailing UTF-8
+  continuation bytes (`0x80–0xBF`) until the byte before the cut is not a
+  continuation byte — landing on a char boundary at or below `cap`.
 
 ### 2.5 Failure = degrade, never throw
 
@@ -168,8 +196,12 @@ Plus unit coverage on `recall` with injected small caps:
 - body over per-memory cap → `truncated`, content is the byte-safe prefix, and a
   multibyte char straddling the cap is not split.
 - deleted note file → `missing`, content `null`, recall still returns the row.
-- N memories exceeding the total budget → the tail is `omitted`, content `null`;
-  the head is `full`/`truncated`.
+- **authority-first budget:** with content exceeding the total budget across a
+  mix of statuses, the **`canonical`** memory retains its content (`full`/
+  `truncated`) while a lower-priority `scratch` one is `omitted` — even when the
+  scratch memory is *newer* (higher in the returned array). This is the test
+  that pins the "sheds least-authoritative first" rule against a naive
+  fill-in-return-order regression.
 - frontmatter is stripped (a note with a `ledger:` block → content has no `---`).
 
 ---
@@ -216,8 +248,9 @@ Plus unit coverage on `recall` with injected small caps:
   `{ vaultRoot: ctx.vaultRoot }`; update the tool description to mention content
   is returned (bounded).
 - `packages/core/package.json`, `packages/mcp-server/package.json` — → `0.4.2`;
-  `packages/mcp-server/src/index.ts` `SERVER_VERSION` → `0.4.2` (+ any test
-  asserting it); `packages/cli/src/index.ts` **stays `0.4.1`**.
+  `packages/mcp-server/src/index.ts:18` `SERVER_VERSION` → `0.4.2` (no test
+  asserts it — confirmed at spec review — so just the one line);
+  `packages/cli/src/index.ts` **stays `0.4.1`**.
 - Tests: `packages/core/test/recall/recall.test.ts` (unit: the five §3 cases),
   `packages/mcp-server/test/` (the load-bearing marker e2e + retired compose).
 
