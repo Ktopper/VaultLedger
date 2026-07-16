@@ -96,6 +96,16 @@ describe("recall", () => {
     expect(results).toHaveLength(2);
   });
 
+  test("recall order is deterministic: equal created ties break by id ascending", () => {
+    const journal = makeJournal();
+    // Insert b BEFORE a so any reliance on insertion order would surface m_b first.
+    seed(journal, baseRow({ id: "m_b", created: "2026-01-01T00:00:00.000Z" }));
+    seed(journal, baseRow({ id: "m_a", created: "2026-01-01T00:00:00.000Z" }));
+
+    const results = recall(journal, {}, () => "2026-01-02T00:00:00.000Z", MANIFEST);
+    expect(results.map((r) => r.id)).toEqual(["m_a", "m_b"]);
+  });
+
   test("default recall excludes forgotten and reverted memories", () => {
     const journal = makeJournal();
     seed(journal, baseRow({ id: "working", status: "working" }));
