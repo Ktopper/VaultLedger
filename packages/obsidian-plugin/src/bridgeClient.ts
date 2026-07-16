@@ -286,7 +286,10 @@ export class BridgeClient {
     }
     const error: BridgeErrorBody = {
       code: body.error?.code ?? "UNKNOWN",
-      message: body.error?.message ?? res.statusText ?? "request failed",
+      // `||` (not `??`) on statusText: the requestUrl transport builds a Response
+      // with no statusText, so it's "" (not nullish) — a `??` chain would surface
+      // a BLANK message for a non-JSON error body instead of "request failed".
+      message: body.error?.message ?? (res.statusText || "request failed"),
       retriable: body.error?.retriable,
     };
     return { ok: false, error, status: res.status };
