@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { createPatch } from "diff";
-import { applyPatch } from "../../src/broker/patch.js";
+import { applyPatch, assertPatchParseable } from "../../src/broker/patch.js";
 import { BrokerError } from "../../src/errors.js";
 
 describe("applyPatch", () => {
@@ -123,5 +123,27 @@ describe("applyPatch", () => {
       expect(e).toBeInstanceOf(BrokerError);
       expect((e as BrokerError).code).toBe("SYNTAX_BREAK");
     }
+  });
+});
+
+describe("assertPatchParseable", () => {
+  const VALID = "--- a/note.md\n+++ b/note.md\n@@ -1,1 +1,1 @@\n-old\n+new\n";
+  const V4A = "*** Begin Patch\n*** Update File: note.md\n@@\n-old\n+new\n*** End Patch\n";
+  test("a valid single-file unified diff → returns the parse", () => {
+    const parsed = assertPatchParseable(VALID);
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0]!.hunks.length).toBeGreaterThan(0);
+  });
+  test("a V4A '*** Begin Patch' patch → SYNTAX_BREAK naming the format", () => {
+    expect(() => assertPatchParseable(V4A)).toThrow();
+    try { assertPatchParseable(V4A); } catch (e) {
+      expect((e as BrokerError).code).toBe("SYNTAX_BREAK");
+      expect((e as Error).message).toMatch(/unified diff|Begin Patch|not accepted/i);
+    }
+  });
+  test("retriable flag passes through", () => {
+    expect(() => assertPatchParseable(V4A, true)).toThrow();
+    try { assertPatchParseable(V4A, true); } catch (e) { expect((e as BrokerError).retriable).toBe(true); }
+    try { assertPatchParseable(V4A, false); } catch (e) { expect((e as BrokerError).retriable).toBe(false); }
   });
 });

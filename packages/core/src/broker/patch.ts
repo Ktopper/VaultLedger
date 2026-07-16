@@ -1,5 +1,38 @@
-import { applyPatch as diffApply, parsePatch, type StructuredPatchHunk } from "diff";
+import {
+  applyPatch as diffApply,
+  parsePatch,
+  type StructuredPatch,
+  type StructuredPatchHunk,
+} from "diff";
 import { BrokerError } from "../errors.js";
+
+const PATCH_FORMAT_HINT =
+  "patch must be a unified diff (`---`/`+++` file headers, `@@` hunks) for a single file — " +
+  "the V4A / `*** Begin Patch` style is NOT accepted";
+
+/**
+ * The ONE shared parse guard for unified-diff patches, called at BOTH propose
+ * time (retriable:true — the agent can fix-and-retry) and apply time
+ * (retriable defaults false — a human at the approval surface can't fix by
+ * retrying). Rejects a patch jsdiff can't turn into applyable hunks — most
+ * notably a V4A / `*** Begin Patch` patch, which `parsePatch` yields 0 hunks
+ * for and would otherwise queue clean only to die at approval. Returns the
+ * parse so callers that need the hunks (applyPatch) don't parse twice.
+ */
+export function assertPatchParseable(patchText: string, retriable = false): StructuredPatch[] {
+  const parsed = parsePatch(patchText);
+  if (parsed.length === 0 || parsed.every((f) => f.hunks.length === 0)) {
+    throw new BrokerError("SYNTAX_BREAK", `no parseable hunks — ${PATCH_FORMAT_HINT}`, retriable);
+  }
+  if (parsed.length !== 1) {
+    throw new BrokerError(
+      "SYNTAX_BREAK",
+      `patch spans ${parsed.length} files; only single-file patches are supported — ${PATCH_FORMAT_HINT}`,
+      retriable,
+    );
+  }
+  return parsed;
+}
 
 /** Signature jsdiff's `applyPatch` calls per matchable hunk line — matches
  * `ApplyPatchOptions["compareLine"]` from diff@8's own bundled types (diff@8
@@ -173,16 +206,7 @@ export function applyPatch(
   landingFuzz = 0,
 ): string {
   try {
-    const parsed = parsePatch(patchText);
-    if (parsed.length === 0 || parsed.every((f) => f.hunks.length === 0)) {
-      throw new BrokerError("SYNTAX_BREAK", "unparseable or empty patch");
-    }
-    if (parsed.length !== 1) {
-      throw new BrokerError(
-        "SYNTAX_BREAK",
-        `patch spans ${parsed.length} files; only single-file patches are supported`,
-      );
-    }
+    const parsed = assertPatchParseable(patchText);
 
     // VL-SEC-S2-05: reject hunks that are out of order or overlap by their
     // OWN declared ranges — jsdiff itself has no opinion on this (it applies
