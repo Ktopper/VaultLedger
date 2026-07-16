@@ -140,6 +140,30 @@ the plugin's bridge calls through it:
   `request()`'s existing timeout branch (`:213-217`) still maps it to the
   "bridge wedged" message. Confirm the wedged-timeout test still passes through
   the adapter.
+- **GROUND-CHECK the `requestUrl` API against the local `.d.ts`, not memory
+  (named plan-review item).** Every claim here about `requestUrl` — that
+  `throw: false` suppresses status-based throws, that the response exposes
+  `.json`/`.text`/`.arrayBuffer`/`.status`/`.headers` as **properties** (not
+  methods, unlike `fetch`'s `Response`), that there is no timeout/`AbortSignal`,
+  and the `RequestUrlParam` field names — is currently **docs-level**. `obsidian`
+  is a devDependency; its `.d.ts` is in `node_modules`. The plan must read
+  `RequestUrlParam` / `RequestUrlResponse` from that file and pin the adapter's
+  mapping to what's actually declared. This is the ONE place an invented detail
+  could reach runtime, because no unit test executes the real `requestUrl`.
+- **Connection-level failures MUST throw through the adapter (this is where Fix
+  0 and Fix 3 compose).** `throw: false` only suppresses HTTP *error statuses*.
+  A **connection-level** failure (dead port — the exact reconnect trigger) still
+  **rejects** the `requestUrl` promise. The adapter must **pass that rejection
+  through unchanged** — do NOT swallow it into a synthetic error-status
+  `Response`. `#doRequest`'s connection-failure throw is what arms the reconnect
+  logic (Fix 3); if the adapter absorbs it into a fake response, reconnect
+  **silently never fires** under the new transport. Test case: adapter + dead
+  port → **throws** → `request()`'s reconnect path engages.
+- **Null-body status guard in the `Response` construction.** `new Response(body,
+  { status })` **throws** when `status` is a null-body status (204/205/304) and
+  `body` is non-null. If any bridge endpoint ever returns 204, the adapter would
+  die constructing the reply. Guard: pass a **null** body for null-body statuses.
+  A fixture must cover a 204 or the tests won't see it.
 - **LOAD-BEARING: the transport must reach every `fromVault` call site, which is
   inside the VIEWS, not `main.ts`.** `approvals.ts`/`activity.ts` `refresh()`
   each call `BridgeClient.fromVault(this.getVaultRoot())` themselves — those are
