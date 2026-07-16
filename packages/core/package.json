@@ -1,6 +1,6 @@
 {
   "name": "@vault-ledger/core",
-  "version": "0.4.0",
+  "version": "0.4.2",
   "type": "module",
   "description": "VaultLedger broker core — governed, provenance-tracked memory for AI agents over an Obsidian vault",
   "main": "./dist/index.js",
