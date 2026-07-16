@@ -160,11 +160,28 @@ files are **user documents**, not agent memories — governed memories (with a
 `memory_remember`/`memory_distill`/`memory_promote`, which carry the lifecycle
 and its approval gates. So:
 
-- **Option B (RECOMMENDED) — a creation may not introduce governed provenance.**
+- **Option B (RULED) — a creation may not introduce governed provenance.**
   Reject at **propose** time (retriable, clear message) a creation whose content
   carries a `ledger:` block or a top-level `entity:`: *"a new file created via
   vault_propose_edit is a plain document; governed provenance (a `ledger:` block
   / top-level `entity`) is minted by the memory tools, not by file creation."*
+  - **The rejection predicate IS `governedProvenanceChanged("", newContent)` —
+    the EXISTING function with an empty `before`, NOT a new regex.** (`newContent`
+    is the propose-time dry-run result, §2.) One predicate, two call sites (the
+    LEDGER_GUARD and this), same single-source-of-truth pattern as
+    `assertPatchParseable`. Two hand-maintained definitions of "governed
+    provenance" WILL diverge, and the day they do the boundary either leaks
+    (propose misses what the guard catches) or false-rejects. Reuse, don't
+    re-implement. (`governedProvenanceChanged` parses via gray-matter's
+    top-level `.data` — verified — so it keys off FRONTMATTER, which is what
+    makes §8's fenced-example case work.)
+  *The rationale (ruled): the queue is a **document review** surface — a human
+  approving a text diff consents to the words, not to the governance state those
+  words encode. `status: canonical` is the baseline contradiction detection
+  defends, the tier the recall budget privileges, a node the relations table
+  expects to have lifecycle history. A canonical belief minted by doc-approval
+  carries that authority with none of the machinery that earns it. One minting
+  path for governed memories; `vault_propose_edit` creations are plain docs.*
   This (1) preserves the LEDGER_GUARD's actual purpose — an agent cannot mint a
   canonical/governed memory outside the lifecycle by having a human approve a
   "doc"; (2) fully supports the motivating case (a standards doc is a plain file
@@ -235,7 +252,8 @@ is not supported.`
 - **race**: file appears between propose and approve → clean `TARGET_EXISTS` at apply, no overwrite.
 - **nonexistent parent dir** (`Testing/new.md`, `Testing/` absent) → approve creates the dir + file; undo removes the file (empty dir may remain — asserted as the decided behavior).
 - **propose-time dry-run**: a creation diff that parses but cannot apply to `""` → rejected at propose (retriable).
-- **provenance boundary (Option B, if approved at the gate)**: a creation whose content carries a `ledger:` block or a top-level `entity:` → rejected at propose (retriable, clear message); a plain-doc creation with ordinary frontmatter (tags/aliases, no `ledger:`) → succeeds. (Also confirms the apply-create branch does NOT hit LEDGER_GUARD or the baseline data-loss commit.)
+- **provenance boundary (Option B — RULED)**: a creation whose content carries a `ledger:` block or a top-level `entity:` in its FRONTMATTER → rejected at propose (retriable, clear message) via `governedProvenanceChanged("", newContent)`; a plain-doc creation with ordinary frontmatter (tags/aliases, no `ledger:`) → succeeds. (Also confirms the apply-create branch does NOT hit LEDGER_GUARD or the baseline data-loss commit.)
+- **SELF-DOCUMENTATION false-positive (pin it — this vault's own use case)**: a creation whose FRONTMATTER is plain but whose BODY contains a fenced `` ```ledger:` `` example (a standards doc *about* VaultLedger) → **ACCEPTED**. `governedProvenanceChanged` keys off gray-matter `.data` (frontmatter), so a body-fenced example is invisible to it — correct today. Without this test, an "improvement" to string-scanning detection would quietly make VaultLedger unable to document itself.
 
 ---
 
