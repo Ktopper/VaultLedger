@@ -87,7 +87,7 @@ build step — see the rejected `vault_build_patch` alternative):
    branch does), so the landing check first runs at APPROVE; a dry-run here
    surfaces any generation bug at propose instead. Safe by construction, cheap
    insurance.
-6. **Feed the existing `applyProposeEdit`** as `{path, expected_hash, patch:
+7. **Feed the existing `applyProposeEdit`** as `{path, expected_hash, patch:
    generatedDiff}`. Its edit branch (0.4.4) runs — the target exists, the hash
    is present, the landing check passes by construction.
    - **Double hash check is intentional:** propose-time (step 1, so the
@@ -111,11 +111,19 @@ class of arithmetic replace removes.
   `oldFileName === "/dev/null"`) returns **`edit`** → the create tool would hit
   the edit branch → `NOT_FOUND` "edit diff, but <path> does not exist" →
   **reject every creation**, and Option B (in the create branch) would never
-  run. The generator MUST put `/dev/null` as the OLD filename explicitly — e.g.
-  `structuredPatch("/dev/null", <path>, "", content, "", "")` + `formatPatch`
-  (or `createPatch("/dev/null", "", content)`). Verified: this yields
-  `oldFileName === "/dev/null"` → `patchTargetKind` "create", applies EXACT to
-  `""`, and reaches the Option B gate.
+  run. The generator MUST use the **two-filename `structuredPatch` form**:
+  `structuredPatch("/dev/null", <path>, "", content, "", "")` + `formatPatch`.
+  Verified: `oldFileName === "/dev/null"`, `newFileName === <path>` (the real
+  path), formatted headers `--- /dev/null` / `+++ <path>`, `patchTargetKind`
+  "create", applies EXACT to `""`, reaches Option B.
+  - **Do NOT use `createPatch("/dev/null", "", content)` (the sibling trap).**
+    `createPatch` takes ONE filename and writes it on **both** header lines, so
+    it produces `--- /dev/null` AND `+++ /dev/null`. That still classifies as
+    `create` (patchTargetKind checks `oldFileName` first) — so it *works*, while
+    queueing an artifact that reads simultaneously as a creation AND a deletion:
+    misleading in the approval render and to anything that keys on `newFileName`
+    for path display. The two-filename form is mandatory; §6 pins it with a test
+    asserting the generated diff's `newFileName` is the real path, not `/dev/null`.
 
 - **Option B is inherited for FREE.** `applyProposeEdit`'s create branch already
   runs `governedProvenanceChanged("", newContent)` (0.4.4 + the apply-time
@@ -184,8 +192,17 @@ context" case. Reuse `STALE_HASH` (snapshot drift) and `SYNTAX_BREAK`
 - **NAMED ground-check (a real jsdiff round-trip):** `generateReplacementPatch`
   on multi-line content with edits at lines ~12 and ~32 → the generated diff,
   fed to the **hardened `applyPatch`** (the strict landing check), **passes** and
-  yields exactly the spliced content. (This is the load-bearing feasibility
-  claim — verified in the brainstorm; pin it.)
+  yields exactly the spliced content. (Load-bearing feasibility claim — verified
+  in the brainstorm; pin it.)
+- **NO-TRAILING-NEWLINE round-trip** (real vault notes constantly lack one — the
+  fiddly `\ No newline at end of file` case): content ending WITHOUT a trailing
+  newline, replacement near the end → generated diff → hardened `applyPatch` →
+  EXACT spliced output. (Verified at spec-review: jsdiff emits the no-newline
+  marker and round-trips exact — this pins it against regression.)
+- **create diff `newFileName` is the REAL path, not `/dev/null`** — assert the
+  generated creation diff's `newFileName === <path>` (the two-filename
+  `structuredPatch` form), guarding the sibling trap where a one-filename
+  `createPatch("/dev/null", …)` would put `/dev/null` on both headers.
 - `generateReplacementPatch` unit: exact single match → correct diff; 0 matches
   → `TEXT_NOT_FOUND` (retriable); 2 matches with `expected_occurrences:1` →
   `AMBIGUOUS_MATCH`; 2 matches with `expected_occurrences:2` → both replaced;
