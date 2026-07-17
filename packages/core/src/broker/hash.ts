@@ -20,9 +20,20 @@ const HASH_FORMAT = /^sha256:[0-9a-fA-F]{64}$/;
  * missing the `sha256:` prefix. This is a format check only, distinct from
  * `STALE_HASH` (which means the value is well-formed but no longer matches
  * the file on disk).
+ *
+ * Accepts `string | undefined` (not just `string`): with `expected_hash`
+ * schema-optional on revise/propose_edit, an edit that omits it arrives here
+ * as `undefined`. That is a DELIBERATE throw — `HASH_FORMAT.test(undefined)`
+ * coerces to the string `"undefined"`, matches nothing, and rejects with
+ * MALFORMED_HASH, which is exactly the desired behavior (a hash-less edit is
+ * rejected). The broker only calls this on the edit branch; the creation
+ * branch forbids a hash separately.
  */
-export function assertHashFormat(expectedHash: string): string {
-  if (!HASH_FORMAT.test(expectedHash)) {
+export function assertHashFormat(expectedHash: string | undefined): string {
+  // `undefined` is a DELIBERATE throw: a hash-less edit must be rejected with
+  // MALFORMED_HASH. The template literal below coerces it to "undefined" in the
+  // message, exactly as the previous `HASH_FORMAT.test(String(undefined))` did.
+  if (expectedHash === undefined || !HASH_FORMAT.test(expectedHash)) {
     throw new BrokerError(
       "MALFORMED_HASH",
       `expected_hash must match sha256:<64 hex digits>, got: ${expectedHash}`,

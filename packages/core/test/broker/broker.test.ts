@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { createPatch } from "diff";
 import matter from "gray-matter";
 import { Broker } from "../../src/broker/broker.js";
+import { undoTransaction } from "../../src/broker/undo.js";
 import { LedgerGit } from "../../src/broker/git.js";
 import { Journal } from "../../src/journal/journal.js";
 import { openJournal } from "../../src/journal/db.js";
@@ -63,6 +64,8 @@ describe("Broker", () => {
     journal: Journal;
     git: LedgerGit;
     vaultRoot: string;
+    now: () => string;
+    genId: (prefix: string) => string;
   }> {
     const vaultRoot = mkdtempSync(join(tmpdir(), "vl-broker-"));
     dir = vaultRoot;
@@ -72,7 +75,7 @@ describe("Broker", () => {
     const journal = new Journal(db);
     const { now, genId } = makeClock();
     const broker = new Broker({ vaultRoot, git, journal, manifest, now, genId, lockDir: UNSAFE_NO_LOCK });
-    return { broker, journal, git, vaultRoot };
+    return { broker, journal, git, vaultRoot, now, genId };
   }
 
   // -------------------------------------------------------------------
@@ -1207,5 +1210,385 @@ describe("Broker", () => {
     }
     expect(thrown).toBeInstanceOf(BrokerError);
     expect((thrown as BrokerError).code).toBe("NOT_FOUND");
+  });
+
+  // -------------------------------------------------------------------
+  // new-file creation via vault_propose_edit (0.4.4): the propose-time
+  // pairing gate. jsdiff SILENTLY CORRUPTS on a diff/target mismatch
+  // (creation diff onto an existing file PREPENDS; deletion diff EMPTIES),
+  // so the gate is the only thing keeping an unapplyable/mismatched proposal
+  // out of the queue.
+  // -------------------------------------------------------------------
+
+  // A well-formed unified-diff creation of `path` with `bodyLines` as content.
+  function creationDiff(path: string, bodyLines: string[]): string {
+    const header = `--- /dev/null\n+++ b/${path}\n@@ -0,0 +1,${bodyLines.length} @@\n`;
+    return header + bodyLines.map((l) => `+${l}`).join("\n") + "\n";
+  }
+
+  test("propose_edit creation (--- /dev/null, nonexistent target, no expected_hash) QUEUES", async () => {
+    const { broker, journal } = await makeBroker();
+    const result = await broker.apply({
+      op: "propose_edit",
+      path: "Testing/new-standard.md",
+      patch: creationDiff("Testing/new-standard.md", ["# New Standard", "Body line."]),
+      reason: "propose a new standards doc",
+      session: "s1",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok || !("queued" in result) || !result.queued) {
+      throw new Error("expected a queued result");
+    }
+    expect(result.approvalId).toBeDefined();
+    const held = JSON.parse(journal.getApproval(result.approvalId)!.held_operation);
+    expect(held.op).toBe("propose_edit");
+    // A creation's held op carries no expected_hash.
+    expect(held.expected_hash).toBeUndefined();
+  });
+
+  test("propose_edit creation whose target already EXISTS throws retriable TARGET_EXISTS and queues nothing (silent-prepend corruption case)", async () => {
+    const { broker, journal, vaultRoot } = await makeBroker();
+    writeFileSync(join(vaultRoot, "exists.md"), "already here\n", "utf8");
+
+    let thrown: unknown;
+    try {
+      await broker.apply({
+        op: "propose_edit",
+        path: "exists.md",
+        patch: creationDiff("exists.md", ["# New", "content"]),
+        reason: "creation onto an existing file",
+        session: "s1",
+      });
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(BrokerError);
+    expect((thrown as BrokerError).code).toBe("TARGET_EXISTS");
+    expect((thrown as BrokerError).retriable).toBe(true);
+    expect(journal.listApprovals().length).toBe(0);
+  });
+
+  test("propose_edit deletion (+++ /dev/null) throws retriable SYNTAX_BREAK 'not supported' and queues nothing (silent-empty corruption case)", async () => {
+    const { broker, journal, vaultRoot } = await makeBroker();
+    const original = "line1\nline2\n";
+    writeFileSync(join(vaultRoot, "del.md"), original, "utf8");
+
+    const deletionDiff = "--- a/del.md\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-line1\n-line2\n";
+
+    let thrown: unknown;
+    try {
+      await broker.apply({
+        op: "propose_edit",
+        path: "del.md",
+        expected_hash: hashBytes(Buffer.from(original, "utf8")),
+        patch: deletionDiff,
+        reason: "delete the file",
+        session: "s1",
+      });
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(BrokerError);
+    expect((thrown as BrokerError).code).toBe("SYNTAX_BREAK");
+    expect((thrown as BrokerError).retriable).toBe(true);
+    expect((thrown as Error).message).toMatch(/deletion.*not supported/i);
+    expect(journal.listApprovals().length).toBe(0);
+  });
+
+  test("propose_edit edit whose target is ABSENT throws retriable NOT_FOUND and queues nothing", async () => {
+    const { broker, journal } = await makeBroker();
+    const patchText = createPatch("gone.md", "a\nb\nc\n", "a\nB\nc\n");
+
+    let thrown: unknown;
+    try {
+      await broker.apply({
+        op: "propose_edit",
+        path: "gone.md",
+        expected_hash: hashBytes(Buffer.from("a\nb\nc\n", "utf8")),
+        patch: patchText,
+        reason: "edit a missing file",
+        session: "s1",
+      });
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(BrokerError);
+    expect((thrown as BrokerError).code).toBe("NOT_FOUND");
+    expect((thrown as BrokerError).retriable).toBe(true);
+    expect(journal.listApprovals().length).toBe(0);
+  });
+
+  test("propose_edit creation WITH an expected_hash is rejected retriable (creations take no hash) and queues nothing", async () => {
+    const { broker, journal } = await makeBroker();
+    let thrown: unknown;
+    try {
+      await broker.apply({
+        op: "propose_edit",
+        path: "Testing/hashed.md",
+        expected_hash: hashBytes(Buffer.from("whatever\n", "utf8")),
+        patch: creationDiff("Testing/hashed.md", ["# doc"]),
+        reason: "creation with a bogus hash",
+        session: "s1",
+      });
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(BrokerError);
+    expect((thrown as BrokerError).code).toBe("MALFORMED_HASH");
+    expect((thrown as BrokerError).retriable).toBe(true);
+    expect(journal.listApprovals().length).toBe(0);
+  });
+
+  test("propose_edit edit WITHOUT an expected_hash is rejected MALFORMED_HASH and queues nothing (edit strictness unchanged)", async () => {
+    const { broker, journal, vaultRoot } = await makeBroker();
+    const original = "a\nb\nc\n";
+    writeFileSync(join(vaultRoot, "needhash.md"), original, "utf8");
+    const patchText = createPatch("needhash.md", original, "a\nB\nc\n");
+
+    let thrown: unknown;
+    try {
+      await broker.apply({
+        op: "propose_edit",
+        path: "needhash.md",
+        patch: patchText,
+        reason: "edit with no hash",
+        session: "s1",
+      });
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(BrokerError);
+    expect((thrown as BrokerError).code).toBe("MALFORMED_HASH");
+    expect(journal.listApprovals().length).toBe(0);
+  });
+
+  test("propose_edit creation carrying governed provenance in FRONTMATTER (ledger: block) is rejected retriable (Option B) and queues nothing", async () => {
+    const { broker, journal } = await makeBroker();
+    const body = ["---", "ledger:", "  status: canonical", "---", "", "Body."];
+    let thrown: unknown;
+    try {
+      await broker.apply({
+        op: "propose_edit",
+        path: "Testing/governed.md",
+        patch: creationDiff("Testing/governed.md", body),
+        reason: "smuggle a canonical memory via creation",
+        session: "s1",
+      });
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(BrokerError);
+    expect((thrown as BrokerError).code).toBe("LEDGER_GUARD");
+    expect((thrown as BrokerError).retriable).toBe(true);
+    expect(journal.listApprovals().length).toBe(0);
+  });
+
+  test("propose_edit creation carrying a top-level entity in FRONTMATTER is rejected (Option B)", async () => {
+    const { broker, journal } = await makeBroker();
+    const body = ["---", "entity: alice", "---", "", "Body."];
+    let thrown: unknown;
+    try {
+      await broker.apply({
+        op: "propose_edit",
+        path: "Testing/entity.md",
+        patch: creationDiff("Testing/entity.md", body),
+        reason: "smuggle an entity via creation",
+        session: "s1",
+      });
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(BrokerError);
+    expect((thrown as BrokerError).code).toBe("LEDGER_GUARD");
+    expect(journal.listApprovals().length).toBe(0);
+  });
+
+  test("SELF-DOC: propose_edit creation with PLAIN frontmatter but a BODY-fenced ```ledger: example QUEUES (governedProvenanceChanged keys off frontmatter)", async () => {
+    const { broker, journal } = await makeBroker();
+    // Plain frontmatter (title only); the body contains a fenced ledger example
+    // — a standards doc *about* VaultLedger. governedProvenanceChanged parses
+    // gray-matter .data (frontmatter) so the fenced body example is invisible.
+    const body = [
+      "---",
+      "title: VaultLedger Provenance Guide",
+      "---",
+      "",
+      "# How provenance works",
+      "",
+      "```ledger:",
+      "  status: canonical",
+      "```",
+      "",
+      "That block is minted by the memory tools, not file creation.",
+    ];
+    const result = await broker.apply({
+      op: "propose_edit",
+      path: "Testing/guide.md",
+      patch: creationDiff("Testing/guide.md", body),
+      reason: "document the provenance convention",
+      session: "s1",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok || !("queued" in result) || !result.queued) {
+      throw new Error("expected a queued result");
+    }
+    expect(journal.listApprovals().length).toBe(1);
+  });
+
+  test("propose_edit creation whose diff parses but does NOT apply to \"\" is rejected retriable at propose (dry-run)", async () => {
+    const { broker, journal } = await makeBroker();
+    // A `--- /dev/null` creation diff that references a context line — it parses
+    // (one hunk) but cannot apply to an empty file (the context isn't there).
+    const badCreation =
+      "--- /dev/null\n+++ b/Testing/bad.md\n@@ -1,1 +1,2 @@\n existing context\n+added line\n";
+
+    let thrown: unknown;
+    try {
+      await broker.apply({
+        op: "propose_edit",
+        path: "Testing/bad.md",
+        patch: badCreation,
+        reason: "an unapplyable creation",
+        session: "s1",
+      });
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(BrokerError);
+    expect((thrown as BrokerError).code).toBe("SYNTAX_BREAK");
+    expect((thrown as BrokerError).retriable).toBe(true);
+    expect(journal.listApprovals().length).toBe(0);
+  });
+
+  // -------------------------------------------------------------------
+  // apply-create branch (approve of a creation proposal → creates + commits;
+  // undo removes the file). Race + nonexistent-parent coverage.
+  // -------------------------------------------------------------------
+
+  test("end-to-end: propose a creation → approve → the file is CREATED + committed; undo REMOVES it", async () => {
+    const { broker, journal, git, vaultRoot, now, genId } = await makeBroker();
+    const path = "Testing/created.md";
+    const patch = creationDiff(path, ["# Created", "Hello world."]);
+
+    const proposed = await broker.apply({
+      op: "propose_edit",
+      path,
+      patch,
+      reason: "propose creation",
+      session: "s1",
+    });
+    if (!proposed.ok || !("queued" in proposed) || !proposed.queued) {
+      throw new Error("expected a queued result");
+    }
+    const approvalId = proposed.approvalId;
+
+    // Approve: the held propose op reshaped to a revise, driven with approval.
+    const applied = await broker.apply(
+      {
+        op: "revise",
+        path,
+        patch,
+        reason: "propose creation",
+        session: "s1",
+      },
+      { approved: true, approvalId },
+    );
+    expect(applied.ok).toBe(true);
+    if (!applied.ok || "queued" in applied) throw new Error("expected an applied result");
+
+    expect(existsSync(join(vaultRoot, path))).toBe(true);
+    expect(readFileSync(join(vaultRoot, path), "utf8")).toBe("# Created\nHello world.\n");
+    expect(await git.fileAtHead(path)).not.toBeNull();
+
+    const txn = journal.getTransaction(applied.txnId!);
+    expect(txn!.op).toBe("create");
+    expect(txn!.hash_before).toBeNull();
+
+    // Undo removes the file (a create's own commit is its first git appearance).
+    await undoTransaction({ git, journal, now, genId, lockDir: UNSAFE_NO_LOCK }, applied.txnId!);
+    expect(existsSync(join(vaultRoot, path))).toBe(false);
+  });
+
+  test("race: propose a creation, then create the file on disk, then approve → TARGET_EXISTS, no overwrite", async () => {
+    const { broker, vaultRoot } = await makeBroker();
+    const path = "Testing/raced.md";
+    const patch = creationDiff(path, ["# Proposed", "proposed body"]);
+
+    const proposed = await broker.apply({
+      op: "propose_edit",
+      path,
+      patch,
+      reason: "propose creation",
+      session: "s1",
+    });
+    if (!proposed.ok || !("queued" in proposed) || !proposed.queued) {
+      throw new Error("expected a queued result");
+    }
+
+    // The file appears on disk between propose and approve.
+    mkdirSync(join(vaultRoot, "Testing"), { recursive: true });
+    writeFileSync(join(vaultRoot, path), "appeared out of band\n", "utf8");
+
+    let thrown: unknown;
+    try {
+      await broker.apply(
+        { op: "revise", path, patch, reason: "propose creation", session: "s1" },
+        { approved: true, approvalId: proposed.approvalId },
+      );
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(BrokerError);
+    expect((thrown as BrokerError).code).toBe("TARGET_EXISTS");
+    // No overwrite of the out-of-band file.
+    expect(readFileSync(join(vaultRoot, path), "utf8")).toBe("appeared out of band\n");
+  });
+
+  test("creation into a nonexistent parent dir (Testing/ absent) → approve creates the dir + file; undo removes the file", async () => {
+    const { broker, journal, git, vaultRoot, now, genId } = await makeBroker();
+    const path = "Testing/deep/child.md";
+    expect(existsSync(join(vaultRoot, "Testing"))).toBe(false);
+    const patch = creationDiff(path, ["# Deep", "deep body"]);
+
+    const proposed = await broker.apply({
+      op: "propose_edit",
+      path,
+      patch,
+      reason: "propose creation into an absent parent",
+      session: "s1",
+    });
+    if (!proposed.ok || !("queued" in proposed) || !proposed.queued) {
+      throw new Error("expected a queued result");
+    }
+
+    const applied = await broker.apply(
+      { op: "revise", path, patch, reason: "propose creation into an absent parent", session: "s1" },
+      { approved: true, approvalId: proposed.approvalId },
+    );
+    if (!applied.ok || "queued" in applied) throw new Error("expected an applied result");
+    expect(existsSync(join(vaultRoot, path))).toBe(true);
+    expect(readFileSync(join(vaultRoot, path), "utf8")).toBe("# Deep\ndeep body\n");
+
+    // Undo removes the file (the empty Testing/deep/ dir may remain — decided).
+    await undoTransaction({ git, journal, now, genId, lockDir: UNSAFE_NO_LOCK }, applied.txnId!);
+    expect(existsSync(join(vaultRoot, path))).toBe(false);
+  });
+
+  test("DEFENSE IN DEPTH: a direct approved revise with a creation diff carrying a ledger block → LEDGER_GUARD at APPLY (bypasses propose's Option B)", async () => {
+    const { broker, journal, vaultRoot } = await makeBroker();
+    const path = "Fresh/governed.md";
+    // A creation diff whose content is a note WITH a governed ledger block —
+    // the exact shape propose's Option B rejects. Feed it straight to the apply
+    // path (approved revise), bypassing applyProposeEdit entirely.
+    const patch = creationDiff(path, ["---", "ledger:", "  status: canonical", "---", "", "body"]);
+    await expect(
+      broker.apply(
+        { op: "revise", path, patch, reason: "smuggle a canonical belief via creation", session: "s1" },
+        { approved: true, approvalId: "apr_forged" },
+      ),
+    ).rejects.toMatchObject({ code: "LEDGER_GUARD" });
+    // And no file was created.
+    expect(existsSync(join(vaultRoot, path))).toBe(false);
+    expect(journal.listTransactions({ limit: 10 }).length).toBe(0);
   });
 });

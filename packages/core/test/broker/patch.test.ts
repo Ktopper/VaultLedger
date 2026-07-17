@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { createPatch } from "diff";
-import { applyPatch, assertPatchParseable } from "../../src/broker/patch.js";
+import { applyPatch, assertPatchParseable, patchTargetKind } from "../../src/broker/patch.js";
 import { BrokerError } from "../../src/errors.js";
 
 describe("applyPatch", () => {
@@ -145,5 +145,21 @@ describe("assertPatchParseable", () => {
     expect(() => assertPatchParseable(V4A, true)).toThrow();
     try { assertPatchParseable(V4A, true); } catch (e) { expect((e as BrokerError).retriable).toBe(true); }
     try { assertPatchParseable(V4A, false); } catch (e) { expect((e as BrokerError).retriable).toBe(false); }
+  });
+});
+
+describe("patchTargetKind", () => {
+  const kind = (p: string) => patchTargetKind(assertPatchParseable(p));
+  test("--- /dev/null → create", () => {
+    expect(kind("--- /dev/null\n+++ b/x.md\n@@ -0,0 +1,1 @@\n+hi\n")).toBe("create");
+  });
+  test("+++ /dev/null → delete", () => {
+    expect(kind("--- a/x.md\n+++ /dev/null\n@@ -1,1 +0,0 @@\n-hi\n")).toBe("delete");
+  });
+  test("normal headers → edit", () => {
+    expect(kind("--- a/x.md\n+++ b/x.md\n@@ -1,1 +1,1 @@\n-a\n+b\n")).toBe("edit");
+  });
+  test("insert-at-top of an EXISTING file (oldLines:0 but real oldFileName) → edit, NOT create", () => {
+    expect(kind("--- a/x.md\n+++ b/x.md\n@@ -0,0 +1,1 @@\n+new first line\n")).toBe("edit");
   });
 });

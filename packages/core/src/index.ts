@@ -1,4 +1,4 @@
-export const VERSION = "0.4.3";
+export const VERSION = "0.4.4";
 export * from "./schemas/provenance.js";
 export * from "./schemas/operation.js";
 export * from "./schemas/manifest.js";

@@ -190,7 +190,7 @@ const ProposeEditInput = z
     path: z.string().min(1).max(PATH_MAX_LENGTH),
     patch: byteCappedText(TEXT_MAX_BYTES, "patch"),
     reason: z.string().min(1).max(REASON_MAX_LENGTH),
-    expected_hash: z.string().min(1).max(ID_MAX_LENGTH),
+    expected_hash: z.string().min(1).max(ID_MAX_LENGTH).optional(),
   })
   .strict();
 
@@ -358,7 +358,8 @@ export function buildTools(ctx: ServerContext): ToolDef[] {
     {
       name: "vault_propose_edit",
       description:
-        "Propose a patch to a trusted-zone note. Always queued for human approval; rejected outright for excluded paths. patch must be a unified diff (--- / +++ file headers, @@ hunks) for a single file — NOT *** Begin Patch / V4A style.",
+        "Propose a patch to a trusted-zone note. Always queued for human approval; rejected outright for excluded paths. patch must be a unified diff (--- / +++ file headers, @@ hunks) for a single file — NOT *** Begin Patch / V4A style." +
+        " To CREATE a new file, use the unified-diff creation form: --- /dev/null, +++ b/<path>, @@ -0,0 +N @@ (and omit expected_hash). Editing an existing file requires expected_hash. File deletion is not supported.",
       inputSchema: ProposeEditInput,
       handler: (rawArgs) =>
         guarded(async () => {
