@@ -1573,4 +1573,22 @@ describe("Broker", () => {
     await undoTransaction({ git, journal, now, genId, lockDir: UNSAFE_NO_LOCK }, applied.txnId!);
     expect(existsSync(join(vaultRoot, path))).toBe(false);
   });
+
+  test("DEFENSE IN DEPTH: a direct approved revise with a creation diff carrying a ledger block → LEDGER_GUARD at APPLY (bypasses propose's Option B)", async () => {
+    const { broker, journal, vaultRoot } = await makeBroker();
+    const path = "Fresh/governed.md";
+    // A creation diff whose content is a note WITH a governed ledger block —
+    // the exact shape propose's Option B rejects. Feed it straight to the apply
+    // path (approved revise), bypassing applyProposeEdit entirely.
+    const patch = creationDiff(path, ["---", "ledger:", "  status: canonical", "---", "", "body"]);
+    await expect(
+      broker.apply(
+        { op: "revise", path, patch, reason: "smuggle a canonical belief via creation", session: "s1" },
+        { approved: true, approvalId: "apr_forged" },
+      ),
+    ).rejects.toMatchObject({ code: "LEDGER_GUARD" });
+    // And no file was created.
+    expect(existsSync(join(vaultRoot, path))).toBe(false);
+    expect(journal.listTransactions({ limit: 10 }).length).toBe(0);
+  });
 });

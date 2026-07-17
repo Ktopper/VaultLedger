@@ -342,11 +342,22 @@ export class Broker {
         throw new BrokerError("TARGET_EXISTS", `target appeared since propose: ${op.path}`, false);
       }
       const after = applyPatch("", op.patch, this.patchThreshold);
+      // Defense in depth (matches this method's "recompute, never trust the
+      // queue" contract, same posture as the S2-03 apply-time LEDGER_GUARD): the
+      // propose gate already enforces Option B, but re-assert it here so a future
+      // caller that hands applyRevise a creation diff carrying a `ledger:`/entity
+      // block onto a fresh path (bypassing applyProposeEdit) cannot silently mint
+      // governed provenance. governedProvenanceChanged is already imported.
+      if (governedProvenanceChanged("", after)) {
+        throw new BrokerError(
+          "LEDGER_GUARD",
+          `a new file created via vault_propose_edit is a plain document; governed provenance ` +
+            `(a ledger: block / top-level entity) is minted by the memory tools, not by file creation: ${op.path}`,
+        );
+      }
       // Early return via the shared create path (txn op:"create" → undo
-      // deletes). Skips the edit-only guards (assertStructurePreserved,
-      // governedProvenanceChanged) and the baseline data-loss commit — all
-      // nonsensical for a file that never existed. Option B already guaranteed
-      // at propose that a creation carries no governed provenance.
+      // deletes). Skips the OTHER edit-only guards (assertStructurePreserved) and
+      // the baseline data-loss commit — nonsensical for a file that never existed.
       return await this.createFile(op.path, abs, after, op.session, op.reason, approvalId);
     }
 
