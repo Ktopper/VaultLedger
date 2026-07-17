@@ -62,6 +62,19 @@ export const RejectionCode = {
   // Not retriable: the same scan of the same tree reproduces the identical
   // (broken) manifest every time -- only a code fix resolves it.
   INVARIANT_VIOLATION: "INVARIANT_VIOLATION",
+  // v0.4.5 (structured replace): the `old_text` of a vault_propose_replace
+  // replacement matched 0 times in the hash-pinned snapshot. Retriable and
+  // DISTINCT from NOT_FOUND (which is a genuinely-missing FILE, non-retriable):
+  // here the file exists and the fix is "add more surrounding context / correct
+  // the text and retry", so it must tell the agent to retry.
+  TEXT_NOT_FOUND: "TEXT_NOT_FOUND",
+  // v0.4.5: an `old_text` matched a different number of times than
+  // `expected_occurrences` (default 1). Retriable — the agent widens the
+  // context to make the match unique (or sets expected_occurrences).
+  AMBIGUOUS_MATCH: "AMBIGUOUS_MATCH",
+  // v0.4.5: two replacements' match spans overlap in the one snapshot, so
+  // "apply both" is undefined. Retriable — the agent drops/merges one.
+  OVERLAPPING_REPLACEMENTS: "OVERLAPPING_REPLACEMENTS",
 } as const;
 
 export type RejectionCode = (typeof RejectionCode)[keyof typeof RejectionCode];
@@ -90,6 +103,11 @@ const RETRIABLE: Record<RejectionCode, boolean> = {
   // least one source) and resubmit.
   INVALID_SOURCE: false,
   INVARIANT_VIOLATION: false,
+  // All three are agent-fixable input conditions against a live snapshot:
+  // add context, correct the text, or drop an overlapping replacement.
+  TEXT_NOT_FOUND: true,
+  AMBIGUOUS_MATCH: true,
+  OVERLAPPING_REPLACEMENTS: true,
 };
 
 export interface Rejection {
