@@ -17,7 +17,7 @@ import { undoTransaction } from "../../src/broker/undo.js";
 import { LedgerGit } from "../../src/broker/git.js";
 import { Journal } from "../../src/journal/journal.js";
 import { openJournal } from "../../src/journal/db.js";
-import { hashBytes } from "../../src/broker/hash.js";
+import { hashBytes, hashFile } from "../../src/broker/hash.js";
 import { BrokerError } from "../../src/errors.js";
 import { UNSAFE_NO_LOCK } from "../../src/concurrency/lock.js";
 import type { PermissionsManifest } from "../../src/schemas/manifest.js";
@@ -1590,5 +1590,151 @@ describe("Broker", () => {
     // And no file was created.
     expect(existsSync(join(vaultRoot, path))).toBe(false);
     expect(journal.listTransactions({ limit: 10 }).length).toBe(0);
+  });
+
+  // -------------------------------------------------------------------
+  // structured propose (0.4.5): vault_propose_replace + vault_propose_create.
+  // Both new ops generate a patch in the broker and delegate to the EXISTING
+  // applyProposeEdit, so these e2e tests reuse the 0.4.4 held_operation +
+  // approve/undo idioms to prove the SAME downstream is exercised (spec §3).
+  // -------------------------------------------------------------------
+
+  describe("structured propose (0.4.5)", () => {
+    // replace: the field repro — text on a non-first line, agent gives NO coordinates.
+    test("vault_propose_replace queues a correct diff for text on a later line", async () => {
+      const { broker, journal, vaultRoot } = await makeBroker();
+      const path = "Agent/note.md";
+      const body = Array.from({ length: 40 }, (_, i) => `row ${i + 1}`).join("\n") + "\n";
+      await broker.apply({ op: "create", path, content: body, reason: "seed", session: "s1" });
+      const hash = hashFile(join(vaultRoot, path)); // sha256:<hex>
+
+      const res = await broker.apply({
+        op: "propose_replace",
+        path,
+        expected_hash: hash,
+        replacements: [{ old_text: "row 32", new_text: "row THIRTY-TWO" }],
+        reason: "fix row 32",
+        session: "s1",
+      });
+      expect(res.ok).toBe(true);
+      if (!res.ok || !("queued" in res) || !res.queued) {
+        throw new Error("expected a queued result");
+      }
+      expect(res.approvalId).toBeDefined();
+
+      // The QUEUED op is a plain propose_edit carrying a NORMAL unified diff —
+      // the same held-operation shape a raw propose_edit produces (downstream
+      // unchanged). Read it via the exact accessor the propose_edit tests use.
+      const held = JSON.parse(journal.getApproval(res.approvalId)!.held_operation);
+      expect(held.op).toBe("propose_edit");
+      expect(held.path).toBe(path);
+      expect(held.expected_hash).toBe(hash);
+      expect(held.patch).toContain("@@");
+      expect(held.patch).toContain("-row 32");
+      expect(held.patch).toContain("+row THIRTY-TWO");
+      // A normal EDIT diff, not a /dev/null creation.
+      expect(held.patch).not.toContain("/dev/null");
+    });
+
+    test("stale expected_hash on replace → STALE_HASH", async () => {
+      const { broker } = await makeBroker();
+      const path = "Agent/note.md";
+      await broker.apply({ op: "create", path, content: "hello\n", reason: "seed", session: "s1" });
+      await expect(
+        broker.apply({
+          op: "propose_replace",
+          path,
+          expected_hash: "sha256:" + "0".repeat(64),
+          replacements: [{ old_text: "hello", new_text: "hi" }],
+          reason: "x",
+          session: "s1",
+        }),
+      ).rejects.toMatchObject({ code: "STALE_HASH" });
+    });
+
+    test("replace on a missing file → NOT_FOUND (retriable)", async () => {
+      const { broker } = await makeBroker();
+      await expect(
+        broker.apply({
+          op: "propose_replace",
+          path: "Agent/ghost.md",
+          expected_hash: "sha256:" + "0".repeat(64),
+          replacements: [{ old_text: "x", new_text: "y" }],
+          reason: "x",
+          session: "s1",
+        }),
+      ).rejects.toMatchObject({ code: "NOT_FOUND", retriable: true });
+    });
+
+    test("vault_propose_create queues a /dev/null creation diff; approve creates; undo removes", async () => {
+      const { broker, journal, git, vaultRoot, now, genId } = await makeBroker();
+      const path = "Agent/new-note.md";
+      const content = "# New\n\nbody\n";
+
+      const proposed = await broker.apply({
+        op: "propose_create",
+        path,
+        content,
+        reason: "create it",
+        session: "s1",
+      });
+      expect(proposed.ok).toBe(true);
+      if (!proposed.ok || !("queued" in proposed) || !proposed.queued) {
+        throw new Error("expected a queued result");
+      }
+      const approvalId = proposed.approvalId;
+
+      // The held op is a plain propose_edit carrying a /dev/null CREATION diff.
+      const held = JSON.parse(journal.getApproval(approvalId)!.held_operation);
+      expect(held.op).toBe("propose_edit");
+      expect(held.path).toBe(path);
+      expect(held.expected_hash).toBeUndefined();
+      expect(held.patch).toContain("/dev/null");
+
+      // Approve via the SAME idiom the 0.4.4 creation e2e uses: the held propose
+      // op reshaped to a revise, driven with the approval and its stored patch.
+      const applied = await broker.apply(
+        { op: "revise", path, patch: held.patch, reason: "create it", session: "s1" },
+        { approved: true, approvalId },
+      );
+      expect(applied.ok).toBe(true);
+      if (!applied.ok || "queued" in applied) throw new Error("expected an applied result");
+
+      expect(existsSync(join(vaultRoot, path))).toBe(true);
+      expect(readFileSync(join(vaultRoot, path), "utf8")).toBe(content);
+      expect(await git.fileAtHead(path)).not.toBeNull();
+
+      const txn = journal.getTransaction(applied.txnId!);
+      expect(txn!.op).toBe("create");
+      expect(txn!.hash_before).toBeNull();
+
+      // Undo removes the file (a create's own commit is its first git appearance).
+      await undoTransaction({ git, journal, now, genId, lockDir: UNSAFE_NO_LOCK }, applied.txnId!);
+      expect(existsSync(join(vaultRoot, path))).toBe(false);
+    });
+
+    test("propose_create with governed provenance in content → LEDGER_GUARD (Option B inherited)", async () => {
+      const { broker, journal } = await makeBroker();
+      await expect(
+        broker.apply({
+          op: "propose_create",
+          path: "Agent/x.md",
+          content: "---\nledger:\n  status: canonical\n---\nbody\n",
+          reason: "x",
+          session: "s1",
+        }),
+      ).rejects.toMatchObject({ code: "LEDGER_GUARD", retriable: true });
+      expect(journal.listApprovals().length).toBe(0);
+    });
+
+    test("propose_create onto an existing file → TARGET_EXISTS", async () => {
+      const { broker, journal } = await makeBroker();
+      const path = "Agent/exists.md";
+      await broker.apply({ op: "create", path, content: "seed\n", reason: "seed", session: "s1" });
+      await expect(
+        broker.apply({ op: "propose_create", path, content: "new\n", reason: "x", session: "s1" }),
+      ).rejects.toMatchObject({ code: "TARGET_EXISTS" });
+      expect(journal.listApprovals().length).toBe(0);
+    });
   });
 });
