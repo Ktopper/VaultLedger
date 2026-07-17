@@ -7,6 +7,7 @@ import type { ApprovalRow, Journal, TransactionRow } from "../journal/journal.js
 import { resolveZone } from "../zones.js";
 import { assertHashFormat, hashBytes, hashFile } from "./hash.js";
 import { applyPatch, assertPatchParseable, patchTargetKind } from "./patch.js";
+import { generateCreatePatch, generateReplacementPatch } from "./replace.js";
 import { assertStructurePreserved, governedProvenanceChanged } from "./lint.js";
 import { assertContainedAndReadable, writeContainedFile } from "./containment.js";
 import { formatMessage, type LedgerGit } from "./git.js";
@@ -55,6 +56,8 @@ export interface BrokerOptions {
 type CreateOp = Extract<ProposedOperation, { op: "create" }>;
 type ReviseOp = Extract<ProposedOperation, { op: "revise" }>;
 type ProposeEditOp = Extract<ProposedOperation, { op: "propose_edit" }>;
+type ProposeReplaceOp = Extract<ProposedOperation, { op: "propose_replace" }>;
+type ProposeCreateOp = Extract<ProposedOperation, { op: "propose_create" }>;
 
 /**
  * The single gate every vault write passes through (design §5). Every
@@ -105,6 +108,10 @@ export class Broker {
           return this.applyRevise(op, opts?.approved ?? false, approvalId);
         case "propose_edit":
           return this.applyProposeEdit(op);
+        case "propose_replace":
+          return this.applyProposeReplace(op);
+        case "propose_create":
+          return this.applyProposeCreate(op);
         case "promote":
         case "forget":
         case "distill":
@@ -587,5 +594,57 @@ export class Broker {
     this.journal.insertApproval(row);
 
     return { ok: true, queued: true, approvalId };
+  }
+
+  /**
+   * v0.4.5: structured replace. Read + hash-verify the snapshot inside the
+   * vault lock, generate an EDIT diff from the exact find/replace set, then
+   * feed the EXISTING applyProposeEdit (which re-checks the hash at approve).
+   * The double hash check is intentional (spec §1): propose-time here (the
+   * replacements matched the right snapshot) AND approve-time in applyRevise
+   * (no drift during the queue wait).
+   */
+  private applyProposeReplace(op: ProposeReplaceOp): QueuedResult {
+    // resolveAbs enforces containment AND rejects the excluded zone before any read.
+    const abs = this.resolveAbs(op.path);
+    if (!existsSync(abs)) {
+      throw new BrokerError("NOT_FOUND", `cannot replace in ${op.path}: file does not exist`, true);
+    }
+    // Well-formed + normalized (lowercased). Throws MALFORMED_HASH on a bad hash.
+    const expected = assertHashFormat(op.expected_hash);
+    const buf = readFileSync(abs);
+    if (hashBytes(buf) !== expected) {
+      throw new BrokerError(
+        "STALE_HASH",
+        `expected_hash does not match the current ${op.path} — recompute and retry`,
+      );
+    }
+    const patch = generateReplacementPatch(op.path, buf.toString("utf8"), op.replacements);
+    return this.applyProposeEdit({
+      op: "propose_edit",
+      path: op.path,
+      expected_hash: op.expected_hash,
+      patch,
+      reason: op.reason,
+      session: op.session,
+    });
+  }
+
+  /**
+   * v0.4.5: structured creation. Generate a `/dev/null`-headed creation diff
+   * and feed the EXISTING applyProposeEdit create branch, which owns the
+   * TARGET_EXISTS check, the dry-run, and Option B (governed provenance in
+   * `content` is rejected identically). No expected_hash (the create branch
+   * forbids one).
+   */
+  private applyProposeCreate(op: ProposeCreateOp): QueuedResult {
+    const patch = generateCreatePatch(op.path, op.content);
+    return this.applyProposeEdit({
+      op: "propose_edit",
+      path: op.path,
+      patch,
+      reason: op.reason,
+      session: op.session,
+    });
   }
 }
