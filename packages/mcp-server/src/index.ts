@@ -32,6 +32,8 @@ export function listToolNames(): string[] {
     "memory_forget",
     "memory_retire",
     "vault_propose_edit",
+    "vault_propose_replace",
+    "vault_propose_create",
     "ledger_status",
   ];
 }

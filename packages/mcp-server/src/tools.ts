@@ -68,6 +68,15 @@ function byteCappedText(limit: number, field: string) {
       message: `${field} exceeds ${limit} bytes (UTF-8)`,
     });
 }
+/** Like byteCappedText but WITHOUT a min-length floor — for replacement
+ * old_text/new_text. An empty new_text is a legal intra-file deletion; an empty
+ * old_text is a RETRIABLE broker reject (not a non-retriable INVALID_ARGS), so
+ * it must pass the zod layer and reach the broker. */
+function byteCappedTextAllowEmpty(limit: number, field: string) {
+  return z.string().refine((s) => Buffer.byteLength(s, "utf8") <= limit, {
+    message: `${field} exceeds ${limit} bytes (UTF-8)`,
+  });
+}
 /** A `reason` is a short human-readable justification, not note content --
  * capped far below TEXT_MAX_BYTES. */
 const REASON_MAX_LENGTH = 2_000;
@@ -191,6 +200,34 @@ const ProposeEditInput = z
     patch: byteCappedText(TEXT_MAX_BYTES, "patch"),
     reason: z.string().min(1).max(REASON_MAX_LENGTH),
     expected_hash: z.string().min(1).max(ID_MAX_LENGTH).optional(),
+  })
+  .strict();
+
+const ProposeReplaceInput = z
+  .object({
+    path: z.string().min(1).max(PATH_MAX_LENGTH),
+    expected_hash: z.string().min(1).max(ID_MAX_LENGTH),
+    replacements: z
+      .array(
+        z
+          .object({
+            old_text: byteCappedTextAllowEmpty(TEXT_MAX_BYTES, "old_text"),
+            new_text: byteCappedTextAllowEmpty(TEXT_MAX_BYTES, "new_text"),
+            expected_occurrences: z.number().int().positive().optional(),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(ARRAY_MAX_ITEMS),
+    reason: z.string().min(1).max(REASON_MAX_LENGTH),
+  })
+  .strict();
+
+const ProposeCreateInput = z
+  .object({
+    path: z.string().min(1).max(PATH_MAX_LENGTH),
+    content: byteCappedText(TEXT_MAX_BYTES, "content"),
+    reason: z.string().min(1).max(REASON_MAX_LENGTH),
   })
   .strict();
 
@@ -380,6 +417,53 @@ export function buildTools(ctx: ServerContext): ToolDef[] {
           // propose_edit always queues (Broker.applyProposeEdit never applies
           // directly) — this branch is unreachable in practice but keeps the
           // handler total over ApplyResult's shape.
+          return { queued: false };
+        }),
+    },
+    {
+      name: "vault_propose_replace",
+      description:
+        "Propose an edit to an existing trusted-zone note by describing exact text to find and what to replace it with — no diffs, no line numbers. Each replacement is {old_text, new_text}; set expected_occurrences if the text appears more than once. Requires expected_hash (the note's current hash from memory_recall / ledger_status). Always queued for human approval.",
+      inputSchema: ProposeReplaceInput,
+      handler: (rawArgs) =>
+        guarded(async () => {
+          const parsed = ProposeReplaceInput.safeParse(rawArgs);
+          if (!parsed.success) return invalidArgs(parsed.error.message);
+          const { path, expected_hash, replacements, reason } = parsed.data;
+          const result = await ctx.broker.apply({
+            op: "propose_replace",
+            path,
+            expected_hash,
+            replacements,
+            reason,
+            session: ctx.session,
+          });
+          if ("queued" in result && result.queued) {
+            return { queued: true, approvalId: result.approvalId };
+          }
+          return { queued: false };
+        }),
+    },
+    {
+      name: "vault_propose_create",
+      description:
+        "Propose creating a NEW trusted-zone note from its full content — no diffs, no hash. Always queued for human approval; rejected if the file already exists, or if the content carries governed provenance (a ledger: block or top-level entity — those are minted by the memory tools, not by file creation).",
+      inputSchema: ProposeCreateInput,
+      handler: (rawArgs) =>
+        guarded(async () => {
+          const parsed = ProposeCreateInput.safeParse(rawArgs);
+          if (!parsed.success) return invalidArgs(parsed.error.message);
+          const { path, content, reason } = parsed.data;
+          const result = await ctx.broker.apply({
+            op: "propose_create",
+            path,
+            content,
+            reason,
+            session: ctx.session,
+          });
+          if ("queued" in result && result.queued) {
+            return { queued: true, approvalId: result.approvalId };
+          }
           return { queued: false };
         }),
     },
