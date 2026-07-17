@@ -15,7 +15,7 @@ import { buildTools, type ToolDef } from "./tools.js";
 
 const SERVER_NAME = "vaultledger-mcp";
 // Keep in sync with packages/mcp-server/package.json "version".
-const SERVER_VERSION = "0.4.4";
+const SERVER_VERSION = "0.4.5";
 
 /** Static tool-name list, independent of any ServerContext — used by the
  * placeholder smoke test and anything that just wants the tool surface
@@ -32,6 +32,8 @@ export function listToolNames(): string[] {
     "memory_forget",
     "memory_retire",
     "vault_propose_edit",
+    "vault_propose_replace",
+    "vault_propose_create",
     "ledger_status",
   ];
 }

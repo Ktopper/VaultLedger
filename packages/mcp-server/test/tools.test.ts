@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { createPatch } from "diff";
+import { hashFile } from "@vault-ledger/core";
 import { loadServerContext, type ServerContext } from "../src/context.js";
 import { buildTools, type ToolDef } from "../src/tools.js";
 import { listToolNames, parseNoSweep, parseVaultArg } from "../src/index.js";
@@ -39,7 +40,7 @@ async function setup(): Promise<{ tools: Map<string, ToolDef> }> {
 }
 
 describe("buildTools", () => {
-  test("registers exactly the 9 spec tools", async () => {
+  test("registers exactly the 11 spec tools", async () => {
     const { tools } = await setup();
     expect([...tools.keys()].sort()).toEqual(
       [
@@ -52,6 +53,8 @@ describe("buildTools", () => {
         "memory_retire",
         "memory_revise",
         "vault_propose_edit",
+        "vault_propose_replace",
+        "vault_propose_create",
       ].sort(),
     );
   });
@@ -251,6 +254,71 @@ describe("buildTools", () => {
     const error = result.error as { code: string; retriable: boolean };
     expect(error.code).toBe("FORBIDDEN_ZONE");
     expect(error.retriable).toBe(false);
+  });
+
+  test("vault_propose_replace is registered and queues via the broker", async () => {
+    const { tools } = await setup();
+    const path = "Notes/trusted.md";
+    // The note is seeded by makeTestVault; pin its live hash the same way an
+    // agent would (from memory_recall / ledger_status).
+    const expected_hash = hashFile(join(vault.vaultDir, path));
+
+    const propose = tools.get("vault_propose_replace")!;
+    const result = await propose.handler({
+      path,
+      expected_hash,
+      replacements: [{ old_text: "Some content.", new_text: "New content." }],
+      reason: "fix the body via structured replace",
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.queued).toBe(true);
+    expect(typeof result.approvalId).toBe("string");
+  });
+
+  test("vault_propose_replace: empty old_text reaches the broker as RETRIABLE (not INVALID_ARGS)", async () => {
+    const { tools } = await setup();
+    const path = "Notes/trusted.md";
+    // Valid, matching hash so the handler gets PAST the hash gate and into the
+    // pure generator, where empty old_text is rejected — proving the zod schema
+    // does not floor old_text with .min(1) (which would surface INVALID_ARGS).
+    const expected_hash = hashFile(join(vault.vaultDir, path));
+
+    const propose = tools.get("vault_propose_replace")!;
+    const result = await propose.handler({
+      path,
+      expected_hash,
+      replacements: [{ old_text: "", new_text: "x" }],
+      reason: "empty old_text",
+    });
+
+    expect(result.queued).toBeUndefined();
+    expect(result.error).toBeTruthy();
+    const error = result.error as { code: string; retriable: boolean };
+    expect(error.retriable).toBe(true);
+    expect(error.code).toBe("SYNTAX_BREAK");
+    expect(error.code).not.toBe("INVALID_ARGS");
+  });
+
+  test("vault_propose_create is registered and queues a creation", async () => {
+    const { tools } = await setup();
+    const propose = tools.get("vault_propose_create")!;
+    const result = await propose.handler({
+      path: "Notes/created.md",
+      content: "# New\n\nbody\n",
+      reason: "create a new note from full content",
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.queued).toBe(true);
+    expect(typeof result.approvalId).toBe("string");
+  });
+
+  test("both new tools appear in the catalog (count 9 -> 11)", async () => {
+    const { tools } = await setup();
+    expect(tools.has("vault_propose_replace")).toBe(true);
+    expect(tools.has("vault_propose_create")).toBe(true);
+    expect(tools.size).toBe(11);
   });
 
   test("memory_promote working->canonical returns an approvalId, surfaced by ledger_status", async () => {

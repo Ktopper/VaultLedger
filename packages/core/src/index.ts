@@ -1,4 +1,4 @@
-export const VERSION = "0.4.4";
+export const VERSION = "0.4.5";
 export * from "./schemas/provenance.js";
 export * from "./schemas/operation.js";
 export * from "./schemas/manifest.js";
@@ -6,6 +6,7 @@ export * from "./zones.js";
 export * from "./errors.js";
 export * from "./broker/hash.js";
 export * from "./broker/patch.js";
+export * from "./broker/replace.js";
 export * from "./broker/lint.js";
 export * from "./broker/git.js";
 export * from "./broker/containment.js";
