@@ -6,6 +6,7 @@ export * from "./zones.js";
 export * from "./errors.js";
 export * from "./broker/hash.js";
 export * from "./broker/patch.js";
+export * from "./broker/replace.js";
 export * from "./broker/lint.js";
 export * from "./broker/git.js";
 export * from "./broker/containment.js";
