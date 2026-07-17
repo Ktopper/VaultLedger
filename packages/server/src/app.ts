@@ -53,6 +53,19 @@ const BROKER_ERROR_STATUS: Record<RejectionCode, number> = {
   // exhaustiveness -- 500 because it signals an internal invariant the tool
   // failed to uphold, not a client-caused rejection.
   INVARIANT_VIOLATION: 500,
+  // v0.4.5 structured-replace codes. Not reachable through any server route
+  // today (vault_propose_replace/_create are MCP-only), so these are included
+  // only for Record<RejectionCode, number> exhaustiveness -- but the values
+  // still follow the established families. TEXT_NOT_FOUND / AMBIGUOUS_MATCH are
+  // "your view of the current snapshot is off -- recompute against the live
+  // content and retry", the same retry-against-current-state family as
+  // STALE_HASH (409). OVERLAPPING_REPLACEMENTS is the request's own
+  // replacements conflicting with each other regardless of server state -- a
+  // request-shape rejection, same family as INVALID_TRANSITION / INVALID_SOURCE
+  // (422).
+  TEXT_NOT_FOUND: 409,
+  AMBIGUOUS_MATCH: 409,
+  OVERLAPPING_REPLACEMENTS: 422,
 };
 
 const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
