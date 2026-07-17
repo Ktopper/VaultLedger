@@ -358,7 +358,7 @@ export class Broker {
       if (governedProvenanceChanged("", after)) {
         throw new BrokerError(
           "LEDGER_GUARD",
-          `a new file created via vault_propose_edit is a plain document; governed provenance ` +
+          `a newly created file is a plain document; governed provenance ` +
             `(a ledger: block / top-level entity) is minted by the memory tools, not by file creation: ${op.path}`,
         );
       }
@@ -557,7 +557,7 @@ export class Broker {
       if (governedProvenanceChanged("", newContent)) {
         throw new BrokerError(
           "LEDGER_GUARD",
-          `a new file created via vault_propose_edit is a plain document; governed provenance ` +
+          `a newly created file is a plain document; governed provenance ` +
             `(a ledger: block / top-level entity) is minted by the memory tools, not by file creation: ${op.path}`,
           true,
         );
