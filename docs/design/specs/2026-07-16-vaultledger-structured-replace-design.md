@@ -58,19 +58,35 @@ build step — see the rejected `vault_build_patch` alternative):
    manifest, path)` → `readFileSync` → `hashFile`. If the content's hash ≠
    `expected_hash` → **`STALE_HASH`** (the replacements would match the wrong
    snapshot). This pins the exact content the replacements are found in.
-2. **For each replacement, exact-match find + count** (`old_text` located by
-   plain substring search — **no fuzz, no regex, no normalization**):
-   - **0 occurrences → retriable `NOT_FOUND`** ("text not found in <path>").
+2. **Reject an empty `old_text` up front** (retriable input error) — `"".indexOf`
+   matches at every position and would produce pathological counts/overlaps.
+3. **For each replacement, exact-match find + count** — `old_text` located by
+   **non-overlapping left-to-right substring scan** (`indexOf`, advance past each
+   match by the match length; so `"aa"` in `"aaaa"` is 2, deterministic and
+   matching the splice). **No fuzz, no regex, no normalization.**
+   - **0 occurrences → retriable `TEXT_NOT_FOUND`** ("text not found in <path>").
+     (A NEW retriable code — NOT `NOT_FOUND`, which is non-retriable in the enum
+     and reserved for genuinely-missing files; see §5.)
    - **count ≠ `expected_occurrences` (default 1) → retriable `AMBIGUOUS_MATCH`**
      ("found N occurrences of the text, expected M — include more surrounding
      context to disambiguate").
-3. **Overlap rejection (multiple replacements, one snapshot).** Compute every
+4. **Overlap rejection (multiple replacements, one snapshot).** Compute every
    replacement's match span(s) against the ORIGINAL content; if any two spans
    **overlap → retriable `OVERLAPPING_REPLACEMENTS`**. (Applying against the one
    snapshot, not sequentially against a mutating string, is what makes "multiple
    replacements" well-defined.)
-4. **Splice all replacements from the original** → `newContent`.
-5. **`createPatch(path, oldContent, newContent)`** → the canonical unified diff.
+5. **Splice all replacements from the original** → `newContent`. If
+   `newContent === oldContent` (a true no-op — every `old_text === new_text`) →
+   retriable `SYNTAX_BREAK` "no changes" (thrown explicitly with `retriable:true`,
+   since SYNTAX_BREAK defaults non-retriable; cleaner than letting it surface as
+   the empty-diff "no parseable hunks").
+6. **`createPatch(path, oldContent, newContent)`** → the canonical unified diff.
+   **Self-check (cheap propose-time dry-run):** `applyPatch(oldContent,
+   generatedDiff) === newContent` before enqueue — the edit branch of
+   `applyProposeEdit` does NOT run `applyPatch` at propose (only the create
+   branch does), so the landing check first runs at APPROVE; a dry-run here
+   surfaces any generation bug at propose instead. Safe by construction, cheap
+   insurance.
 6. **Feed the existing `applyProposeEdit`** as `{path, expected_hash, patch:
    generatedDiff}`. Its edit branch (0.4.4) runs — the target exists, the hash
    is present, the landing check passes by construction.
@@ -85,9 +101,21 @@ consistent with the parse gate's empty-patch rejection.
 
 ## 2. `vault_propose_create` — structured creation ({path, content})
 
-`createPatch(path, "", content)` → a `--- /dev/null` creation diff → the
-EXISTING `applyProposeEdit` create branch (0.4.4). Spares agents hand-writing
-creation diffs — the same class of arithmetic replace removes.
+Generate a **`/dev/null`-headed creation diff** → the EXISTING `applyProposeEdit`
+create branch (0.4.4). Spares agents hand-writing creation diffs — the same
+class of arithmetic replace removes.
+
+- **CRITICAL (spec-review, verified by running jsdiff): `createPatch(path, "",
+  content)` does NOT produce a `/dev/null` diff.** jsdiff uses the filename you
+  pass **verbatim** on both `---`/`+++`, so `patchTargetKind` (keys off
+  `oldFileName === "/dev/null"`) returns **`edit`** → the create tool would hit
+  the edit branch → `NOT_FOUND` "edit diff, but <path> does not exist" →
+  **reject every creation**, and Option B (in the create branch) would never
+  run. The generator MUST put `/dev/null` as the OLD filename explicitly — e.g.
+  `structuredPatch("/dev/null", <path>, "", content, "", "")` + `formatPatch`
+  (or `createPatch("/dev/null", "", content)`). Verified: this yields
+  `oldFileName === "/dev/null"` → `patchTargetKind` "create", applies EXACT to
+  `""`, and reaches the Option B gate.
 
 - **Option B is inherited for FREE.** `applyProposeEdit`'s create branch already
   runs `governedProvenanceChanged("", newContent)` (0.4.4 + the apply-time
@@ -132,15 +160,22 @@ to the existing propose-edit core** (rather than duplicating the enqueue path):
   count + overlap + splice + `createPatch`) — no I/O, so its occurrence/overlap
   rules are unit-tested without a vault.
 - The op handlers do the I/O (read + hash-verify for replace; nothing for
-  create), call the helper (or `createPatch(path, "", content)` for create),
-  then construct a `propose_edit`-shaped op with the generated patch and run the
-  shared `applyProposeEdit` logic. **Factor `applyProposeEdit`'s
-  gate+enqueue body so the three ops (propose_edit, propose_replace,
-  propose_create) share it — one enqueue path, one set of gates.**
+  create), call the helper (replace) or generate a **`/dev/null`-headed** create
+  diff (create — §2), then construct a `propose_edit`-shaped op `{op:"propose_edit",
+  path, expected_hash, patch, session, reason}` and call `applyProposeEdit`
+  directly. **Spec-review confirmed `applyProposeEdit` is already the shared
+  body** — it needs only path/expected_hash/patch and does the gates+enqueue, so
+  a generated patch feeds straight in (an explicit refactor is optional tidy, not
+  required). For a create, the handler supplies no `expected_hash` (the create
+  branch forbids it).
 
-New rejection codes (add to the RejectionCode enum + RETRIABLE map, all
-retriable): `AMBIGUOUS_MATCH`, `OVERLAPPING_REPLACEMENTS`. Reuse `NOT_FOUND`
-(text not found), `STALE_HASH`, `SYNTAX_BREAK` (no-op) where they fit.
+New rejection codes (add to the RejectionCode enum + RETRIABLE map, **all
+retriable:true**): `TEXT_NOT_FOUND`, `AMBIGUOUS_MATCH`, `OVERLAPPING_REPLACEMENTS`.
+**Do NOT reuse `NOT_FOUND` for "text not found"** — `RETRIABLE.NOT_FOUND = false`
+in the enum (reserved for genuinely-missing files, correctly non-retriable), so
+overloading it would tell the agent NOT to retry a fully-retriable "add more
+context" case. Reuse `STALE_HASH` (snapshot drift) and `SYNTAX_BREAK`
+(no-op / empty diff — thrown with explicit `retriable:true`).
 
 ---
 
@@ -152,10 +187,14 @@ retriable): `AMBIGUOUS_MATCH`, `OVERLAPPING_REPLACEMENTS`. Reuse `NOT_FOUND`
   yields exactly the spliced content. (This is the load-bearing feasibility
   claim — verified in the brainstorm; pin it.)
 - `generateReplacementPatch` unit: exact single match → correct diff; 0 matches
-  → NOT_FOUND; 2 matches with `expected_occurrences:1` → AMBIGUOUS_MATCH; 2
-  matches with `expected_occurrences:2` → both replaced; two replacements whose
-  spans overlap → OVERLAPPING_REPLACEMENTS; two non-overlapping replacements →
-  both applied against the one snapshot; no-op (old===new) → empty-diff reject.
+  → `TEXT_NOT_FOUND` (retriable); 2 matches with `expected_occurrences:1` →
+  `AMBIGUOUS_MATCH`; 2 matches with `expected_occurrences:2` → both replaced;
+  overlapping-same-`old_text` count determinism (`"aa"` in `"aaaa"` → 2, not 3);
+  **empty `old_text` → retriable input reject**; two replacements whose spans
+  overlap → `OVERLAPPING_REPLACEMENTS`; two non-overlapping replacements → both
+  applied against the one snapshot; no-op (old===new) → retriable `SYNTAX_BREAK`
+  "no changes"; **the self-check dry-run** (`applyPatch(old, generated) ===
+  new`) passes for a valid replacement.
 - **replace end-to-end**: `vault_propose_replace` on a real file with wrong-line
   text (the field repro: text at line 32, agent gives no coordinates) → queues a
   correct diff → approve applies → undo reverts. Stale hash → STALE_HASH.
@@ -181,9 +220,9 @@ retriable): `AMBIGUOUS_MATCH`, `OVERLAPPING_REPLACEMENTS`. Reuse `NOT_FOUND`
 0.4.5 is the natural companion to 0.4.4: 0.4.4 built the **creation-diff
 plumbing** (pairing gate, create branch, Option B); 0.4.5 gives agents a
 **structured way to drive it** without writing the diff. `vault_propose_create`
-is literally `createPatch(path, "", content)` into the 0.4.4 create branch. Do
-NOT fold the two cycles — 0.4.4 shipped (merge 767b9bd); this is the next cycle,
-built on top.
+generates a `/dev/null`-headed creation diff (§2) into the 0.4.4 create branch.
+Do NOT fold the two cycles — 0.4.4 shipped (merge 767b9bd); this is the next
+cycle, built on top.
 
 ## 9. Post-land follow-ups (not code)
 - **Memory skill:** steer agents to `vault_propose_replace` / `vault_propose_create`
