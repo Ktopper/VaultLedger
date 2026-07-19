@@ -186,9 +186,10 @@ for a static example):
 
 Running straight out of this repo, `node <repo>/packages/mcp-server/dist/index.js`
 is the reliable invocation (the bare `vaultledger-mcp` bin only resolves once the
-package is globally installed/linked). The server exposes 9 tools: `memory_recall`,
+package is globally installed/linked). The server exposes 11 tools: `memory_recall`,
 `memory_remember`, `memory_distill`, `memory_revise`, `memory_promote`,
-`memory_forget`, `memory_retire`, `vault_propose_edit`, and `ledger_status`.
+`memory_forget`, `memory_retire`, `vault_propose_replace`, `vault_propose_create`,
+`vault_propose_edit`, and `ledger_status`.
 
 **4. Remember, then recall**
 
@@ -213,14 +214,18 @@ which session created it, not whoever's asking).
 **5. Propose a trusted-zone edit**
 
 Writes to the *trusted* zone (ordinary vault notes, not the agent zone) are
-never applied directly — `vault_propose_edit` always queues them for human
-approval:
+never applied directly — they always queue for human approval. The default write
+path is `vault_propose_replace` for edits and `vault_propose_create` for new
+files: the agent describes the change as exact find/replace text (or full
+content) and the broker builds the diff, so it never hand-writes one:
 
 ```json
-{ "path": "Projects/Nova.md", "patch": "<unified diff>", "expected_hash": "sha256:...", "reason": "assign an owner" }
+{ "path": "Projects/Nova.md", "expected_hash": "sha256:...", "replacements": [{ "old_text": "Owner: TBD", "new_text": "Owner: Priya" }], "reason": "assign an owner" }
 ```
 
-The file is untouched on disk until a human approves it.
+(`vault_propose_edit`, which takes a raw unified diff, is the advanced surface
+for a caller that already holds one.) The file is untouched on disk until a
+human approves it.
 
 **6. Check status**
 

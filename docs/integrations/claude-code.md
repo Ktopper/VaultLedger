@@ -69,7 +69,7 @@ step 2 fails: doctor green + recall broken means the wiring, not VaultLedger.
 
 ## 3. Teach it
 
-The nine tools are self-describing, so Claude Code *can* call them. The standing
+The eleven tools are self-describing, so Claude Code *can* call them. The standing
 instruction teaches **when** — six rules, each with its rationale. Read them at
 [`skills/vaultledger-memory/SNIPPET.md`](../../skills/vaultledger-memory/SNIPPET.md).
 A taste:
@@ -77,6 +77,13 @@ A taste:
 > **Recall before you start** on a known entity — because starting cold means
 > contradicting what's already known, or re-asking what the user already told
 > you.
+
+For vault writes specifically: `vault_propose_replace` (edits) and
+`vault_propose_create` (new files) are the default path — describe the change as
+exact find/replace text or full content and the broker builds the diff;
+`vault_propose_edit` (a raw unified diff) is the advanced surface. Rule 6 carries
+the discipline that makes a replace land first try (read the target fresh, copy
+`old_text` byte-for-byte).
 
 Two ways to install it:
 
