@@ -87,37 +87,70 @@ backlog note that recall's content read is output-bounded but not input-bounded;
 
 ---
 
-## 3. Governance — the same gate as propose
+## 3. Governance — same containment as propose, but excluded ≡ missing
 
-`vault_read` routes through **`assertContainedAndReadable(vaultRoot, manifest,
-path)`** — the single shared trust-boundary primitive the broker and recall
-already use. For free, this rejects:
-- **traversal** (`Notes/../../../etc/passwd`) → `FORBIDDEN_ZONE`;
-- **symlink escape** out of the vault root → `FORBIDDEN_ZONE`;
-- **excluded-zone** paths, including the hard-coded `.ledger/**` and `.git/**`
-  and anything the manifest's `excluded` globs match → `FORBIDDEN_ZONE`.
+`vault_read` enforces the SAME trust boundary as propose, with one deliberate
+divergence at the read surface (the must-confirm below). The shared primitive
+`assertContainedAndReadable(vaultRoot, manifest, path)` today throws a single
+`FORBIDDEN_ZONE` code for three distinct causes (verified in `containment.ts`):
+- **traversal** (`Notes/../../../etc/passwd`) — `"path escapes vault root"`;
+- **symlink escape** — `"path escapes vault root via symlink"`;
+- **excluded zone** (`resolveZone(...) === "excluded"`: the hard-coded
+  `.ledger/**`/`.git/**`, plus anything the manifest's `excluded` globs match) —
+  `"path is in excluded zone"`.
 
-Readable zones are therefore exactly the governed non-excluded zones (trusted /
-agent / scratch) — the same set the propose tools write to, which is the point:
-you read the note you're about to propose against.
+### MUST: an excluded path is agent-indistinguishable from a missing file (VL-SEC-S7-04)
 
-### `.obsidian` hardening (ruled: hard-exclude globally)
+If `vault_read` surfaced `FORBIDDEN_ZONE` (or any "excluded"/zone vocabulary) for
+an excluded-but-existing path while a genuinely-absent path returned `NOT_FOUND`,
+the tool becomes an **oracle**: an agent sweeps paths and reconstructs the
+excluded-glob map from the error shapes — exactly the disclosure
+`redactExcludedZones` (S7-04) exists to prevent. **Requirement:** at the read
+boundary, an excluded path and a missing path produce **byte-identical
+agent-visible rejections** — same `NOT_FOUND` code, same `retriable: true`, same
+message template (`file not found: <path>`, echoing only the agent-supplied path,
+**no zone vocabulary**). Traversal / symlink escape stay `FORBIDDEN_ZONE` — those
+are agent-caused structural violations, not an excluded-map disclosure.
+
+**Mechanism (single containment implementation — no divergence):** extract the
+containment+symlink core of `assertContainedAndReadable` into a pure,
+behavior-preserving `assertContained(vaultRoot, relPath): string` (steps 1–2 —
+traversal/symlink → `FORBIDDEN_ZONE`), and make `assertContainedAndReadable =
+assertContained` + the existing excluded-throw (so **propose is byte-for-byte
+unchanged** — its write path still raises `FORBIDDEN_ZONE` for excluded).
+`readVaultFile` then calls `assertContained`, and maps
+`resolveZone(path, manifest) === "excluded"` to `NOT_FOUND` **itself** — the
+generic `file not found: <path>`.
+
+- **Scope note (deliberate, per the ruling):** this equivalence is applied at the
+  READ boundary only. Propose's excluded → `FORBIDDEN_ZONE` is left as-is: a
+  write attempt is already an observable, queue-touching action, and Kris scoped
+  the oracle fix to `vault_read` (the sweepable surface). Propose's weaker
+  excluded/missing distinguishability is a pre-existing, separately-considered
+  property, not widened here.
+
+Readable zones are therefore the governed non-excluded zones (trusted / agent /
+scratch) — the set the propose tools write to; you read the note you're about to
+propose against.
+
+### `.obsidian` hardening (ruled: hard-exclude globally, both glob forms)
 
 `.obsidian/**` is excluded by the **default** manifest (`scanVault`), but is NOT
 in the hard-coded `ALWAYS_EXCLUDED_GLOBS` (only `.ledger`/`.git` are). A
 hand-edited or malformed manifest that dropped it would let `.obsidian` default
 to the **trusted** zone — and `.obsidian/plugins/vaultledger/` can hold the
-bridge token and plugin data. **Fix: add `.obsidian` (and `.obsidian/**`) to
-`ALWAYS_EXCLUDED_GLOBS`** in `zones.ts`, making the denial unconditional for
-`vault_read` AND propose (defense in depth, manifest-independent).
+bridge token and plugin data. **Fix: add BOTH `.obsidian` and `.obsidian/**`** to
+`ALWAYS_EXCLUDED_GLOBS` in `zones.ts` (the bare form covers the dir itself; the
+`/**` form the tree), making the denial unconditional, manifest-independent.
 
 - The sanctioned `setup --install-plugin` copies into `.obsidian/` via **direct
   fs** (`cli/src/setup/plugin.ts`), NOT through the broker / `resolveZone`, so it
   is unaffected — this only closes a governed read/write path that should never
   have reached `.obsidian` in the first place.
-- Small change to a shared primitive; a `zones` test pins that `.obsidian/foo`,
-  `.obsidian/plugins/vaultledger/data.json` resolve to `excluded` regardless of
-  manifest.
+- Because `.obsidian` is now `resolveZone` → `excluded`, it inherits the two
+  surface behaviors: **read** of `.obsidian/...` → `NOT_FOUND` (indistinguishable,
+  per the oracle rule); **propose** to `.obsidian/...` → `FORBIDDEN_ZONE`. Both
+  are tested in BOTH directions, manifest notwithstanding (§7).
 
 ---
 
@@ -168,11 +201,16 @@ It mirrors `recall`: a **standalone, pure-ish core function** the MCP tool wires
 directly.
 
 - **`readVaultFile(vaultRoot, manifest, path, opts?): VaultReadResult`** in a new
-  `packages/core/src/broker/read.ts` (composes `assertContainedAndReadable` +
+  `packages/core/src/broker/read.ts` (composes `assertContained` + `resolveZone` +
   `statSync` + `readFileSync` + `hashBytes`). `opts.maxBytes` overrides
   `READ_MAX_BYTES` (for tests). Returns `{ path, content, hash, size }`. Order:
-  1. `assertContainedAndReadable(vaultRoot, manifest, path)` → abs path
-     (traversal / symlink / excluded → `FORBIDDEN_ZONE`).
+  1. `assertContained(vaultRoot, path)` → abs path (traversal / symlink escape →
+     `FORBIDDEN_ZONE`; the extracted containment core — §3). **Then
+     `resolveZone(path, manifest) === "excluded"` → `NOT_FOUND`** with the
+     generic `file not found: <path>` message and `retriable: true` — the oracle
+     rule (§3): an excluded path is byte-identical to a missing one, NO zone
+     vocabulary. (This mapping happens HERE, at the read boundary, not in the
+     shared gate — propose is unchanged.)
   2. `statSync(abs)` in a try: **`ENOENT` → `NOT_FOUND`** thrown with
      **`retriable: true` at the call site** (the enum default stays
      non-retriable; this per-call override matches the 0.4.5 `applyProposeReplace`
@@ -197,9 +235,24 @@ directly.
 
 ### New rejection codes + the exhaustive-map couplings
 
-Add to `RejectionCode` + the `RETRIABLE` map (both **non-retriable**):
-- **`FILE_TOO_LARGE`** — file exceeds `READ_MAX_BYTES`.
-- **`NOT_TEXT`** — file isn't valid round-trippable UTF-8.
+**Retriable flag for every code this tool raises** (the exhaustive `RETRIABLE`
+record forces the two new entries anyway — stating them so the intent is on record):
+
+| code | new? | `retriable` | why |
+|---|---|---|---|
+| `NOT_FOUND` | existing | **`true`** (call-site override) | a wrong/missing path — and every excluded path (oracle rule) — is agent-fixable by correcting the path |
+| `FILE_TOO_LARGE` | **new** | **`false`** | the file can't shrink; retrying the identical read never succeeds |
+| `NOT_TEXT` | **new** | **`false`** | a binary/non-UTF-8 file never becomes text on retry |
+| `FORBIDDEN_ZONE` | existing | `false` | traversal/symlink escape — a structural violation, not retriable |
+
+**`FILE_TOO_LARGE` message states the honest consequence** — not a bare "too
+large", but that the file is **out of reach of the structured-edit path
+entirely** (its hash can't be obtained via `vault_read`, so it can't be safely
+proposed against) and the agent should **report to the human and stop, NOT fall
+back to guessing the bytes**. Guessing is the exact failure class this whole tool
+exists to kill; the over-cap message must say so, e.g.: *"file <path> is <n>
+bytes, over the <cap>-byte read cap; it cannot be read or structured-edited — ask
+a human to edit it directly, do not reconstruct its contents from memory."*
 
 **Pre-empt the couplings a new code / new tool always trips (learned in 0.4.5):**
 - `packages/server/src/app.ts` `BROKER_ERROR_STATUS: Record<RejectionCode, number>`
@@ -227,36 +280,75 @@ Add to `RejectionCode` + the `RETRIABLE` map (both **non-retriable**):
   + 1` → `FILE_TOO_LARGE` (asserted via `opts.maxBytes` on a small fixture so the
   test isn't a 64 KiB blob). The size gate reads via `statSync` (a spy/asserting
   the file was never `readFileSync`'d when over cap is a nice-to-have).
-- **governance denial**: traversal (`../outside`), `.ledger/journal.db`,
-  `.git/config`, and **`.obsidian/plugins/vaultledger/data.json`** each →
-  `FORBIDDEN_ZONE` — the `.obsidian` case pinned **regardless of manifest**
-  (proves the `ALWAYS_EXCLUDED_GLOBS` addition, not a manifest coincidence).
+- **traversal / symlink escape → `FORBIDDEN_ZONE`** (`../outside`, and a symlink
+  pointing out of the vault) — these stay a distinct code (agent-caused, not an
+  excluded-map disclosure).
+- **excluded → `NOT_FOUND`, NOT `FORBIDDEN_ZONE`**: reading `.ledger/journal.db`,
+  `.git/config`, `.obsidian/plugins/vaultledger/data.json`, and a
+  manifest-excluded `Private/secret.md` each returns `NOT_FOUND` (`retriable:
+  true`), with **no zone vocabulary** in the message. The `.obsidian` and
+  `.ledger`/`.git` cases pinned **regardless of manifest** (proves the
+  `ALWAYS_EXCLUDED_GLOBS` additions, not a manifest coincidence).
+- **NAMED must-confirm — excluded ≡ missing (VL-SEC-S7-04 oracle test):** seed an
+  EXISTING file in an excluded zone (`Private/secret.md`, manifest excludes
+  `Private/**`) and pick a genuinely-absent path (`Notes/ghost.md`). Read both;
+  assert the two rejection payloads are **indistinguishable**: identical `code`
+  (`NOT_FOUND`) and `retriable` (`true`), and message shape identical modulo the
+  echoed path (both match `/^file not found: /`; NEITHER contains
+  `excluded`/`zone`/`forbidden`). This is the disclosure guarantee — pin it
+  directly.
+- **`.obsidian` in BOTH directions** (per the ruling): `vault_read`
+  `.obsidian/plugins/vaultledger/data.json` → `NOT_FOUND` (indistinguishable);
+  and a `vault_propose_create`/`vault_propose_replace` targeting `.obsidian/...`
+  → `FORBIDDEN_ZONE` — both asserted with a manifest that does NOT list
+  `.obsidian` (proves the hard-exclude, not a manifest coincidence). Plus a
+  `zones` unit: bare `.obsidian` and `.obsidian/foo` both `resolveZone` →
+  `excluded` (both glob forms).
 - **missing file → `NOT_FOUND` with `retriable: true`** (surfaced from
   `statSync` `ENOENT`, not `readFileSync`).
 - **directory path → `NOT_FOUND`** (the `!isFile()` guard — proves a dir never
   reaches `readFileSync` to throw a raw `EISDIR` the harness would mislabel).
 - **non-UTF-8 → `NOT_TEXT`** (a fixture with an invalid UTF-8 byte sequence).
+- **over-cap message** contains the honest consequence (mentions the cap and that
+  the file can't be structured-edited); asserts it carries no "reconstruct"-able
+  fallback framing.
 - **NAMED integration test — the loop the field incident couldn't close:**
   `readVaultFile` a seeded note → take its `content` + `hash` → drive a
   `vault_propose_replace` with an `old_text` copied from `content` and
   `expected_hash = hash` → it queues a correct diff and approves cleanly. Proves
   read output feeds propose end-to-end.
 
-### Fixtures — from real observed data
+### Fixtures — from real observed data (derived from `xxd`, not retyped)
 
-Use the **actual "Testing" note from the field incident** as the primary fixture
-(seeded verbatim — exact frontmatter, whitespace, and trailing-newline state), so
-the hash/round-trip/propose tests exercise the real shape that surfaced the gap,
-not a synthetic one. (Note content supplied by Kris; baked into the test at
-build.)
+Use the **actual "Testing" note from the field incident** as the primary
+fixture, seeded **byte-for-byte** — exact frontmatter, LF endings, the underscore
+timestamp, and (the detail `cat`/`sed` can't disambiguate) the **trailing-newline
+state**. The fixture derives from an `xxd` dump Kris runs on the real vault
+(`shasum -a 256` + `wc -c` + `xxd` of the note); the test does NOT retype the note
+from a rendered view.
+
+Pre-computed candidates (to confirm which state the file is in at capture):
+- **with** a trailing newline → **150 bytes**, sha256
+  `55bf4472169d83d1a0bf3da6dd03d010d3406a0c0ba2ae0b72d0d0b5e3add67b`;
+- **without** → **149 bytes**, sha256 `6dd2241f…905b`.
+
+If the live `shasum` matches **neither**, the note has since been modified (e.g.
+Hermes's approved edit landed) — the `xxd` dump is then ground truth and the
+fixture uses whichever state it shows, **labeled accordingly in the test**
+(so the fixture's provenance is legible: which real state it captured, and when).
+The `hash` the tests assert `vault_read` returns MUST equal the fixture's real
+`shasum` (prefixed `sha256:`) — the whole point is real bytes → real hash.
 
 ---
 
 ## 8. Versioning & publish
 
 - **core + mcp-server → 0.4.6.** core: `readVaultFile` + `READ_MAX_BYTES` + the
-  two codes + the `.obsidian` hard-exclude. mcp-server: the `vault_read` tool +
-  catalog count. cli 0.4.1 / server 0.4.0 / plugin 0.4.1 unchanged.
+  two codes + the `.obsidian` hard-exclude (both glob forms) + the behavior-
+  preserving `assertContained` extraction (so the read boundary can map excluded →
+  `NOT_FOUND` without reimplementing containment, propose unchanged). mcp-server:
+  the `vault_read` tool + catalog count. cli 0.4.1 / server 0.4.0 / plugin 0.4.1
+  unchanged.
 - Ordered publish **core → mcp-server**, same runbook.
 
 ## 9. Docs (build-time; sequenced after the 0.4.5 §9 doc pass merges)
