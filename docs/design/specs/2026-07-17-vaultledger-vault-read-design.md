@@ -147,11 +147,16 @@ on mismatch → `NOT_TEXT`.
   would bloat it, muddy "mutation history," and force a write on every read. If
   read-auditing is ever wanted it is a separate agent-access log, not this
   journal. **v1: no journal writes.**
-- **No vault lock.** `writeContainedFile` commits via atomic temp+rename, so a
-  lock-free read is never torn — it sees either the pre- or post-write file,
-  both internally consistent. Skipping the lock avoids contention with
-  concurrent mutations and keeps reads cheap. (A read serialized behind a slow
-  mutation would be a pointless stall.)
+- **No vault lock.** The safety of a lock-free read rests on the **hash, not on
+  timing**: `vault_read` returns a `hash` over exactly the bytes it read, and the
+  propose tools RE-VERIFY that hash against live content at both propose and
+  approve — so a read that raced a concurrent mutation self-corrects as a clean
+  `STALE_HASH` at propose, never a silent bad edit. (Broker writes are
+  additionally atomic temp+rename via `writeContainedFile`, so a same-process
+  read is never byte-torn; but git-driven working-tree changes from
+  `undo`/`reconcile` are NOT temp+rename — which is exactly why the hash
+  re-verification, not write atomicity, is the load-bearing guarantee.) Skipping
+  the lock also avoids stalling a cheap read behind a slow mutation.
 
 ---
 
@@ -165,13 +170,25 @@ directly.
 - **`readVaultFile(vaultRoot, manifest, path, opts?): VaultReadResult`** in a new
   `packages/core/src/broker/read.ts` (composes `assertContainedAndReadable` +
   `statSync` + `readFileSync` + `hashBytes`). `opts.maxBytes` overrides
-  `READ_MAX_BYTES` for tests (mirrors recall's `contentCap`). Returns
-  `{ path, content, hash, size }`. Order: contain/zone-check → `statSync` size
-  gate (`FILE_TOO_LARGE`) → read buffer once → `hashBytes` → UTF-8 round-trip
-  gate (`NOT_TEXT`) → assemble. Missing file → **`NOT_FOUND`** thrown with
-  **`retriable: true` at the call site** (the enum default stays non-retriable;
-  this per-call override matches the 0.4.5 `applyProposeReplace` precedent — a
-  wrong path is agent-fixable).
+  `READ_MAX_BYTES` (for tests). Returns `{ path, content, hash, size }`. Order:
+  1. `assertContainedAndReadable(vaultRoot, manifest, path)` → abs path
+     (traversal / symlink / excluded → `FORBIDDEN_ZONE`).
+  2. `statSync(abs)` in a try: **`ENOENT` → `NOT_FOUND`** thrown with
+     **`retriable: true` at the call site** (the enum default stays
+     non-retriable; this per-call override matches the 0.4.5 `applyProposeReplace`
+     precedent — a wrong path is agent-fixable); **a non-file** (`!st.isFile()` —
+     directory, socket) → `NOT_FOUND` retriable (nothing readable as a note
+     there); any other errno (`EACCES`, …) propagates. `statSync`-first is
+     deliberate: `statSync` (not `readFileSync`) is where a missing path surfaces
+     `ENOENT`, and the `isFile` guard keeps a **directory** path from reaching
+     `readFileSync`, which would throw a raw `EISDIR` that `guarded()` mislabels
+     as a generic non-retriable `INTERNAL`.
+  3. **size gate**: `st.size > maxBytes` → **`FILE_TOO_LARGE`** — BEFORE any read,
+     so a huge file is never loaded into memory.
+  4. `readFileSync(abs)` → buffer, once.
+  5. `hash = hashBytes(buf)`; `content = buf.toString("utf8")`; **UTF-8 round-trip
+     gate**: `!Buffer.from(content, "utf8").equals(buf)` → **`NOT_TEXT`**.
+  6. assemble `{ path, content, hash, size: buf.length }`.
 - **MCP tool `vault_read`** in `mcp-server/src/tools.ts`: `ReadInput` = `{ path:
   z.string().min(1).max(PATH_MAX_LENGTH) }`, `.strict()`; handler calls
   `readVaultFile(ctx.vaultRoot, ctx.manifest, path)` inside the existing
@@ -191,8 +208,13 @@ Add to `RejectionCode` + the `RETRIABLE` map (both **non-retriable**):
   reachable through a server route today — `vault_read` is MCP-only — but the map
   must be exhaustive to compile. `server` stays 0.4.0.)
 - **Catalog 11 → 12.** Thread the count through `mcp-server/src/index.ts`
-  `listToolNames()` (a separate hard-coded array), and the count assertions in
-  `test/tools.test.ts`, `test/placeholder.test.ts`, `test/stdio.smoke.test.ts`.
+  `listToolNames()` (a separate hard-coded array), and BOTH the numeric
+  assertions AND the descriptive titles: `test/tools.test.ts` (`toBe(11)` +
+  "registers exactly the 11 spec tools" + the "count 9 → 11" title),
+  `test/placeholder.test.ts` (`toHaveLength(11)` + title), `test/stdio.smoke.test.ts`
+  (`.toBe(11)` + "list 11 tools"). While threading, fix the pre-existing stale
+  comments to 12: `tools.ts` ("Build the 9 spec tools") and `index.ts` ("Wire the
+  9 tools").
 
 ---
 
@@ -209,7 +231,10 @@ Add to `RejectionCode` + the `RETRIABLE` map (both **non-retriable**):
   `.git/config`, and **`.obsidian/plugins/vaultledger/data.json`** each →
   `FORBIDDEN_ZONE` — the `.obsidian` case pinned **regardless of manifest**
   (proves the `ALWAYS_EXCLUDED_GLOBS` addition, not a manifest coincidence).
-- **missing file → `NOT_FOUND` with `retriable: true`**.
+- **missing file → `NOT_FOUND` with `retriable: true`** (surfaced from
+  `statSync` `ENOENT`, not `readFileSync`).
+- **directory path → `NOT_FOUND`** (the `!isFile()` guard — proves a dir never
+  reaches `readFileSync` to throw a raw `EISDIR` the harness would mislabel).
 - **non-UTF-8 → `NOT_TEXT`** (a fixture with an invalid UTF-8 byte sequence).
 - **NAMED integration test — the loop the field incident couldn't close:**
   `readVaultFile` a seeded note → take its `content` + `hash` → drive a
@@ -240,6 +265,17 @@ The memory skill rule 6 and the integration guides currently say "read the
 target fresh through VaultLedger." Change that to name **`vault_read`
 explicitly** — there is no longer any direct-disk exception, and the fresh-read
 step now has a concrete tool. Catalog references 11 → 12.
+
+**Also correct the propose tool description STRINGS** (`tools.ts` — code, not
+docs, and no dependency on the doc-branch sequencing below): `vault_propose_replace`'s
+description currently tells the agent to get `expected_hash` "from memory_recall /
+ledger_status", but neither reliably surfaces a note's hash — `recall()`'s result
+has no hash field, and `ledger_status` only carries `hash_after` on VL-mutated
+transaction rows, not an arbitrary trusted note. Name **`vault_read`** as the
+canonical source of `expected_hash` (and of the content to copy `old_text` from)
+in the `vault_propose_replace` and `vault_propose_edit` descriptions. This
+inaccuracy is exactly the gap `vault_read` closes, so fixing it belongs in this
+cycle.
 
 > **Sequencing:** these edits build on the 0.4.5 §9 doc pass (branch
 > `docs/structured-tools-guidance`, which added the rule-6 elaboration + 9→11
