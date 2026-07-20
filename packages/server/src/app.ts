@@ -71,6 +71,10 @@ const BROKER_ERROR_STATUS: Record<RejectionCode, number> = {
   // Too Large; NOT_TEXT → 415 Unsupported Media Type. server stays 0.4.0.
   FILE_TOO_LARGE: 413,
   NOT_TEXT: 415,
+  // v0.4.7 vault_propose_move: destination occupied. Same 409 conflict family as
+  // TARGET_EXISTS (the only new code this cycle). MCP-only today — no server route
+  // reaches propose_move — included for Record<RejectionCode, number> exhaustiveness.
+  DESTINATION_EXISTS: 409,
 };
 
 const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
