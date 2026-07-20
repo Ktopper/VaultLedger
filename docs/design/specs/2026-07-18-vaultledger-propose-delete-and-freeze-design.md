@@ -153,6 +153,16 @@ must never read as an ordinary edit.
   content fits; a (pathological) larger file's delete render is capped with the
   existing truncation marker. (The current `DIFF_RENDER_LIMIT` is 20 000 chars;
   the plan sets the delete bound explicitly against the 64 KiB read cap.)
+- **The CLI `ledger approve` surface needs the SAME content-read (re-review
+  finding — High):** the terminal review renders via `cli/src/commands/approve.ts`'s
+  `renderHeldOperation(op)` — also a pure `(op) => string`. A `propose_delete`
+  held op has no `patch`/`content`, so it falls through to `"(no diff available)"`
+  — the terminal shows the reviewer NOTHING about what is being deleted, the exact
+  blind spot WU-2 exists to kill, on a second surface. So the delete case is NOT
+  "a renderer case only": the CLI renderer must be threaded a vault handle
+  (`vaultRoot`/`manifest`) and do the same bounded content-read as the server
+  before rendering the `content → ""` DELETE view. Both display surfaces (server
+  `renderApprovalDiff` and CLI `renderHeldOperation`) get the delete content-read.
 - **Plugin `renderDiff`** gets a **delete banner / distinct styling** so the row
   is visually a deletion, not a red-heavy edit. The full-content removal lines
   render via the existing `-`-line path (XSS-safe `textContent`, per the bundle
@@ -179,12 +189,15 @@ invisible there; (2) it's per-invocation, not per-shell/global; (3) it matches
 the codebase's established arg-flag precedent (`--no-sweep`, `--vault`) rather
 than introducing an env-var pattern that exists nowhere else. **Threading (spec-review correction):** `buildTools(ctx)` is called by
 `createServer(ctx)` (index.ts:68), NOT by `main`/`loadServerContext`. So `main`
-parses `parseAllowRawDiff(argv)` and `loadServerContext` **stashes `allowRawDiff`
-on the `ServerContext`**; `buildTools(ctx)` reads `ctx.allowRawDiff` and includes
-the `vault_propose_edit` `ToolDef` **iff** it is set. Carrying the flag on `ctx`
-(not a new `createServer`/`buildTools` param) means every existing
+parses `parseAllowRawDiff(argv)` and passes it into `loadServerContext` via
+**`LoadServerContextDeps`** (a new field, parallel to the existing `skipSweep`);
+`loadServerContext` sets `allowRawDiff` on the returned **`ServerContext`** (a new
+interface field). `buildTools(ctx)` reads `ctx.allowRawDiff` and includes the
+`vault_propose_edit` `ToolDef` **iff** it is set. Carrying the flag on `ctx` (not
+a new `createServer`/`buildTools` param) means every existing
 `createServer(ctx)`/`buildTools(ctx)` call site — including all tests — keeps
-compiling untouched.
+compiling untouched; a test that wants the raw-diff tool sets `allowRawDiff:true`
+on the ctx it builds.
 
 ### Catalog count is now conditional
 
@@ -195,18 +208,27 @@ compiling untouched.
 
 **`listToolNames(allowRawDiff = false)` — a DEFAULTED arg** so the smoke sites
 that call it bare keep compiling; returns the 12 default names, or 13 with the
-flag. **Count sites (all four), both configs:** `tools.test.ts` (the exact
-12-name array + a NEW flag-on 13 case), `placeholder.test.ts` (`toHaveLength` →
-12), `stdio.smoke.test.ts` (`.toBe(12)`, spawns bare → default 12),
-`bin.launcher.smoke.test.ts` (calls `listToolNames()` bare → 12).
+flag. **The default count STAYS 12** (`−vault_propose_edit +vault_propose_delete`),
+so the NUMERIC asserts don't change — only the tool-name *content* and a new
+flag-on case:
+- `tools.test.ts` — the exact name ARRAY swaps `vault_propose_edit` →
+  `vault_propose_delete`, plus a NEW `allowRawDiff:true` → 13-name case; `tools.size`
+  and the listToolNames-in-sync assertions stay 12 by default.
+- `placeholder.test.ts` (`toHaveLength(12)`), `stdio.smoke.test.ts`
+  (`.toBe(12)`, spawns bare), `bin.launcher.smoke.test.ts` (`listToolNames()`
+  bare) — **numeric asserts unchanged at 12**; they only needed the defaulted
+  `listToolNames` arg so they keep compiling.
 
-**Behavioral `propose_edit` tests MUST migrate to a flag-on context** (spec-review
-found these — they fetch `vault_propose_edit` from the DEFAULT `buildTools`/
-`createServer`, which no longer registers it, so `tools.get("vault_propose_edit")!`
-crashes / `callTool` returns unknown-tool): `tools.test.ts` (the
-`tools.get("vault_propose_edit")` sites), `inputBounds.test.ts` (the propose_edit
-byte-bound tests), `v01-gate.e2e.test.ts` (the `callTool("vault_propose_edit", …)`
-gate step) — each rebuilds its ctx with `allowRawDiff:true`. `vault_propose_edit`
+**Behavioral `propose_edit` tests MUST migrate to a flag-on context** (they fetch
+`vault_propose_edit` from the DEFAULT `buildTools`/`createServer`, which no longer
+registers it, so `tools.get("vault_propose_edit")!` crashes / `callTool` returns
+unknown-tool): `tools.test.ts` (the `tools.get("vault_propose_edit")` sites,
+~:218/:242), `inputBounds.test.ts` (the propose_edit byte-bound test, ~:217), and
+`v01-gate.e2e.test.ts` — **TWO separate contexts** (re-review): `ctxA` happy-path
+queue (~:188) AND `ctxC` the excluded-path `FORBIDDEN_ZONE` step (~:309); BOTH
+`loadServerContext` builders need `allowRawDiff:true`, or `callToolC` returns
+unknown-tool BEFORE the zone check and the asserted `FORBIDDEN_ZONE` flips. Each
+migrated site rebuilds its ctx with `allowRawDiff:true`. `vault_propose_edit`
 stays fully implemented in core (broker unchanged) — only its default
 *registration* moves behind the flag.
 
@@ -250,10 +272,11 @@ replace / create / delete) rather than delete-only.
 ## 4. Watch items (folded)
 
 - **Queue storage/display:** the held op is `{op:"propose_delete", path
-  (canonical), expected_hash}`; `render.ts` synthesizes the `content → ""`
-  DELETE view (§WU-2). Downstream (`GET /approvals`, plugin, CLI `approve`) needs
-  a `propose_delete` case in the renderer only — the approval/apply plumbing is
-  inherited.
+  (canonical), expected_hash}`. Downstream `GET /approvals` + the plugin + CLI
+  `ledger approve` each need a `propose_delete` render case — and (§WU-2) the
+  server `renderApprovalDiff` AND the CLI `renderHeldOperation` need a **vault
+  handle for the delete content-read**, not merely a switch case (neither carries
+  one today). The approval/apply plumbing below the renderer is inherited.
 - **Delete vs a pending approval on the same file:** no pre-check. Each queued op
   re-verifies at ITS OWN approve time, so the interactions resolve cleanly:
   approving a delete then approving a stale pending edit on the same path →
@@ -278,7 +301,7 @@ replace / create / delete) rather than delete-only.
   pin it with a hash equality.
 - **Registration:** default `buildTools(ctx)` → 12 names, no `vault_propose_edit`,
   yes `vault_propose_delete`; `buildTools(ctx, {allowRawDiff:true})` → 13,
-  `+vault_propose_edit`. The three count-assertion sites cover both.
+  `+vault_propose_edit`. The count sites (WU-3) cover both configs; default stays 12.
 - **Plugin:** the delete render carries the DELETE header + the full content as
   removal lines (not just the path); the delete banner class is present.
 
