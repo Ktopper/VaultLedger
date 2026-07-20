@@ -1,6 +1,6 @@
 {
   "name": "@vault-ledger/mcp-server",
-  "version": "0.4.5",
+  "version": "0.4.6",
   "type": "module",
   "description": "VaultLedger MCP server — the memory tools an AI agent runs",
   "main": "./dist/index.js",
