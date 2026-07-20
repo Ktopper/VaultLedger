@@ -1,6 +1,6 @@
 import { ItemView, Notice, type WorkspaceLeaf } from "obsidian";
 import { BridgeClient, BridgeUnavailableError, type ApprovalWithDiff } from "../bridgeClient.js";
-import { renderDiff } from "../render.js";
+import { renderApprovalBody } from "../render.js";
 
 export const APPROVALS_VIEW_TYPE = "vaultledger-approvals";
 
@@ -86,7 +86,7 @@ export class ApprovalsView extends ItemView {
     const item = this.contentEl.createDiv({ cls: "vl-approval-item" });
     item.createEl("h3", { text: `${approval.zone} — ${approval.reason ?? "(no reason given)"}` });
     item.createEl("p", { cls: "vl-approval-meta", text: `session: ${approval.session}` });
-    item.appendChild(renderDiff(approval.diff));
+    item.appendChild(renderApprovalBody(approval.held_operation, approval.diff));
 
     const actions = item.createDiv({ cls: "vl-approval-actions" });
 

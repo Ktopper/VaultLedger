@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
 import { describe, expect, test } from "vitest";
-import { groupBySession, renderConflict, renderDiff, renderProvenance } from "../src/render.js";
+import {
+  groupBySession,
+  renderApprovalBody,
+  renderConflict,
+  renderDiff,
+  renderProvenance,
+} from "../src/render.js";
 
 describe("renderDiff", () => {
   test("colors +/- lines and preserves line content as text", () => {
@@ -119,6 +125,72 @@ describe("renderConflict", () => {
     expect(el.textContent).toContain("<img src=x onerror=alert(1)>");
     expect(el.textContent).toContain("<script>evil()</script>");
     expect(el.textContent).toContain("<img src=b onerror=alert('pathB')>");
+  });
+});
+
+describe("renderApprovalBody", () => {
+  test("a propose_delete renders a delete banner + the removal (`-`) content lines", () => {
+    const held = JSON.stringify({ op: "propose_delete", path: "Notes/gone.md" });
+    const diff = "DELETE Notes/gone.md\n-# Heading\n-body line";
+    const el = renderApprovalBody(held, diff);
+
+    expect(el.classList.contains("vl-approval-delete")).toBe(true);
+    const banner = el.querySelector(".vl-delete-banner");
+    expect(banner).not.toBeNull();
+    expect(banner!.textContent).toContain("DELETED");
+    // The removal lines are rendered as del-classed diff lines.
+    const dels = el.querySelectorAll(".vl-diff-del");
+    expect(dels.length).toBe(2);
+    expect(el.textContent).toContain("-# Heading");
+    expect(el.textContent).toContain("-body line");
+  });
+
+  test("a propose_move renders a `MOVE from -> to` banner and no diff body", () => {
+    const held = JSON.stringify({ op: "propose_move", from: "Inbox/x.md", to: "Clients/Brandit/x.md" });
+    const el = renderApprovalBody(held, "");
+
+    expect(el.classList.contains("vl-approval-move")).toBe(true);
+    const banner = el.querySelector(".vl-move-banner");
+    expect(banner).not.toBeNull();
+    expect(banner!.textContent).toBe("MOVE Inbox/x.md -> Clients/Brandit/x.md");
+    // A move is byte-preserving: no diff body rendered.
+    expect(el.querySelector(".vl-diff")).toBeNull();
+  });
+
+  test("a non-delete/move op falls back to the plain diff render", () => {
+    const held = JSON.stringify({ op: "propose_edit", path: "Notes/x.md" });
+    const diff = "--- a\n+++ b\n@@ -1 +1 @@\n-old\n+new";
+    const el = renderApprovalBody(held, diff);
+    expect(el.classList.contains("vl-diff")).toBe(true);
+    const addTexts = Array.from(el.querySelectorAll(".vl-diff-add")).map((n) => n.textContent);
+    expect(addTexts).toContain("+new");
+  });
+
+  test("malformed held-operation JSON falls back to the plain diff render (never throws)", () => {
+    const el = renderApprovalBody("{not json", "some context line");
+    expect(el.classList.contains("vl-diff")).toBe(true);
+    expect(el.textContent).toContain("some context line");
+  });
+
+  // SECURITY: the delete diff body and the move from/to are attacker-influenced
+  // (an agent chose the path/content). renderApprovalBody must render them as
+  // literal text — never innerHTML — so a hostile path/content never executes.
+  test("SECURITY: hostile delete content and move paths render as literal text, never live nodes", () => {
+    const delHeld = JSON.stringify({ op: "propose_delete", path: "Notes/x.md" });
+    const delEl = renderApprovalBody(delHeld, "-<img src=x onerror=alert(1)>\n-<script>evil()</script>");
+    expect(delEl.querySelectorAll("img,script").length).toBe(0);
+    expect(delEl.textContent).toContain("<img src=x onerror=alert(1)>");
+    expect(delEl.textContent).toContain("<script>evil()</script>");
+
+    const mvHeld = JSON.stringify({
+      op: "propose_move",
+      from: "<img src=e onerror=alert('from')>",
+      to: "<script>to()</script>",
+    });
+    const mvEl = renderApprovalBody(mvHeld, "");
+    expect(mvEl.querySelectorAll("img,script").length).toBe(0);
+    expect(mvEl.textContent).toContain("<img src=e onerror=alert('from')>");
+    expect(mvEl.textContent).toContain("<script>to()</script>");
   });
 });
 
