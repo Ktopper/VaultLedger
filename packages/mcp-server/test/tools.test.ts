@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { createPatch } from "diff";
-import { hashFile } from "@vault-ledger/core";
+import { hashBytes, hashFile } from "@vault-ledger/core";
 import { loadServerContext, type ServerContext } from "../src/context.js";
 import { buildTools, type ToolDef } from "../src/tools.js";
 import { listToolNames, parseNoSweep, parseVaultArg } from "../src/index.js";
@@ -40,7 +40,7 @@ async function setup(): Promise<{ tools: Map<string, ToolDef> }> {
 }
 
 describe("buildTools", () => {
-  test("registers exactly the 11 spec tools", async () => {
+  test("registers exactly the 12 spec tools", async () => {
     const { tools } = await setup();
     expect([...tools.keys()].sort()).toEqual(
       [
@@ -52,6 +52,7 @@ describe("buildTools", () => {
         "memory_remember",
         "memory_retire",
         "memory_revise",
+        "vault_read",
         "vault_propose_edit",
         "vault_propose_replace",
         "vault_propose_create",
@@ -314,11 +315,66 @@ describe("buildTools", () => {
     expect(typeof result.approvalId).toBe("string");
   });
 
-  test("both new tools appear in the catalog (count 9 -> 11)", async () => {
+  test("vault_read returns {path, content, hash, size} with hash covering exactly content, on a seeded trusted note", async () => {
+    const { tools } = await setup();
+    const read = tools.get("vault_read")!;
+    const result = await read.handler({ path: "Notes/trusted.md" });
+
+    expect(result.error).toBeUndefined();
+    expect(result.path).toBe("Notes/trusted.md");
+    expect(result.content).toBe("# Trusted note\n\nSome content.\n");
+    expect(result.hash).toBe(hashBytes(Buffer.from(result.content as string, "utf8")));
+    expect(result.size).toBe(Buffer.byteLength(result.content as string, "utf8"));
+    // The hash must be directly usable as expected_hash for a structured edit.
+    expect(result.hash).toBe(hashFile(join(vault.vaultDir, "Notes", "trusted.md")));
+  });
+
+  test("vault_read on a missing path returns a structured NOT_FOUND (retriable) result, not a throw", async () => {
+    const { tools } = await setup();
+    const read = tools.get("vault_read")!;
+    const result = await read.handler({ path: "Notes/ghost.md" });
+
+    expect(result.content).toBeUndefined();
+    expect(result.error).toBeTruthy();
+    const error = result.error as { code: string; retriable: boolean; message: string };
+    expect(error.code).toBe("NOT_FOUND");
+    expect(error.retriable).toBe(true);
+  });
+
+  test("vault_read on an excluded path returns the SAME NOT_FOUND shape as a missing file (no zone vocabulary, VL-SEC-S7-04)", async () => {
+    const { tools } = await setup();
+    const read = tools.get("vault_read")!;
+    // Private/secret.md EXISTS on disk (seeded by makeTestVault) but is excluded.
+    const excluded = await read.handler({ path: "Private/secret.md" });
+    const missing = await read.handler({ path: "Notes/ghost.md" });
+
+    const exErr = excluded.error as { code: string; retriable: boolean; message: string };
+    const missErr = missing.error as { code: string; retriable: boolean; message: string };
+    expect(exErr.code).toBe("NOT_FOUND");
+    expect(exErr.retriable).toBe(true);
+    // Byte-identical rejection code+retriable to the genuinely-missing case.
+    expect({ code: exErr.code, retriable: exErr.retriable }).toEqual({
+      code: missErr.code,
+      retriable: missErr.retriable,
+    });
+    // No zone vocabulary may leak — that would be the disclosure oracle.
+    expect(exErr.message).not.toMatch(/exclud|zone|forbidden/i);
+    expect(exErr.message).toMatch(/^file not found: /);
+  });
+
+  test("vault_propose_replace's description points at vault_read as the hash source, not memory_recall / ledger_status", async () => {
+    const { tools } = await setup();
+    const replace = tools.get("vault_propose_replace")!;
+    expect(replace.description).toContain("vault_read");
+    expect(replace.description).not.toContain("memory_recall / ledger_status");
+  });
+
+  test("both new tools appear in the catalog (count 9 -> 12)", async () => {
     const { tools } = await setup();
     expect(tools.has("vault_propose_replace")).toBe(true);
     expect(tools.has("vault_propose_create")).toBe(true);
-    expect(tools.size).toBe(11);
+    expect(tools.has("vault_read")).toBe(true);
+    expect(tools.size).toBe(12);
   });
 
   test("memory_promote working->canonical returns an approvalId, surfaced by ledger_status", async () => {

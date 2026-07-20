@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { BrokerError, Confidence, recall, redactExcludedZones, type RecallFilters } from "@vault-ledger/core";
+import { BrokerError, Confidence, readVaultFile, recall, redactExcludedZones, type RecallFilters } from "@vault-ledger/core";
 import type { ServerContext } from "./context.js";
 
 /** Structured error shape every tool handler returns instead of throwing.
@@ -231,11 +231,13 @@ const ProposeCreateInput = z
   })
   .strict();
 
+const ReadInput = z.object({ path: z.string().min(1).max(PATH_MAX_LENGTH) }).strict();
+
 const LedgerStatusInput = z.object({}).strict();
 
 /**
- * Build the 9 spec tools (design §7 + v0.3b memory_distill/memory_retire) as a thin
- * adapter over `@vault-ledger/core`.
+ * Build the 12 spec tools (design §7 + v0.3b memory_distill/memory_retire + v0.4.6
+ * vault_read) as a thin adapter over `@vault-ledger/core`.
  * Every handler validates its own args against its zod inputSchema and never
  * throws — invalid args and BrokerError rejections both come back as a
  * structured `{ error }` result, so the transport layer (stdio JSON-RPC) never
@@ -393,10 +395,24 @@ export function buildTools(ctx: ServerContext): ToolDef[] {
         }),
     },
     {
+      name: "vault_read",
+      description:
+        "Read a vault note's exact current text and its content hash — the fresh read required before proposing an edit. Returns { path, content, hash, size }; `content` is the exact bytes `hash` covers (including frontmatter). Copy `old_text` for vault_propose_replace verbatim from `content`, and pass this `hash` as `expected_hash`. Files over 64 KiB, binary/non-text files, and non-existent paths are rejected. Read-only; never mutates the vault.",
+      inputSchema: ReadInput,
+      handler: (rawArgs) =>
+        guarded(async () => {
+          const parsed = ReadInput.safeParse(rawArgs);
+          if (!parsed.success) return invalidArgs(parsed.error.message);
+          // Spread into a plain object so the concrete VaultReadResult satisfies
+          // ToolResult's Record<string, unknown> index-signature contract.
+          return { ...readVaultFile(ctx.vaultRoot, ctx.manifest, parsed.data.path) };
+        }),
+    },
+    {
       name: "vault_propose_edit",
       description:
         "Propose a patch to a trusted-zone note. Always queued for human approval; rejected outright for excluded paths. patch must be a unified diff (--- / +++ file headers, @@ hunks) for a single file — NOT *** Begin Patch / V4A style." +
-        " To CREATE a new file, use the unified-diff creation form: --- /dev/null, +++ b/<path>, @@ -0,0 +N @@ (and omit expected_hash). Editing an existing file requires expected_hash. File deletion is not supported.",
+        " To CREATE a new file, use the unified-diff creation form: --- /dev/null, +++ b/<path>, @@ -0,0 +N @@ (and omit expected_hash). Editing an existing file requires expected_hash — obtain it (and the exact current text to patch against) with vault_read. File deletion is not supported.",
       inputSchema: ProposeEditInput,
       handler: (rawArgs) =>
         guarded(async () => {
@@ -423,7 +439,7 @@ export function buildTools(ctx: ServerContext): ToolDef[] {
     {
       name: "vault_propose_replace",
       description:
-        "Propose an edit to an existing trusted-zone note by describing exact text to find and what to replace it with — no diffs, no line numbers. Each replacement is {old_text, new_text}; set expected_occurrences if the text appears more than once. Requires expected_hash (the note's current hash from memory_recall / ledger_status). Always queued for human approval.",
+        "Propose an edit to an existing trusted-zone note by describing exact text to find and what to replace it with — no diffs, no line numbers. Each replacement is {old_text, new_text}; set expected_occurrences if the text appears more than once. Requires expected_hash (the note's current hash from vault_read — copy each old_text verbatim from that same vault_read `content`). Always queued for human approval.",
       inputSchema: ProposeReplaceInput,
       handler: (rawArgs) =>
         guarded(async () => {

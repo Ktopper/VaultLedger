@@ -38,7 +38,7 @@ const distBuilt = existsSync(SERVER_ENTRY);
 
 describe.skipIf(!distBuilt)("mcp-server stdio entrypoint (real subprocess + real MCP client)", () => {
   test(
-    "handshake, list 11 tools, call ledger_status",
+    "handshake, list 12 tools, call ledger_status",
     async () => {
       const vaultDir = mkdtempSync(join(tmpdir(), "vl-stdio-vault-"));
       const homeDir = mkdtempSync(join(tmpdir(), "vl-stdio-home-"));
@@ -84,7 +84,7 @@ describe.skipIf(!distBuilt)("mcp-server stdio entrypoint (real subprocess + real
           const { tools } = await client.listTools();
           const names = tools.map((t) => t.name).sort();
           expect(names).toEqual([...listToolNames()].sort());
-          expect(names.length).toBe(11);
+          expect(names.length).toBe(12);
 
           const statusResult = await client.callTool({ name: "ledger_status", arguments: {} });
           expect(statusResult.isError).toBeFalsy();
