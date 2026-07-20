@@ -1794,4 +1794,175 @@ describe("Broker", () => {
       expect(journal.listApprovals().length).toBe(0);
     });
   });
+
+  // -------------------------------------------------------------------
+  // v0.4.7: vault_propose_delete (Task 3)
+  // -------------------------------------------------------------------
+  describe("propose_delete", () => {
+    // A note carrying a governed `ledger:` block — the memory-belief shape a
+    // raw delete must refuse (LEDGER_GUARD → steer to memory_retire/forget).
+    const GOVERNED_NOTE =
+      "---\nledger:\n  status: working\n  supersedes: null\nentity: alice\n---\n\nAlice prefers dark mode.\n";
+
+    /** Seed a file directly on disk WITHOUT committing it — the untracked
+     * synced-in-Inbox shape B1 is about. */
+    function seedUntracked(vaultRoot: string, rel: string, content: string): void {
+      const abs = join(vaultRoot, rel);
+      mkdirSync(join(abs, ".."), { recursive: true });
+      writeFileSync(abs, content, "utf8");
+    }
+
+    async function proposeDelete(
+      broker: Broker,
+      path: string,
+      content: string,
+    ): Promise<string> {
+      const res = await broker.apply({
+        op: "propose_delete",
+        path,
+        expected_hash: hashBytes(Buffer.from(content, "utf8")),
+        reason: "file the incident article away",
+        session: "s1",
+      });
+      if (!res.ok || !("queued" in res) || !res.queued) throw new Error("expected a queued result");
+      return res.approvalId;
+    }
+
+    test("delete of a plain TRACKED note → queues; approve removes it; undo restores byte-identical", async () => {
+      const { broker, journal, git, vaultRoot, now, genId } = await makeBroker();
+      const content = "# Notes\n\nplain trusted note body.\n";
+      // Tracked source: create+commit via a baseline commit ourselves.
+      seedUntracked(vaultRoot, "Notes/tracked.md", content);
+      await git.commitFile("Notes/tracked.md", "seed tracked");
+
+      const approvalId = await proposeDelete(broker, "Notes/tracked.md", content);
+      expect(journal.listApprovals("pending").length).toBe(1);
+      // File still on disk while the approval is pending.
+      expect(existsSync(join(vaultRoot, "Notes/tracked.md"))).toBe(true);
+
+      const applied = await broker.apply(
+        { op: "propose_delete", path: "Notes/tracked.md", expected_hash: hashBytes(Buffer.from(content, "utf8")), reason: "r", session: "s1" },
+        { approved: true, approvalId },
+      );
+      if (!applied.ok || "queued" in applied) throw new Error("expected an applied result");
+      expect(existsSync(join(vaultRoot, "Notes/tracked.md"))).toBe(false);
+      expect(await git.fileAtHead("Notes/tracked.md")).toBeNull();
+
+      await undoTransaction({ git, journal, now, genId, lockDir: UNSAFE_NO_LOCK }, applied.txnId!);
+      expect(existsSync(join(vaultRoot, "Notes/tracked.md"))).toBe(true);
+      expect(hashFile(join(vaultRoot, "Notes/tracked.md"))).toBe(hashBytes(Buffer.from(content, "utf8")));
+    });
+
+    test("B1 (HOLD 1): delete of an UNTRACKED source baselines, deletes, and undo restores byte-identical", async () => {
+      const { broker, journal, git, vaultRoot, now, genId } = await makeBroker();
+      const content = "# Field incident\n\nsynced in via Obsidian, never committed.\n";
+      const digest = hashBytes(Buffer.from(content, "utf8"));
+      // Untracked: on disk, NOT committed. fileAtHead must be null pre-delete.
+      seedUntracked(vaultRoot, "Inbox/incident.md", content);
+      expect(await git.fileAtHead("Inbox/incident.md")).toBeNull();
+
+      const approvalId = await proposeDelete(broker, "Inbox/incident.md", content);
+      const applied = await broker.apply(
+        { op: "propose_delete", path: "Inbox/incident.md", expected_hash: digest, reason: "r", session: "s1" },
+        { approved: true, approvalId },
+      );
+      if (!applied.ok || "queued" in applied) throw new Error("expected an applied result");
+      expect(existsSync(join(vaultRoot, "Inbox/incident.md"))).toBe(false);
+      expect(await git.fileAtHead("Inbox/incident.md")).toBeNull();
+
+      // The baseline commit fired → undo can restore the pre-delete bytes.
+      await undoTransaction({ git, journal, now, genId, lockDir: UNSAFE_NO_LOCK }, applied.txnId!);
+      expect(existsSync(join(vaultRoot, "Inbox/incident.md"))).toBe(true);
+      expect(hashFile(join(vaultRoot, "Inbox/incident.md"))).toBe(digest);
+      expect(readFileSync(join(vaultRoot, "Inbox/incident.md"), "utf8")).toBe(content);
+    });
+
+    test("delete with a stale hash → STALE_HASH (nothing removed, nothing queued)", async () => {
+      const { broker, journal, vaultRoot } = await makeBroker();
+      const content = "current body\n";
+      seedUntracked(vaultRoot, "Notes/stale.md", content);
+      await expect(
+        broker.apply({
+          op: "propose_delete",
+          path: "Notes/stale.md",
+          expected_hash: hashBytes(Buffer.from("different body\n", "utf8")),
+          reason: "r",
+          session: "s1",
+        }),
+      ).rejects.toMatchObject({ code: "STALE_HASH" });
+      expect(journal.listApprovals("pending").length).toBe(0);
+      expect(existsSync(join(vaultRoot, "Notes/stale.md"))).toBe(true);
+    });
+
+    test("delete of a missing note → NOT_FOUND retriable", async () => {
+      const { broker } = await makeBroker();
+      await expect(
+        broker.apply({
+          op: "propose_delete",
+          path: "Notes/ghost.md",
+          expected_hash: hashBytes(Buffer.from("whatever\n", "utf8")),
+          reason: "r",
+          session: "s1",
+        }),
+      ).rejects.toMatchObject({ code: "NOT_FOUND", retriable: true });
+    });
+
+    test("oracle (HOLD 4): an EXCLUDED source ≡ a MISSING source → byte-identical NOT_FOUND payloads", async () => {
+      const { broker, vaultRoot } = await makeBroker();
+      // An existing note inside the excluded Private/ zone.
+      seedUntracked(vaultRoot, "Private/secret.md", "top secret\n");
+
+      const capture = async (path: string): Promise<BrokerError> => {
+        try {
+          await broker.apply({
+            op: "propose_delete",
+            path,
+            expected_hash: hashBytes(Buffer.from("whatever\n", "utf8")),
+            reason: "r",
+            session: "s1",
+          });
+        } catch (e) {
+          return e as BrokerError;
+        }
+        throw new Error("expected a rejection");
+      };
+
+      const excluded = await capture("Private/secret.md");
+      const missing = await capture("Notes/ghost.md");
+      // Same code + retriable; same message SHAPE (only the path differs), no
+      // zone vocabulary that would out the excluded path as excluded.
+      expect(excluded.code).toBe("NOT_FOUND");
+      expect(missing.code).toBe("NOT_FOUND");
+      expect(excluded.retriable).toBe(missing.retriable);
+      expect(excluded.message).toBe("file not found: Private/secret.md");
+      expect(missing.message).toBe("file not found: Notes/ghost.md");
+      // No zone VOCABULARY (the path segment itself is the caller's own input,
+      // echoed identically for a truly-missing Private path — not a disclosure).
+      for (const m of [excluded.message, missing.message]) {
+        expect(m).not.toMatch(/exclud|forbidden|\bzone\b/i);
+      }
+    });
+
+    test("governed-memory delete (ledger: block) → LEDGER_GUARD naming memory_retire/memory_forget", async () => {
+      const { broker, journal, vaultRoot } = await makeBroker();
+      seedUntracked(vaultRoot, "Agent/Memory/belief.md", GOVERNED_NOTE);
+      let thrown: unknown;
+      try {
+        await broker.apply({
+          op: "propose_delete",
+          path: "Agent/Memory/belief.md",
+          expected_hash: hashBytes(Buffer.from(GOVERNED_NOTE, "utf8")),
+          reason: "r",
+          session: "s1",
+        });
+      } catch (e) {
+        thrown = e;
+      }
+      expect(thrown).toBeInstanceOf(BrokerError);
+      expect((thrown as BrokerError).code).toBe("LEDGER_GUARD");
+      expect((thrown as BrokerError).message).toMatch(/memory_retire/);
+      expect((thrown as BrokerError).message).toMatch(/memory_forget/);
+      expect(journal.listApprovals("pending").length).toBe(0);
+    });
+  });
 });
