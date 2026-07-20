@@ -100,6 +100,32 @@ describe("resolveZone", () => {
   });
 
   // -------------------------------------------------------------------
+  // security (v0.4.6): .obsidian and .obsidian/** are hard-coded,
+  // always-excluded regardless of the manifest — it holds Obsidian config
+  // plus the review plugin's own data (including the bridge token). No
+  // governed read/write may reach it.
+  // -------------------------------------------------------------------
+
+  describe("hard-coded exclusion of .obsidian (both glob forms)", () => {
+    // A manifest whose excluded list does NOT mention .obsidian at all —
+    // the hard-coded exclusion must still apply.
+    const m = PermissionsManifest.parse({
+      zones: {
+        trusted: ["**"],
+        excluded: ["Private/**"],
+      },
+    });
+
+    test("the bare .obsidian directory path itself resolves to excluded", () => {
+      expect(resolveZone(".obsidian", m)).toBe("excluded");
+    });
+
+    test(".obsidian/plugins/vaultledger/data.json resolves to excluded", () => {
+      expect(resolveZone(".obsidian/plugins/vaultledger/data.json", m)).toBe("excluded");
+    });
+  });
+
+  // -------------------------------------------------------------------
   // security: case-insensitive matching so an APFS/NTFS case-folding
   // filesystem can't be used to dodge an excluded glob (fix 2).
   // -------------------------------------------------------------------

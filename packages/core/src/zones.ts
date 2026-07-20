@@ -13,14 +13,20 @@ const PICOMATCH_OPTS = { dot: true, nocase: true } as const;
 
 // Hard-coded, non-configurable always-excluded globs (fix 1). `.ledger/`
 // holds the security policy itself (permissions.yaml) and the audit
-// journal; `.git/` is the version-control internals. Neither may ever be
-// exposed to the agent as anything other than "excluded", no matter what a
-// (malicious or misconfigured) manifest configures — otherwise an agent
-// could propose_edit its own permissions manifest and a human approving
-// what looks like an ordinary note edit could unknowingly widen zones or
-// disable guards. This check runs BEFORE the manifest's own excluded globs
-// and before overrides, and cannot be overridden by them.
-const ALWAYS_EXCLUDED_GLOBS = [".ledger", ".ledger/**", ".git", ".git/**"];
+// journal; `.git/` is the version-control internals; `.obsidian/` holds
+// Obsidian's own config AND the review plugin's own data (including the
+// bridge token). None may ever be exposed to the agent as anything other
+// than "excluded", no matter what a (malicious or misconfigured) manifest
+// configures — otherwise an agent could propose_edit its own permissions
+// manifest (or read the plugin's bridge token) and a human approving what
+// looks like an ordinary note edit could unknowingly widen zones, disable
+// guards, or leak the token. This check runs BEFORE the manifest's own
+// excluded globs and before overrides, and cannot be overridden by them.
+const ALWAYS_EXCLUDED_GLOBS = [
+  ".ledger", ".ledger/**",
+  ".git", ".git/**",
+  ".obsidian", ".obsidian/**",
+];
 const alwaysExcludedMatchers = ALWAYS_EXCLUDED_GLOBS.map((g) => picomatch(g, PICOMATCH_OPTS));
 
 function specificity(glob: string): number {

@@ -60,11 +60,14 @@ function getCanonicalRoot(resolvedRoot: string): string {
  * otherwise — callers that need STRICTER zone rules (e.g. create requires
  * agent/scratch, not just "not excluded") apply those on top of this.
  */
-export function assertContainedAndReadable(
-  vaultRoot: string,
-  manifest: PermissionsManifest,
-  relPath: string,
-): string {
+/** Containment + symlink-escape core (VL-SEC-S1-02), WITHOUT the zone check.
+ * Throws FORBIDDEN_ZONE on a traversal or symlink escape; returns the safe
+ * absolute path. Split out so a caller that must treat an excluded path
+ * differently from a traversal (e.g. vault_read, which maps excluded → NOT_FOUND
+ * to avoid a zone-disclosure oracle, VL-SEC-S7-04) can run containment without
+ * the wrapper's excluded→FORBIDDEN_ZONE throw. `assertContainedAndReadable`
+ * layers the excluded check on top — the single containment implementation. */
+export function assertContained(vaultRoot: string, relPath: string): string {
   const root = resolve(vaultRoot);
   const abs = resolve(root, relPath);
   if (abs !== root && !abs.startsWith(root + sep)) {
@@ -84,6 +87,15 @@ export function assertContainedAndReadable(
     throw new BrokerError("FORBIDDEN_ZONE", `path escapes vault root via symlink: ${relPath}`);
   }
 
+  return abs;
+}
+
+export function assertContainedAndReadable(
+  vaultRoot: string,
+  manifest: PermissionsManifest,
+  relPath: string,
+): string {
+  const abs = assertContained(vaultRoot, relPath);
   const zone = resolveZone(relPath, manifest);
   if (zone === "excluded") {
     throw new BrokerError("FORBIDDEN_ZONE", `path is in excluded zone: ${relPath}`);
