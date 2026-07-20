@@ -71,6 +71,35 @@ export const ProposeCreateOp = z
   })
   .strict();
 
+/** v0.4.7: propose a file DELETION for approval. `expected_hash` is REQUIRED
+ * (min 1) — a delete always pins the exact bytes it intends to remove, so a
+ * drifted file is a STALE_HASH reject rather than a silent loss of newer
+ * content. Dual-mode like propose_edit: enqueues at propose, runs `applyDelete`
+ * on approve. */
+export const ProposeDeleteOp = z
+  .object({
+    op: z.literal("propose_delete"),
+    path: z.string().min(1),
+    expected_hash: z.string().min(1),
+    ...commonOpFields,
+  })
+  .strict();
+
+/** v0.4.7: propose a file MOVE/rename for approval. `expected_hash` pins the
+ * SOURCE bytes (there is no `to` hash — the destination must be empty, gated by
+ * DESTINATION_EXISTS). The source routes through the delete gate (excluded ≡
+ * missing → NOT_FOUND); the destination routes through the propose_edit
+ * create-branch gate (excluded → FORBIDDEN_ZONE, checked BEFORE occupancy). */
+export const ProposeMoveOp = z
+  .object({
+    op: z.literal("propose_move"),
+    from: z.string().min(1),
+    to: z.string().min(1),
+    expected_hash: z.string().min(1),
+    ...commonOpFields,
+  })
+  .strict();
+
 export const PromoteOp = z
   .object({
     op: z.literal("promote"),
@@ -126,6 +155,8 @@ export const ProposedOperation = z.discriminatedUnion("op", [
   ProposeEditOp,
   ProposeReplaceOp,
   ProposeCreateOp,
+  ProposeDeleteOp,
+  ProposeMoveOp,
   PromoteOp,
   ForgetOp,
   DistillOp,
