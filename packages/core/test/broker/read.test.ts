@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readVaultFile } from "../../src/broker/read.js";
+import { assertContainedAndReadable } from "../../src/broker/containment.js";
 import { hashBytes } from "../../src/broker/hash.js";
 import { BrokerError } from "../../src/errors.js";
 import type { PermissionsManifest } from "../../src/schemas/manifest.js";
@@ -148,6 +149,43 @@ describe("readVaultFile", () => {
     // no zone vocabulary leaks in either message
     for (const m of [ex.message, miss.message]) {
       expect(m).not.toMatch(/exclud|zone|forbidden/i);
+    }
+  });
+
+  // -------- the `..`-bypass regression (VL-SEC): dot-dot must not evade the zone check --------
+  // resolveZone does NOT collapse embedded `..`, but assertContained resolves the
+  // abs with resolve() (which does) — so a raw path like `Notes/../Private/x`
+  // pointed INSIDE an excluded zone while resolveZone(rawPath) reported "trusted".
+  // The fix resolves the zone on relative(root, abs). Guard both surfaces.
+  test("dot-dot into an excluded zone reads as NOT_FOUND, indistinguishable from missing (VL-SEC)", () => {
+    const v = makeVault();
+    writeFileSync(join(v, "Private", "secret.md"), "top secret\n"); // exists, excluded
+    mkdirSync(join(v, ".obsidian"), { recursive: true });
+    writeFileSync(join(v, ".obsidian", "token.json"), "BRIDGE-TOKEN\n"); // exists, hard-excluded
+    const miss = rej(() => readVaultFile(v, MANIFEST, "Notes/ghost.md"));
+    for (const p of [
+      "Notes/../Private/secret.md",
+      "Private/./secret.md",
+      "Notes/../.obsidian/token.json",
+    ]) {
+      const r = rej(() => readVaultFile(v, MANIFEST, p));
+      expect(r.code).toBe("NOT_FOUND"); // a leak would return content; a raw-path bug would FORBIDDEN_ZONE
+      expect(r.retriable).toBe(true);
+      expect(r.message).toMatch(/^file not found: /);
+      expect(r.message).not.toMatch(/exclud|zone|forbidden/i);
+      expect({ code: r.code, retriable: r.retriable }).toEqual({
+        code: miss.code,
+        retriable: miss.retriable,
+      });
+    }
+  });
+
+  test("WRITE gate: assertContainedAndReadable rejects `..` into an excluded zone (VL-SEC)", () => {
+    const v = makeVault();
+    // The shared gate the propose/write path uses. Before the fix these queued a
+    // write INTO the excluded zone (resolveZone(rawPath) === "trusted").
+    for (const p of ["Notes/../Private/evil.md", "Notes/../.obsidian/evil.md", "Foo/../.ledger/x"]) {
+      expect(rej(() => assertContainedAndReadable(v, MANIFEST, p)).code).toBe("FORBIDDEN_ZONE");
     }
   });
 

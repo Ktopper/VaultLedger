@@ -1,5 +1,5 @@
 import { closeSync, existsSync, openSync, realpathSync, renameSync, unlinkSync, writeSync } from "node:fs";
-import { basename, dirname, join, resolve, sep } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { randomBytes } from "node:crypto";
 import { BrokerError } from "../errors.js";
 import type { PermissionsManifest } from "../schemas/manifest.js";
@@ -96,7 +96,17 @@ export function assertContainedAndReadable(
   relPath: string,
 ): string {
   const abs = assertContained(vaultRoot, relPath);
-  const zone = resolveZone(relPath, manifest);
+  // VL-SEC: resolve the zone against the ROOT-RELATIVE resolved path, NOT the
+  // raw `relPath`. `assertContained` computes `abs` with `resolve()` (which
+  // collapses `..`/`.`), but `resolveZone` does not collapse embedded `..` — so a
+  // raw path like `Notes/../Private/secret.md` (or an escape-and-reenter
+  // `Notes/../../<vaultbase>/Private/x`) resolves INSIDE an excluded zone while
+  // `resolveZone(rawPath)` reports `trusted`, bypassing the excluded check. Using
+  // `relative(root, abs)` makes the zone decision agree with the path that will
+  // actually be read/written. (Root-aware on purpose: a lexical normalize in
+  // `resolveZone` alone can't undo an escape-and-reenter, since it doesn't know
+  // the root.)
+  const zone = resolveZone(relative(resolve(vaultRoot), abs), manifest);
   if (zone === "excluded") {
     throw new BrokerError("FORBIDDEN_ZONE", `path is in excluded zone: ${relPath}`);
   }

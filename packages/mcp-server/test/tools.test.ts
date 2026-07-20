@@ -360,6 +360,19 @@ describe("buildTools", () => {
     // No zone vocabulary may leak — that would be the disclosure oracle.
     expect(exErr.message).not.toMatch(/exclud|zone|forbidden/i);
     expect(exErr.message).toMatch(/^file not found: /);
+
+    // VL-SEC: a `..` detour into the excluded zone must NOT leak content and must
+    // NOT surface FORBIDDEN_ZONE — the tool passes the raw path straight to
+    // readVaultFile, so this proves the MCP surface inherits the root-relative
+    // zone fix (resolveZone(rawPath) would have said "trusted" here).
+    const dotdot = await read.handler({ path: "Notes/../Private/secret.md" });
+    const ddErr = dotdot.error as { code: string; retriable: boolean; message: string };
+    expect(dotdot.content).toBeUndefined(); // no leaked bytes
+    expect({ code: ddErr.code, retriable: ddErr.retriable }).toEqual({
+      code: missErr.code,
+      retriable: missErr.retriable,
+    });
+    expect(ddErr.message).not.toMatch(/exclud|zone|forbidden/i);
   });
 
   test("vault_propose_replace's description points at vault_read as the hash source, not memory_recall / ledger_status", async () => {
