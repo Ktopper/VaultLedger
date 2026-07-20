@@ -1,5 +1,4 @@
 import { readFileSync, statSync } from "node:fs";
-import { relative, resolve } from "node:path";
 import { BrokerError } from "../errors.js";
 import type { PermissionsManifest } from "../schemas/manifest.js";
 import { resolveZone } from "../zones.js";
@@ -39,18 +38,16 @@ export function readVaultFile(
 ): VaultReadResult {
   const maxBytes = opts?.maxBytes ?? READ_MAX_BYTES;
 
-  // Containment/symlink only (traversal/symlink escape → FORBIDDEN_ZONE).
-  const abs = assertContained(vaultRoot, path);
+  // Containment/symlink escape → FORBIDDEN_ZONE. `zonePath` is the canonical
+  // (realpath-resolved) path for the zone decision — it collapses `..` AND
+  // dereferences symlinks, so neither `Notes/../Private/x` nor a `Link -> Private`
+  // symlink can evade the excluded check (see assertContained).
+  const { abs, zonePath } = assertContained(vaultRoot, path);
 
   // Oracle rule (§3): an excluded path is indistinguishable from a missing one.
   // Map it to the SAME generic NOT_FOUND — no zone vocabulary — right here, at
   // the read boundary (propose keeps FORBIDDEN_ZONE; unchanged).
-  // VL-SEC: resolve the zone against the ROOT-RELATIVE resolved path (`abs`), NOT
-  // the raw `path` — `resolveZone(rawPath)` does not collapse embedded `..`, so a
-  // path like `Notes/../Private/secret.md` reads INSIDE an excluded zone while
-  // reporting `trusted`. `relative(root, abs)` closes that bypass (and the
-  // escape-and-reenter variant), keeping the oracle guarantee airtight.
-  if (resolveZone(relative(resolve(vaultRoot), abs), manifest) === "excluded") {
+  if (resolveZone(zonePath, manifest) === "excluded") {
     throw new BrokerError("NOT_FOUND", `file not found: ${path}`, true);
   }
 

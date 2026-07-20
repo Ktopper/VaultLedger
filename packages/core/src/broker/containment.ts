@@ -67,7 +67,10 @@ function getCanonicalRoot(resolvedRoot: string): string {
  * to avoid a zone-disclosure oracle, VL-SEC-S7-04) can run containment without
  * the wrapper's excluded→FORBIDDEN_ZONE throw. `assertContainedAndReadable`
  * layers the excluded check on top — the single containment implementation. */
-export function assertContained(vaultRoot: string, relPath: string): string {
+export function assertContained(
+  vaultRoot: string,
+  relPath: string,
+): { abs: string; zonePath: string } {
   const root = resolve(vaultRoot);
   const abs = resolve(root, relPath);
   if (abs !== root && !abs.startsWith(root + sep)) {
@@ -87,7 +90,20 @@ export function assertContained(vaultRoot: string, relPath: string): string {
     throw new BrokerError("FORBIDDEN_ZONE", `path escapes vault root via symlink: ${relPath}`);
   }
 
-  return abs;
+  // `zonePath` is the path a ZONE check must use — the realpath of the deepest
+  // existing ancestor + the lexical (non-existent) tail below it. `resolve()`/
+  // `relative()` are purely LEXICAL (they never dereference symlinks), so zoning
+  // the lexical `abs` would zone a symlink `Link -> Private` by the link's own
+  // name ("Link", trusted) while the read/write follows it into the excluded
+  // target — a real content-leak / write-gate bypass. Building `zonePath` from
+  // `realAncestor` resolves BOTH `..` AND intermediate symlinks, so the zone
+  // decision matches the file that is actually accessed (VL-SEC). `abs` is still
+  // returned for I/O (it follows the same symlink to the same bytes).
+  const tail = ancestor === undefined ? relative(canonicalRoot, abs) : relative(ancestor, abs);
+  const canonicalAbs = tail === "" ? realAncestor : resolve(realAncestor, tail);
+  const zonePath = relative(canonicalRoot, canonicalAbs);
+
+  return { abs, zonePath };
 }
 
 export function assertContainedAndReadable(
@@ -95,19 +111,13 @@ export function assertContainedAndReadable(
   manifest: PermissionsManifest,
   relPath: string,
 ): string {
-  const abs = assertContained(vaultRoot, relPath);
-  // VL-SEC: resolve the zone against the ROOT-RELATIVE resolved path, NOT the
-  // raw `relPath`. `assertContained` computes `abs` with `resolve()` (which
-  // collapses `..`/`.`), but `resolveZone` does not collapse embedded `..` — so a
-  // raw path like `Notes/../Private/secret.md` (or an escape-and-reenter
-  // `Notes/../../<vaultbase>/Private/x`) resolves INSIDE an excluded zone while
-  // `resolveZone(rawPath)` reports `trusted`, bypassing the excluded check. Using
-  // `relative(root, abs)` makes the zone decision agree with the path that will
-  // actually be read/written. (Root-aware on purpose: a lexical normalize in
-  // `resolveZone` alone can't undo an escape-and-reenter, since it doesn't know
-  // the root.)
-  const zone = resolveZone(relative(resolve(vaultRoot), abs), manifest);
-  if (zone === "excluded") {
+  // Zone the CANONICAL path (realpath-resolved — collapses `..` AND dereferences
+  // symlinks; see assertContained), not the raw `relPath`: a raw/lexical zone
+  // check is bypassable both by `Notes/../Private/x` and by a symlink named
+  // `Link -> Private`. This is the single excluded-zone enforcement point for the
+  // propose/write path.
+  const { abs, zonePath } = assertContained(vaultRoot, relPath);
+  if (resolveZone(zonePath, manifest) === "excluded") {
     throw new BrokerError("FORBIDDEN_ZONE", `path is in excluded zone: ${relPath}`);
   }
 

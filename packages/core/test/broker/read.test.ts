@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readVaultFile } from "../../src/broker/read.js";
@@ -187,6 +187,46 @@ describe("readVaultFile", () => {
     for (const p of ["Notes/../Private/evil.md", "Notes/../.obsidian/evil.md", "Foo/../.ledger/x"]) {
       expect(rej(() => assertContainedAndReadable(v, MANIFEST, p)).code).toBe("FORBIDDEN_ZONE");
     }
+  });
+
+  // -------- symlink-into-excluded regression (VL-SEC): zone check must use the realpath --------
+  // A symlink whose NAME is not excluded but which points at an excluded dir
+  // must not defeat exclusion. resolve()/relative() are lexical (don't follow
+  // symlinks); the fix zones the realpath-resolved path (see assertContained).
+  test("symlink into an excluded zone reads as NOT_FOUND, indistinguishable from missing (VL-SEC)", () => {
+    const v = makeVault();
+    writeFileSync(join(v, "Private", "secret.md"), "top secret\n");
+    mkdirSync(join(v, ".obsidian"), { recursive: true });
+    writeFileSync(join(v, ".obsidian", "token.json"), "BRIDGE-TOKEN\n");
+    symlinkSync(join(v, "Private"), join(v, "Link")); // Link -> Private (excluded)
+    symlinkSync(join(v, ".obsidian"), join(v, "Cfg")); // Cfg -> .obsidian (hard-excluded)
+    const miss = rej(() => readVaultFile(v, MANIFEST, "Notes/ghost.md"));
+    for (const p of ["Link/secret.md", "Notes/../Link/secret.md", "Cfg/token.json", "Link/ghost.md"]) {
+      const r = rej(() => readVaultFile(v, MANIFEST, p));
+      expect(r.code).toBe("NOT_FOUND"); // a leak would return content
+      expect(r.retriable).toBe(true);
+      expect(r.message).not.toMatch(/exclud|zone|forbidden/i);
+      expect({ code: r.code, retriable: r.retriable }).toEqual({
+        code: miss.code,
+        retriable: miss.retriable,
+      });
+    }
+  });
+
+  test("a LEGIT symlink into a readable zone still reads (fix must not over-reject)", () => {
+    const v = makeVault();
+    mkdirSync(join(v, "Trusted"), { recursive: true });
+    writeFileSync(join(v, "Trusted", "ok.md"), "ok\n");
+    symlinkSync(join(v, "Trusted"), join(v, "TLink")); // TLink -> Trusted (readable)
+    expect(readVaultFile(v, MANIFEST, "TLink/ok.md").content).toBe("ok\n");
+  });
+
+  test("WRITE gate: assertContainedAndReadable rejects a symlink into an excluded zone (VL-SEC)", () => {
+    const v = makeVault();
+    symlinkSync(join(v, "Private"), join(v, "Link"));
+    expect(rej(() => assertContainedAndReadable(v, MANIFEST, "Link/evil.md")).code).toBe(
+      "FORBIDDEN_ZONE",
+    );
   });
 
   test(".ledger / .git / .obsidian reads → NOT_FOUND (indistinguishable), manifest notwithstanding", () => {
