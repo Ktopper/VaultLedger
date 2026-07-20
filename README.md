@@ -93,6 +93,32 @@ vaultledger/
 - Rollback of any transaction or entire session via `git revert`, with the
   memory journal kept consistent.
 
+## API surface (frozen v1)
+
+As of **0.4.7** the v1 agent surface is **frozen**. It is these **15 default
+tools**:
+
+| Memory | Vault |
+| --- | --- |
+| `memory_recall` | `vault_read` |
+| `memory_remember` | `vault_propose_replace` |
+| `memory_revise` | `vault_propose_create` |
+| `memory_promote` | `vault_propose_delete` |
+| `memory_retire` | `vault_propose_move` |
+| `memory_forget` | `vault_list` |
+| `memory_distill` | `vault_search` |
+| | `ledger_status` |
+
+`vault_propose_edit` (raw unified-diff) is the **sole expert opt-in**: it is
+registered only when the server is launched with `--allow-raw-diff` (16 tools
+with it). Everyday agents get the structured `vault_propose_replace` instead.
+
+What "frozen" means:
+
+- **Nothing new lands on the agent surface without something being removed** — a
+  net-new tool is a deliberate un-freeze decision, not a default.
+- Only **bug fixes** ship against this surface until an explicit un-freeze.
+
 ## From source / contributing
 
 The [Quickstart](#quickstart) above is the fast path for a stranger — install
