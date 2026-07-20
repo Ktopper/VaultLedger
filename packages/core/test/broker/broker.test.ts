@@ -18,9 +18,11 @@ import { LedgerGit } from "../../src/broker/git.js";
 import { Journal } from "../../src/journal/journal.js";
 import { openJournal } from "../../src/journal/db.js";
 import { hashBytes, hashFile } from "../../src/broker/hash.js";
+import { readVaultFile } from "../../src/broker/read.js";
 import { BrokerError } from "../../src/errors.js";
 import { UNSAFE_NO_LOCK } from "../../src/concurrency/lock.js";
 import type { PermissionsManifest } from "../../src/schemas/manifest.js";
+import { TESTING_NOTE_BYTES, TESTING_NOTE_SHA256 } from "../fixtures/testingNote.js";
 
 const MANIFEST: PermissionsManifest = {
   version: 1,
@@ -1634,6 +1636,61 @@ describe("Broker", () => {
       expect(held.patch).toContain("+row THIRTY-TWO");
       // A normal EDIT diff, not a /dev/null creation.
       expect(held.patch).not.toContain("/dev/null");
+    });
+
+    // The loop the field incident (finding #7) could not close: with no read
+    // tool, Hermes couldn't obtain old_text/expected_hash and (correctly)
+    // refused to guess. This proves read → propose → approve end-to-end on the
+    // REAL incident note, with the read's own hash driving the propose (no drift).
+    test("vault_read output drives vault_propose_replace end-to-end — the field-incident loop (real fixture)", async () => {
+      const { broker, journal, vaultRoot } = await makeBroker();
+      const path = "Agent/Testing.md";
+      // Seed the REAL incident note byte-for-byte (valid UTF-8, so string round-trips).
+      await broker.apply({
+        op: "create",
+        path,
+        content: TESTING_NOTE_BYTES.toString("utf8"),
+        reason: "seed the incident note",
+        session: "s1",
+      });
+
+      // READ to obtain content + hash (the missing step).
+      const read = readVaultFile(vaultRoot, MANIFEST, path);
+      expect(read.hash).toBe(TESTING_NOTE_SHA256); // the read reproduces the real digest
+      const oldText = "second disposable proposal"; // verbatim substring of read.content
+      expect(read.content).toContain(oldText);
+
+      // PROPOSE using old_text copied from content + the read's hash as expected_hash.
+      const res = await broker.apply({
+        op: "propose_replace",
+        path,
+        expected_hash: read.hash, // straight from vault_read — must NOT STALE_HASH
+        replacements: [{ old_text: oldText, new_text: "SECOND disposable proposal" }],
+        reason: "field-incident loop",
+        session: "s1",
+      });
+      expect(res.ok).toBe(true);
+      if (!res.ok || !("queued" in res) || !res.queued) throw new Error("expected a queued result");
+      const held = JSON.parse(journal.getApproval(res.approvalId)!.held_operation);
+      expect(held.op).toBe("propose_edit");
+      expect(held.expected_hash).toBe(read.hash);
+
+      // APPROVE → applies cleanly (no drift between the read and the propose).
+      const applied = await broker.apply(
+        {
+          op: "revise",
+          path,
+          patch: held.patch,
+          expected_hash: held.expected_hash,
+          reason: "approve",
+          session: "s1",
+        },
+        { approved: true, approvalId: res.approvalId },
+      );
+      expect(applied.ok).toBe(true);
+      const after = readFileSync(join(vaultRoot, path), "utf8");
+      expect(after).toContain("SECOND disposable proposal");
+      expect(after).not.toContain("second disposable proposal");
     });
 
     test("stale expected_hash on replace → STALE_HASH", async () => {

@@ -6,6 +6,11 @@ import { readVaultFile } from "../../src/broker/read.js";
 import { assertContainedAndReadable } from "../../src/broker/containment.js";
 import { hashBytes } from "../../src/broker/hash.js";
 import { BrokerError } from "../../src/errors.js";
+import {
+  TESTING_NOTE_BYTES,
+  TESTING_NOTE_SHA256,
+  TESTING_NOTE_SIZE,
+} from "../fixtures/testingNote.js";
 import type { PermissionsManifest } from "../../src/schemas/manifest.js";
 
 // Canonical minimal test manifest — same shape as broker.test.ts's MANIFEST:
@@ -150,6 +155,24 @@ describe("readVaultFile", () => {
     for (const m of [ex.message, miss.message]) {
       expect(m).not.toMatch(/exclud|zone|forbidden/i);
     }
+  });
+
+  // -------- the real Testing note (field finding #7) — hash/size byte-for-byte --------
+  test("real Testing-note fixture: vault_read reproduces the incident hash/size byte-for-byte", () => {
+    // Self-check: the fixture bytes hash to the digest captured on the REAL vault
+    // (shasum/wc). If the fixture ever drifts from the real note, this fails.
+    expect(hashBytes(TESTING_NOTE_BYTES)).toBe(TESTING_NOTE_SHA256);
+    expect(TESTING_NOTE_BYTES.length).toBe(TESTING_NOTE_SIZE);
+
+    const v = makeVault();
+    writeFileSync(join(v, "Notes", "Testing.md"), TESTING_NOTE_BYTES);
+    const r = readVaultFile(v, MANIFEST, "Notes/Testing.md");
+    expect(r.hash).toBe(TESTING_NOTE_SHA256); // read's hash === the real digest
+    expect(r.size).toBe(TESTING_NOTE_SIZE);
+    // content is exactly the bytes the hash covers (the invariant), incl. the
+    // trailing newline and the underscore timestamp.
+    expect(Buffer.from(r.content, "utf8").equals(TESTING_NOTE_BYTES)).toBe(true);
+    expect(r.content.endsWith("_12-18-00\n")).toBe(true);
   });
 
   // -------- the `..`-bypass regression (VL-SEC): dot-dot must not evade the zone check --------
