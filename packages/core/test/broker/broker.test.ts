@@ -2240,4 +2240,46 @@ describe("Broker", () => {
       expect(txn!.hash_after).toBe(digest);
     });
   });
+
+  // -------------------------------------------------------------------
+  // v0.4.7: canonical-path fold across all propose ops (Task 5)
+  // -------------------------------------------------------------------
+  describe("canonical path fold", () => {
+    test("a Notes/../Foo.md propose stores the canonical Foo.md in the held op", async () => {
+      const { broker, journal } = await makeBroker();
+      // propose_create routes through applyProposeEdit — exercises the fold on
+      // the create branch. The raw path has a `..` segment.
+      const res = await broker.apply({
+        op: "propose_create",
+        path: "Notes/../Foo.md",
+        content: "# Foo\n\nbody\n",
+        reason: "canonicalize me",
+        session: "s1",
+      });
+      expect(res.ok && "queued" in res && res.queued).toBe(true);
+      if (!res.ok || !("queued" in res) || !res.queued) throw new Error("expected queued");
+
+      const held = JSON.parse(
+        journal.getApproval(res.approvalId)!.held_operation,
+      ) as { op: string; path: string };
+      expect(held.op).toBe("propose_edit");
+      expect(held.path).toBe("Foo.md");
+    });
+
+    test("a normal-path propose stores the path unchanged (canonical === raw)", async () => {
+      const { broker, journal } = await makeBroker();
+      const res = await broker.apply({
+        op: "propose_create",
+        path: "Agent/Memory/plain.md",
+        content: "# Plain\n",
+        reason: "r",
+        session: "s1",
+      });
+      if (!res.ok || !("queued" in res) || !res.queued) throw new Error("expected queued");
+      const held = JSON.parse(
+        journal.getApproval(res.approvalId)!.held_operation,
+      ) as { path: string };
+      expect(held.path).toBe("Agent/Memory/plain.md");
+    });
+  });
 });

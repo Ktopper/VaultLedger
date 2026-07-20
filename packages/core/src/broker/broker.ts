@@ -579,13 +579,22 @@ export class Broker {
       assertHashFormat(op.expected_hash);
     }
 
+    // §6 canonical-path fold: store the CANONICAL (realpath-collapsed) zonePath
+    // in the queued op — the same path every zone/containment decision already
+    // ran on — so a `Notes/../Foo.md` propose is held and displayed as `Foo.md`,
+    // matching delete/move. NOTE (intentional, harmless): the patch's own
+    // +++/--- headers still carry the RAW path the agent sent; applyRevise
+    // applies the patch to op.path's CONTENT (a creation to ""), never
+    // re-deriving the target from the header, so the header path never matters.
+    const { zonePath } = assertContained(this.vaultRoot, op.path);
     // Enqueue the normalized op. A creation stores expected_hash: undefined
     // (JSON.stringify drops it). For an edit, normalize the hash to lowercase and
     // store that so an uppercase-but-correct hash still matches at approve-time.
-    const normalizedOp: ProposeEditOp =
-      op.expected_hash != null
-        ? { ...op, expected_hash: assertHashFormat(op.expected_hash) }
-        : op;
+    const normalizedOp: ProposeEditOp = {
+      ...op,
+      path: zonePath,
+      ...(op.expected_hash != null ? { expected_hash: assertHashFormat(op.expected_hash) } : {}),
+    };
 
     const approvalId = this.genId("apr");
     const row: ApprovalRow = {
