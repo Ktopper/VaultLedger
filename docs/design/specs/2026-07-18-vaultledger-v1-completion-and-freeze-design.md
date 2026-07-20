@@ -95,10 +95,17 @@ There is no `revise`-shaped op to reshape a delete into (no patch), so
 2. **`broker.apply()` dispatch switch** gets `case "propose_delete"` (dual-mode).
 
 `applyDelete`: under `withVaultLock`, re-resolve + re-check existence (gone →
-clean `NOT_FOUND`/`STALE_HASH`) + re-compare hash (drift → `STALE_HASH`);
-`unlinkSync` + `git.commitPaths([path], formatMessage({op:"delete",…}))` (the
-`doArchive` mechanics, no destination); journal a **`delete`** txn (`hash_before`
-= content hash, `hash_after: null`, `approval_id`, `commit_sha`).
+clean `NOT_FOUND`/`STALE_HASH`) + re-compare hash (drift → `STALE_HASH`).
+**Baseline-commit an untracked source FIRST (spec-review blocker B1):** if
+`git.fileAtHead(path) === null` — the note was dropped by a human / Obsidian sync
+and never committed, the *likely field shape* — `git.commitFile(path, "VaultLedger
+baseline: …")` BEFORE the destructive step, mirroring `applyRevise` (broker.ts
+~:443). Otherwise `commitPaths`'s `git add` fails on an already-`unlink`ed
+untracked path (git exit 128, a RAW non-`BrokerError`) → file gone, no commit, no
+journal row, undo dead. THEN `unlinkSync` + `git.commitPaths([path],
+formatMessage({op:"delete",…}))` (the `doArchive` git mechanics, NOT a call to
+`doArchive`); journal a **`delete`** txn (`hash_before` = content hash,
+`hash_after: null`, `approval_id`, `commit_sha`).
 
 ### Recoverability is the argument FOR deletion
 
@@ -124,23 +131,55 @@ independent of file size.
 - **Source** = the `applyProposeDelete` gate: canonical path; **excluded ≡ missing
   `NOT_FOUND`** (oracle); missing → `NOT_FOUND` (retriable); hash pin →
   `STALE_HASH`; **governed → rejected** (see the gate decision below).
-- **Destination** = the `applyProposeCreate` gate: canonical path; **excluded →
-  `FORBIDDEN_ZONE`**; **occupied destination → `DESTINATION_EXISTS`** (a NEW
-  code — see §5 — `retriable:true`: the agent picks a different `to`, or proposes
-  a delete of the occupant first; distinct remediation from create's
-  non-retriable `TARGET_EXISTS` "use edit instead", hence a distinct code). Note:
-  no `to` hash — the destination must be empty, so there's nothing to pin.
+- **Destination** = the `applyProposeCreate` → `applyProposeEdit` create-branch
+  gate. Checks run in THIS ORDER (S1 — the order is load-bearing for
+  non-disclosure): **(1) canonical zone: excluded → `FORBIDDEN_ZONE`** — a
+  **trusted** destination is ALLOWED (queued for approval); (2) **occupied →
+  `DESTINATION_EXISTS`** (NEW code, §5, `retriable:true`: pick a different `to` or
+  delete the occupant first — distinct from create's non-retriable `TARGET_EXISTS`
+  "use edit"). **Excluded MUST be checked before occupancy (S1 oracle):** if
+  occupancy fired first, `move(to=<excluded path>)` returning `DESTINATION_EXISTS`
+  vs `FORBIDDEN_ZONE` would leak whether a file exists at an excluded path
+  (`Private/salary.md`, `.git/config`); zone-before-existence (which `applyCreate`
+  already does) collapses both to `FORBIDDEN_ZONE`. No `to` hash — the destination
+  must be empty, nothing to pin.
+- **CRITICAL (blocker B2): the destination gate is `applyProposeEdit`'s create
+  branch (excluded → `FORBIDDEN_ZONE`, TRUSTED allowed-with-approval), NOT
+  `applyCreate`/`createFile`** — the latter hardcodes an **agent/scratch-only**
+  zone (broker.ts ~:243), which would reject every `Clients/Brandit/…` move and
+  make the acceptance capstone impossible. The field task files into a **trusted**
+  client hub; trusted-with-approval is the whole point.
 
 ### Apply — a single `git mv` commit
 
 `applyMove` (approved branch, dual-mode + approve-switch arm exactly like delete):
-re-verify source hash + destination-empty under the lock; **create intermediate
-destination directories implicitly** (`mkdirSync(dirname(toAbs), {recursive:true})`);
-`git.commitPaths([from, to], formatMessage({op:"move",…}))` after the rename (the
-`doArchive` move mechanics — `doArchive` is literally a move; reuse it). Journal a
-**`move`** txn (`path` = from, a `to`/destination field or the message records
-the pair; `hash_before` = source hash, `hash_after` = same hash — content
-unchanged). Undo = `git revert` → moves it back.
+re-verify source hash + destination-empty under the lock. **Baseline-commit an
+untracked source FIRST (blocker B1, same as delete):** `if (git.fileAtHead(from)
+=== null) git.commitFile(from, "VaultLedger baseline: …")` before the destructive
+step — an Inbox article dropped by Obsidian is untracked until committed, and
+`commitPaths` would otherwise fail (git exit 128) leaving the source unlinked and
+the dest orphaned/unjournaled. THEN **create intermediate destination directories
+implicitly** (`mkdirSync(dirname(toAbs), {recursive:true})`); write the source
+bytes to the destination via `writeContainedFile` (S1-02 temp+rename, re-verifying
+containment on the destination), `unlinkSync` the source, then
+`git.commitPaths([from, to], formatMessage({op:"move",…}))`. Journal a **`move`**
+txn: `path` = from; a `to` field on the row (or the message records the pair — the
+plan picks one); `hash_before` = source hash, `hash_after` = same hash (content
+unchanged); **`approval_id` from the held approval (S3 — reconcile closes a stale
+move approval ONLY by `approval_id` match, so the row must carry it, like the
+delete txn)**; `commit_sha`. Undo = `git revert` → moves it back.
+
+> **CRITICAL (spec-review ground-check): reuse `doArchive`'s git MECHANICS, NOT
+> `doArchive` itself.** `doArchive` (broker.ts) is the memory-*forget* archive
+> path and **hardcodes an agent/scratch-zone-only gate** (`fromZone/toZone !==
+> "agent" && !== "scratch" → FORBIDDEN_ZONE`) — calling it for a **trusted**
+> `Inbox → Clients/Brandit` move would reject the exact field task. `applyMove`
+> is a **separate method** that reuses only the read→write-contained→unlink→
+> `commitPaths([from,to])`→journal pattern; its zone rules are the ones specced
+> here (source = delete rules, destination = create rules), applied at the
+> propose gate — never `doArchive`'s agent/scratch restriction. Same caveat for
+> `applyDelete` (WU-1): it reuses the `unlink`+`commitPaths`+journal mechanics,
+> NOT a call to `doArchive`.
 
 ### Directories are NOT first-class (state the rule)
 
@@ -201,11 +240,16 @@ broker op).
   `.min(1)` path schema (consistent with `vault_read`) — pick `"."`, reject the
   empty string, so there's exactly one root token.
 - **Entry cap:** at most **`LIST_MAX_ENTRIES = 1000`** entries, then
-  `truncated: true`. Justified: a single vault folder over 1000 entries is
-  pathological; the cap bounds the MCP response and the (post-omission) count,
-  and `truncated` tells the agent to narrow rather than trust a partial list as
-  complete. Missing path / a file path (not a dir) → `NOT_FOUND` (a file isn't a
-  listable dir; same indistinguishable code).
+  `truncated: true`. **Invariant (S2 oracle): the excluded-entry filter runs
+  BEFORE the cap** — cap the *post-omission* list, never the raw `readdir`.
+  Otherwise a dir of 1000 normal + 1 excluded entry would show `truncated:true`/
+  ~999 while a plain 1000-entry dir shows `truncated:false`/1000, revealing the
+  excluded entry at the boundary. §8 pins this: `LIST_MAX_ENTRIES` visible + 1
+  excluded is byte-identical (count AND `truncated`) to `LIST_MAX_ENTRIES` visible
+  + 0 excluded. Justified: a single vault folder over 1000 *visible* entries is
+  pathological; `truncated` tells the agent to narrow. Missing path / a file path
+  (not a dir) → `NOT_FOUND` (a file isn't a listable dir; same indistinguishable
+  code).
 
 ---
 
@@ -228,7 +272,10 @@ an index is a §9 non-goal). Standalone core `searchVault`, wired like
 - **Bounded:** at most **`SEARCH_MAX_MATCHES = 50`** matches total (across files),
   **`SEARCH_SNIPPET_MAX = 200`** chars per snippet (centered on the match), and
   the scan visits files under the containment gate only. `truncated: true` when
-  the match cap is hit. Justified: 50 matches is enough to locate a file
+  the match cap is hit. **Invariant (S2, mirrors list): excluded/oversized/
+  non-UTF-8 files are filtered/skipped BEFORE anything counts toward
+  `SEARCH_MAX_MATCHES` or `truncated`** — a skipped file must never nudge the cap
+  or the truncated flag, or its existence leaks at the boundary. Justified: 50 matches is enough to locate a file
   (search's job is "which file says X", not "read everything"); the snippet bound
   keeps the response small; no per-file or total-bytes index means cost is
   O(readable notes) — acceptable for a personal vault, and the caps stop a
@@ -288,8 +335,10 @@ implemented in core; only default *registration* moves.
   (`server/src/render.ts`) is pure with no fs — so the **`/approvals` handler**
   (`server/src/app.ts`, which holds `ctx.vaultRoot`/`manifest`) reads the current
   file (bounded to the 64 KiB read ceiling — `/approvals` renders every pending
-  row per call) and passes `deleteContent` into a widened `renderApprovalDiff`;
-  file already absent → a `— file already absent` marker. **The CLI
+  row per call) and passes `deleteContent` into a widened `renderApprovalDiff`. A
+  read failure of ANY kind (already absent, or defensively over-cap / non-text)
+  renders a `— <path> unavailable` marker rather than throwing (N1 — one bad row
+  must never 500 the whole `/approvals` render loop). **The CLI
   `ledger approve` renderer (`cli/src/commands/approve.ts` `renderHeldOperation`,
   also pure `(op)=>string`) needs the SAME vault-handle content-read** — else the
   terminal shows `"(no diff available)"` for the highest-consequence click.
@@ -319,11 +368,18 @@ implemented in core; only default *registration* moves.
 
 ### Exhaustive tables that grow (name them all so the build stays green)
 
-op union (`ProposeDeleteOp`, `ProposeMoveOp`); the broker `apply()` `switch` +
-its `const exhaustive: never`; the `Approvals.approve()` `switch` (`case
-propose_delete`, `case propose_move`); the catalog-count tables (§WU-5); the
-server `Record<RejectionCode,number>` (`DESTINATION_EXISTS`). `vault_list`/
-`vault_search` are **standalone functions, NOT ops** — they touch none of these.
+the op union at **`schemas/operation.ts` `ProposedOperation` discriminatedUnion**
+(add `ProposeDeleteOp`, `ProposeMoveOp` — this is what makes the broker's
+`const exhaustive: never` compile, N2); the broker `apply()` `switch`; the
+`Approvals.approve()` `switch` (`case propose_delete`, `case propose_move`); the
+catalog-count tables (§WU-5); the server `Record<RejectionCode,number>`
+(`DESTINATION_EXISTS`). `vault_list`/`vault_search` are **standalone functions,
+NOT ops** — they touch none of these.
+- **`DESTINATION_EXISTS` is NOT stale-eligible (N3):** it's absent from
+  reconcile's `STALE_ELIGIBLE_CODES`, so a move whose destination fills during the
+  queue wait throws at approve and leaves the approval `pending` for the human to
+  re-act — consistent with how `NOT_FOUND` at approve is handled; noted so it's a
+  decision, not a surprise.
 
 ---
 
@@ -357,9 +413,15 @@ default).
 - **delete + undo byte-identical:** propose_delete a seeded note → approve → gone
   from disk + git → `undo` → restored, and the bytes **hash to the pre-delete
   digest** (the recoverability invariant; hash equality, not just "exists").
+  **Run this BOTH with a git-tracked source AND an UNTRACKED source (B1 — the real
+  Inbox shape):** the untracked case must baseline-commit then delete then
+  undo-restore byte-identical; a test that only seeds a pre-committed source would
+  mask the B1 data-loss bug.
 - **move + undo round-trip:** propose_move `A → B` (incl. a rename and a
   file-into-new-subdir case) → approve → `A` gone, `B` present with identical
-  bytes/hash, intermediate dir created → `undo` → back at `A`.
+  bytes/hash, intermediate dir created → `undo` → back at `A`. **Also with an
+  UNTRACKED source (B1)** — the untracked Inbox article must move + undo cleanly,
+  not orphan the destination.
 - **stale hashes** on both (delete + move-source) → `STALE_HASH`.
 - **destination collision:** move onto an occupied `to` → `DESTINATION_EXISTS`
   (retriable).
@@ -372,7 +434,12 @@ default).
   entry → only the normal entry; **payload-identity check** — listing a dir whose
   only real entry is excluded is byte-identical to listing an empty dir; **empty
   dir vs missing dir** distinguished correctly (empty → `entries:[]`; missing →
-  `NOT_FOUND`).
+  `NOT_FOUND`). **BOUNDARY test (S2):** `LIST_MAX_ENTRIES` visible entries + 1
+  excluded produces a byte-identical payload (count AND `truncated`) to
+  `LIST_MAX_ENTRIES` visible + 0 excluded — proving the filter precedes the cap.
+- **move-dest occupancy-vs-zone precedence (S1):** move onto an *occupied
+  excluded* destination → `FORBIDDEN_ZONE`, NEVER `DESTINATION_EXISTS` (zone
+  before existence, so occupancy at an excluded path can't leak).
 - **search never surfaces excluded content:** seed an excluded file containing the
   query verbatim + a trusted file that does NOT match → search returns **nothing**
   (no leak, no "skipped" signal); over-cap and non-UTF-8 files with the query →
