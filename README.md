@@ -186,10 +186,10 @@ for a static example):
 
 Running straight out of this repo, `node <repo>/packages/mcp-server/dist/index.js`
 is the reliable invocation (the bare `vaultledger-mcp` bin only resolves once the
-package is globally installed/linked). The server exposes 11 tools: `memory_recall`,
+package is globally installed/linked). The server exposes 12 tools: `memory_recall`,
 `memory_remember`, `memory_distill`, `memory_revise`, `memory_promote`,
-`memory_forget`, `memory_retire`, `vault_propose_replace`, `vault_propose_create`,
-`vault_propose_edit`, and `ledger_status`.
+`memory_forget`, `memory_retire`, `vault_read`, `vault_propose_replace`,
+`vault_propose_create`, `vault_propose_edit`, and `ledger_status`.
 
 **4. Remember, then recall**
 
@@ -217,7 +217,9 @@ Writes to the *trusted* zone (ordinary vault notes, not the agent zone) are
 never applied directly — they always queue for human approval. The default write
 path is `vault_propose_replace` for edits and `vault_propose_create` for new
 files: the agent describes the change as exact find/replace text (or full
-content) and the broker builds the diff, so it never hand-writes one:
+content) and the broker builds the diff, so it never hand-writes one. The agent
+first calls `vault_read` to get the note's exact bytes and `hash` — the source of
+a byte-perfect `old_text` and the `expected_hash`:
 
 ```json
 { "path": "Projects/Nova.md", "expected_hash": "sha256:...", "replacements": [{ "old_text": "Owner: TBD", "new_text": "Owner: Priya" }], "reason": "assign an owner" }

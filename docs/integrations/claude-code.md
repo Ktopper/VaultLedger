@@ -69,7 +69,7 @@ step 2 fails: doctor green + recall broken means the wiring, not VaultLedger.
 
 ## 3. Teach it
 
-The eleven tools are self-describing, so Claude Code *can* call them. The standing
+The twelve tools are self-describing, so Claude Code *can* call them. The standing
 instruction teaches **when** — six rules, each with its rationale. Read them at
 [`skills/vaultledger-memory/SNIPPET.md`](../../skills/vaultledger-memory/SNIPPET.md).
 A taste:
@@ -81,9 +81,10 @@ A taste:
 For vault writes specifically: `vault_propose_replace` (edits) and
 `vault_propose_create` (new files) are the default path — describe the change as
 exact find/replace text or full content and the broker builds the diff;
-`vault_propose_edit` (a raw unified diff) is the advanced surface. Rule 6 carries
-the discipline that makes a replace land first try (read the target fresh, copy
-`old_text` byte-for-byte).
+`vault_propose_edit` (a raw unified diff) is the advanced surface. Before an edit,
+`vault_read` returns the note's exact bytes and its `hash` — the source of a
+byte-perfect `old_text` and the `expected_hash` a replace needs. Rule 6 carries
+that discipline (read fresh with `vault_read`, copy `old_text` byte-for-byte).
 
 Two ways to install it:
 

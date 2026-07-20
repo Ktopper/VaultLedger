@@ -71,22 +71,24 @@ time, which doctor can't see. Step 1 tells you *which side* is broken when step
 Your harness exposes some way to give the agent standing instructions — a system
 prompt, a profile, a rules file, a skill. Whatever it's called, paste in
 [`skills/vaultledger-memory/SNIPPET.md`](../../skills/vaultledger-memory/SNIPPET.md):
-six rules that teach the agent *when* to reach for the eleven tools, each with its
+six rules that teach the agent *when* to reach for the twelve tools, each with its
 rationale. A taste:
 
 > **Never edit vault files directly — every write goes through the tools** —
 > because the broker is the only thing that makes a change attributable and
 > reversible.
 
-The eleven tools your harness will see: `memory_recall`, `memory_remember`,
+The twelve tools your harness will see: `memory_recall`, `memory_remember`,
 `memory_revise`, `memory_promote`, `memory_retire`, `memory_forget`,
-`memory_distill`, `vault_propose_replace`, `vault_propose_create`,
+`memory_distill`, `vault_read`, `vault_propose_replace`, `vault_propose_create`,
 `vault_propose_edit`, `ledger_status`. For vault writes, `vault_propose_replace`
 (edits) and `vault_propose_create` (new files) are the default path — the broker
 builds the diff from your find/replace text or full content; `vault_propose_edit`
-(a raw unified diff) is the advanced surface. Note that some harnesses **rename**
-tools on registration (Hermes prefixes them `mcp_vaultledger_*`), so check yours
-before writing tool names into a filter or a prompt.
+(a raw unified diff) is the advanced surface. `vault_read` returns a note's exact
+bytes and `hash` — the fresh read a replace copies `old_text` and `expected_hash`
+from. Note that some harnesses **rename** tools on registration (Hermes prefixes
+them `mcp_vaultledger_*`), so check yours before writing tool names into a filter
+or a prompt.
 
 ## 4. Trust model
 
