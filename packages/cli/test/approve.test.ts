@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "vitest";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createPatch } from "diff";
 import { hashFile } from "@vault-ledger/core";
@@ -96,6 +96,83 @@ describe("approveCommand", () => {
 
     expect(result).toEqual({ ok: false, code: "NOT_FOUND" });
     expect(messages.join("\n")).toContain("NOT_FOUND");
+  });
+
+  test("no id: a queued propose_delete renders the DELETE header + content (not '(no diff available)')", async () => {
+    vault = await makeInitializedVault();
+    const relPath = "note-to-delete.md";
+    const abs = join(vault.vaultDir, relPath);
+    const content = "# Heading\n\nbody line one\nbody line two\n";
+    writeFileSync(abs, content, "utf8");
+
+    const ctx = await loadContext(vault.vaultDir, vault.deps);
+    const result = await ctx.broker.apply({
+      op: "propose_delete",
+      path: relPath,
+      expected_hash: hashFile(abs),
+      reason: "retire this note",
+      session: "s1",
+    });
+    ctx.db.close();
+    if (!("queued" in result) || !result.queued) throw new Error("expected propose_delete to queue");
+
+    const messages: string[] = [];
+    await approveCommand(vault.vaultDir, { out: (s) => messages.push(s) }, vault.deps);
+    const rendered = messages.join("\n");
+    expect(rendered).toContain(`DELETE ${relPath}`);
+    expect(rendered).toContain("-# Heading");
+    expect(rendered).toContain("-body line one");
+    expect(rendered).not.toContain("(no diff available)");
+  });
+
+  test("no id: a queued propose_delete whose source vanished renders an 'unavailable' marker (never throws)", async () => {
+    vault = await makeInitializedVault();
+    const relPath = "vanishing.md";
+    const abs = join(vault.vaultDir, relPath);
+    const content = "# Vanishing\n\nsome body\n";
+    writeFileSync(abs, content, "utf8");
+
+    const ctx = await loadContext(vault.vaultDir, vault.deps);
+    const result = await ctx.broker.apply({
+      op: "propose_delete",
+      path: relPath,
+      expected_hash: hashFile(abs),
+      reason: "retire this note",
+      session: "s1",
+    });
+    ctx.db.close();
+    if (!("queued" in result) || !result.queued) throw new Error("expected propose_delete to queue");
+
+    // Source removed out from under the pending approval — render must not throw.
+    rmSync(abs, { force: true });
+
+    const messages: string[] = [];
+    await approveCommand(vault.vaultDir, { out: (s) => messages.push(s) }, vault.deps);
+    expect(messages.join("\n")).toContain(`— ${relPath} unavailable`);
+  });
+
+  test("no id: a queued propose_move renders 'MOVE from -> to'", async () => {
+    vault = await makeInitializedVault();
+    const relPath = "movable.md";
+    const abs = join(vault.vaultDir, relPath);
+    const content = "# Movable\n\nbody\n";
+    writeFileSync(abs, content, "utf8");
+
+    const ctx = await loadContext(vault.vaultDir, vault.deps);
+    const result = await ctx.broker.apply({
+      op: "propose_move",
+      from: relPath,
+      to: "moved/movable.md",
+      expected_hash: hashFile(abs),
+      reason: "file it away",
+      session: "s1",
+    });
+    ctx.db.close();
+    if (!("queued" in result) || !result.queued) throw new Error("expected propose_move to queue");
+
+    const messages: string[] = [];
+    await approveCommand(vault.vaultDir, { out: (s) => messages.push(s) }, vault.deps);
+    expect(messages.join("\n")).toContain(`MOVE ${relPath} -> moved/movable.md`);
   });
 
   test("stale approval: file changed after queueing -> returns stale, file untouched", async () => {
