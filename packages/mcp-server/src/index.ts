@@ -22,8 +22,8 @@ const SERVER_VERSION = "0.4.6";
  * without spinning up a real vault. `buildTools` (over a live ServerContext)
  * is the source of truth for the actual registered tools; a tools.test.ts
  * assertion keeps the two in sync. */
-export function listToolNames(): string[] {
-  return [
+export function listToolNames(allowRawDiff = false): string[] {
+  const names = [
     "memory_recall",
     "memory_remember",
     "memory_distill",
@@ -32,11 +32,18 @@ export function listToolNames(): string[] {
     "memory_forget",
     "memory_retire",
     "vault_read",
-    "vault_propose_edit",
     "vault_propose_replace",
     "vault_propose_create",
+    "vault_propose_delete",
+    "vault_propose_move",
+    "vault_list",
+    "vault_search",
     "ledger_status",
   ];
+  // WU-5: the raw-diff vault_propose_edit is off the default surface; only
+  // `--allow-raw-diff` adds it (16th tool). Mirrors buildTools(ctx).
+  if (allowRawDiff) names.push("vault_propose_edit");
+  return names;
 }
 
 export interface CreatedServer {
@@ -56,7 +63,7 @@ function toCallToolResult(result: Record<string, unknown>): CallToolResult {
 }
 
 /**
- * Wire the 12 tools from `buildTools(ctx)` onto a real MCP `Server`: a
+ * Wire the tools from `buildTools(ctx)` onto a real MCP `Server`: a
  * ListTools handler that reports each tool's name/description/JSON-schema
  * (converted from its zod inputSchema via zod-to-json-schema), and a
  * CallTool handler that dispatches to the matching tool's handler and
@@ -122,6 +129,17 @@ export function parseNoSweep(argv: string[]): boolean {
   return argv.includes("--no-sweep");
 }
 
+/** Extract the `--allow-raw-diff` flag (WU-5): opts the demoted raw
+ * unified-diff `vault_propose_edit` tool back onto the surface. Threaded into
+ * `LoadServerContextDeps.allowRawDiff` → `ServerContext.allowRawDiff`, which
+ * `buildTools` reads to conditionally register the tool. Lives visibly next to
+ * `--vault` in the harness's MCP config block (design: chosen over an env var
+ * precisely so the raw-diff surface being on is legible there). Orthogonal to
+ * `--vault`/`--no-sweep`. Exported for unit testing. */
+export function parseAllowRawDiff(argv: string[]): boolean {
+  return argv.includes("--allow-raw-diff");
+}
+
 /**
  * Process entry point. Exported (not just declared) so the committed bin
  * launcher (`packages/mcp-server/bin/vaultledger-mcp.mjs`) can call it
@@ -134,7 +152,8 @@ export async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const vaultRoot = parseVaultArg(argv);
   const skipSweep = parseNoSweep(argv);
-  const ctx = await loadServerContext(vaultRoot, { skipSweep });
+  const allowRawDiff = parseAllowRawDiff(argv);
+  const ctx = await loadServerContext(vaultRoot, { skipSweep, allowRawDiff });
 
   let server: Server;
   try {

@@ -157,6 +157,9 @@ describe("v0.1 gate: governed-write loop (spec §1 six-step scenario)", () => {
       now: clock.now,
       genId: clock.genId,
       session: "mcp-A",
+      // WU-5: this gate drives vault_propose_edit (a raw unified diff), which is
+      // off the default surface — opt it back in for the scenario.
+      allowRawDiff: true,
     });
     openDbs.push(ctxA);
     const { callTool: callToolA } = createServer(ctxA);
@@ -288,6 +291,8 @@ describe("v0.1 gate: governed-write loop (spec §1 six-step scenario)", () => {
       now: clock.now,
       genId: clock.genId,
       session: "mcp-C",
+      // WU-5: step 6 drives vault_propose_edit against an excluded path.
+      allowRawDiff: true,
     });
     openDbs.push(ctxC);
     const { callTool: callToolC } = createServer(ctxC);

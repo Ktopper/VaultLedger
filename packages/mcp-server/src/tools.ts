@@ -1,5 +1,14 @@
 import { z } from "zod";
-import { BrokerError, Confidence, readVaultFile, recall, redactExcludedZones, type RecallFilters } from "@vault-ledger/core";
+import {
+  BrokerError,
+  Confidence,
+  listVaultDir,
+  readVaultFile,
+  recall,
+  redactExcludedZones,
+  searchVault,
+  type RecallFilters,
+} from "@vault-ledger/core";
 import type { ServerContext } from "./context.js";
 
 /** Structured error shape every tool handler returns instead of throwing.
@@ -233,11 +242,38 @@ const ProposeCreateInput = z
 
 const ReadInput = z.object({ path: z.string().min(1).max(PATH_MAX_LENGTH) }).strict();
 
+const ProposeDeleteInput = z
+  .object({
+    path: z.string().min(1).max(PATH_MAX_LENGTH),
+    expected_hash: z.string().min(1).max(ID_MAX_LENGTH),
+    reason: z.string().min(1).max(REASON_MAX_LENGTH),
+  })
+  .strict();
+
+const ProposeMoveInput = z
+  .object({
+    from: z.string().min(1).max(PATH_MAX_LENGTH),
+    to: z.string().min(1).max(PATH_MAX_LENGTH),
+    expected_hash: z.string().min(1).max(ID_MAX_LENGTH),
+    reason: z.string().min(1).max(REASON_MAX_LENGTH),
+  })
+  .strict();
+
+const ListInput = z.object({ path: z.string().min(1).max(PATH_MAX_LENGTH) }).strict();
+
+/** A search query is a short literal needle, not note content — capped well
+ * below TEXT_MAX_BYTES (a query longer than a path is already pathological). */
+const SEARCH_QUERY_MAX_LENGTH = 1_024;
+const SearchInput = z.object({ query: z.string().min(1).max(SEARCH_QUERY_MAX_LENGTH) }).strict();
+
 const LedgerStatusInput = z.object({}).strict();
 
 /**
- * Build the 12 spec tools (design §7 + v0.3b memory_distill/memory_retire + v0.4.6
- * vault_read) as a thin adapter over `@vault-ledger/core`.
+ * Build the default 15 v1 agent tools (7 memory + vault_read/list/search/
+ * propose_replace/propose_create/propose_delete/propose_move + ledger_status)
+ * as a thin adapter over `@vault-ledger/core`. When `ctx.allowRawDiff` is set
+ * (the `--allow-raw-diff` opt-in, WU-5), the demoted raw-diff
+ * `vault_propose_edit` is appended for a 16th tool.
  * Every handler validates its own args against its zod inputSchema and never
  * throws — invalid args and BrokerError rejections both come back as a
  * structured `{ error }` result, so the transport layer (stdio JSON-RPC) never
@@ -248,7 +284,7 @@ const LedgerStatusInput = z.object({}).strict();
  * to forge/choose a session).
  */
 export function buildTools(ctx: ServerContext): ToolDef[] {
-  return [
+  const tools: ToolDef[] = [
     {
       name: "memory_recall",
       description:
@@ -409,34 +445,6 @@ export function buildTools(ctx: ServerContext): ToolDef[] {
         }),
     },
     {
-      name: "vault_propose_edit",
-      description:
-        "Propose a patch to a trusted-zone note. Always queued for human approval; rejected outright for excluded paths. patch must be a unified diff (--- / +++ file headers, @@ hunks) for a single file — NOT *** Begin Patch / V4A style." +
-        " To CREATE a new file, use the unified-diff creation form: --- /dev/null, +++ b/<path>, @@ -0,0 +N @@ (and omit expected_hash). Editing an existing file requires expected_hash — obtain it (and the exact current text to patch against) with vault_read. File deletion is not supported.",
-      inputSchema: ProposeEditInput,
-      handler: (rawArgs) =>
-        guarded(async () => {
-          const parsed = ProposeEditInput.safeParse(rawArgs);
-          if (!parsed.success) return invalidArgs(parsed.error.message);
-          const { path, patch, reason, expected_hash } = parsed.data;
-          const result = await ctx.broker.apply({
-            op: "propose_edit",
-            path,
-            patch,
-            expected_hash,
-            reason,
-            session: ctx.session,
-          });
-          if ("queued" in result && result.queued) {
-            return { queued: true, approvalId: result.approvalId };
-          }
-          // propose_edit always queues (Broker.applyProposeEdit never applies
-          // directly) — this branch is unreachable in practice but keeps the
-          // handler total over ApplyResult's shape.
-          return { queued: false };
-        }),
-    },
-    {
       name: "vault_propose_replace",
       description:
         "Propose an edit to an existing trusted-zone note by describing exact text to find and what to replace it with — no diffs, no line numbers. Each replacement is {old_text, new_text}; set expected_occurrences if the text appears more than once. Requires expected_hash (the note's current hash from vault_read — copy each old_text verbatim from that same vault_read `content`). Always queued for human approval.",
@@ -484,6 +492,80 @@ export function buildTools(ctx: ServerContext): ToolDef[] {
         }),
     },
     {
+      name: "vault_propose_delete",
+      description:
+        "Propose deleting a trusted-zone note. Always queued for human approval; rejected outright for excluded paths (which are indistinguishable from missing ones). Requires expected_hash — the note's current hash from vault_read — so the delete can't race a concurrent edit. Governed memory notes are not deletable this way: retire them with memory_retire or forget them with memory_forget instead.",
+      inputSchema: ProposeDeleteInput,
+      handler: (rawArgs) =>
+        guarded(async () => {
+          const parsed = ProposeDeleteInput.safeParse(rawArgs);
+          if (!parsed.success) return invalidArgs(parsed.error.message);
+          const { path, expected_hash, reason } = parsed.data;
+          const result = await ctx.broker.apply({
+            op: "propose_delete",
+            path,
+            expected_hash,
+            reason,
+            session: ctx.session,
+          });
+          if ("queued" in result && result.queued) {
+            return { queued: true, approvalId: result.approvalId };
+          }
+          // propose_delete always queues (Broker.applyProposeDelete never
+          // applies directly) — unreachable branch kept for total ApplyResult.
+          return { queued: false };
+        }),
+    },
+    {
+      name: "vault_propose_move",
+      description:
+        "Propose moving or renaming a trusted-zone note from one path to another, creating any intermediate directory. Content-FREE: no note bytes pass through this tool, so it works on notes too large to vault_read or vault_propose_edit — it operates above the read/propose size caps. Always queued for human approval. The source routes through the same gate as vault_read (excluded ≡ missing). The destination must be empty (a collision is DESTINATION_EXISTS, retriable) and in a trusted zone (an excluded destination is FORBIDDEN_ZONE). expected_hash pins the SOURCE bytes (from vault_read); there is no destination hash. Governed memory notes are not movable this way — use memory_retire / memory_forget.",
+      inputSchema: ProposeMoveInput,
+      handler: (rawArgs) =>
+        guarded(async () => {
+          const parsed = ProposeMoveInput.safeParse(rawArgs);
+          if (!parsed.success) return invalidArgs(parsed.error.message);
+          const { from, to, expected_hash, reason } = parsed.data;
+          const result = await ctx.broker.apply({
+            op: "propose_move",
+            from,
+            to,
+            expected_hash,
+            reason,
+            session: ctx.session,
+          });
+          if ("queued" in result && result.queued) {
+            return { queued: true, approvalId: result.approvalId };
+          }
+          // propose_move always queues — unreachable branch kept for totality.
+          return { queued: false };
+        }),
+    },
+    {
+      name: "vault_list",
+      description:
+        "List the immediate entries of a vault directory (NON-recursive). Returns { path, entries: [{ name, kind, size? }], truncated }; kind is \"file\" or \"dir\" and size (bytes) is present on files only. Use path \".\" for the vault root. Excluded entries are silently omitted (indistinguishable from absent); a missing directory, or a path that is a file rather than a directory, is NOT_FOUND. Read-only; never mutates the vault.",
+      inputSchema: ListInput,
+      handler: (rawArgs) =>
+        guarded(async () => {
+          const parsed = ListInput.safeParse(rawArgs);
+          if (!parsed.success) return invalidArgs(parsed.error.message);
+          return { ...listVaultDir(ctx.vaultRoot, ctx.manifest, parsed.data.path) };
+        }),
+    },
+    {
+      name: "vault_search",
+      description:
+        "Search the RAW TEXT of readable vault notes for a literal, case-insensitive string and return where it occurs: { matches: [{ path, snippet, line }], truncated }. This answers \"which file contains X\" by grepping note content. It is NOT memory_recall: memory_recall returns governed MEMORIES ranked by authority/status (\"what do I know about X\"), whereas vault_search is a raw content grep with no ranking and no governance layer (\"which file literally says X\"). Excluded, oversized (>64 KiB), and non-UTF-8 files are skipped indistinguishably from a no-match. Read-only; never mutates the vault.",
+      inputSchema: SearchInput,
+      handler: (rawArgs) =>
+        guarded(async () => {
+          const parsed = SearchInput.safeParse(rawArgs);
+          if (!parsed.success) return invalidArgs(parsed.error.message);
+          return { ...searchVault(ctx.vaultRoot, ctx.manifest, parsed.data.query) };
+        }),
+    },
+    {
       name: "ledger_status",
       description: "Report zones, pending approvals, and recent transactions.",
       inputSchema: LedgerStatusInput,
@@ -503,4 +585,42 @@ export function buildTools(ctx: ServerContext): ToolDef[] {
         }),
     },
   ];
+
+  // WU-5: vault_propose_edit (raw unified-diff) is DEMOTED off the default
+  // agent surface — the structured tools (vault_propose_replace/create/
+  // delete/move) are the only default write path. A diff-holding expert
+  // client opts it back in with `vaultledger-mcp --allow-raw-diff`. Registering
+  // it here (vs. inline above) keeps the default catalog at exactly 15.
+  if (ctx.allowRawDiff) {
+    tools.push({
+      name: "vault_propose_edit",
+      description:
+        "Propose a patch to a trusted-zone note. Always queued for human approval; rejected outright for excluded paths. patch must be a unified diff (--- / +++ file headers, @@ hunks) for a single file — NOT *** Begin Patch / V4A style." +
+        " To CREATE a new file, use the unified-diff creation form: --- /dev/null, +++ b/<path>, @@ -0,0 +N @@ (and omit expected_hash). Editing an existing file requires expected_hash — obtain it (and the exact current text to patch against) with vault_read. File deletion is not supported.",
+      inputSchema: ProposeEditInput,
+      handler: (rawArgs) =>
+        guarded(async () => {
+          const parsed = ProposeEditInput.safeParse(rawArgs);
+          if (!parsed.success) return invalidArgs(parsed.error.message);
+          const { path, patch, reason, expected_hash } = parsed.data;
+          const result = await ctx.broker.apply({
+            op: "propose_edit",
+            path,
+            patch,
+            expected_hash,
+            reason,
+            session: ctx.session,
+          });
+          if ("queued" in result && result.queued) {
+            return { queued: true, approvalId: result.approvalId };
+          }
+          // propose_edit always queues (Broker.applyProposeEdit never applies
+          // directly) — this branch is unreachable in practice but keeps the
+          // handler total over ApplyResult's shape.
+          return { queued: false };
+        }),
+    });
+  }
+
+  return tools;
 }
