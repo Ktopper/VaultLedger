@@ -161,6 +161,13 @@ export class Approvals {
         const reviseOp = { ...op, op: "revise" } as unknown as ProposedOperation;
         return this.dispatchApply(id, reviseOp);
       }
+      case "propose_delete":
+      case "propose_move": {
+        // Dual-mode broker ops (like revise): Broker.apply(op, {approved:true})
+        // runs the real applyDelete/applyMove, unlike propose_edit these are NOT
+        // re-shaped — the held op's own `op` literal drives the apply branch.
+        return this.dispatchApply(id, op as unknown as ProposedOperation);
+      }
       case "promote": {
         // Durable status (design §6.0): flip the FILE frontmatter (and the
         // journal row) to canonical via the store, not a bare

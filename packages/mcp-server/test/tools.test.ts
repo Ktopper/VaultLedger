@@ -31,16 +31,22 @@ function makeClock(): { now: () => string; genId: (prefix: string) => string } {
   };
 }
 
-async function setup(): Promise<{ tools: Map<string, ToolDef> }> {
+async function setup(opts?: { allowRawDiff?: boolean }): Promise<{ tools: Map<string, ToolDef> }> {
   vault = await makeTestVault();
   const { now, genId } = makeClock();
-  ctx = await loadServerContext(vault.vaultDir, { ...vault.deps, now, genId, session: "mcp-test-session" });
+  ctx = await loadServerContext(vault.vaultDir, {
+    ...vault.deps,
+    now,
+    genId,
+    session: "mcp-test-session",
+    allowRawDiff: opts?.allowRawDiff,
+  });
   const tools = new Map(buildTools(ctx).map((t) => [t.name, t]));
   return { tools };
 }
 
 describe("buildTools", () => {
-  test("registers exactly the 12 spec tools", async () => {
+  test("registers exactly the 15 default v1 tools (vault_propose_edit NOT among them)", async () => {
     const { tools } = await setup();
     expect([...tools.keys()].sort()).toEqual(
       [
@@ -53,11 +59,22 @@ describe("buildTools", () => {
         "memory_retire",
         "memory_revise",
         "vault_read",
-        "vault_propose_edit",
+        "vault_list",
+        "vault_search",
         "vault_propose_replace",
         "vault_propose_create",
+        "vault_propose_delete",
+        "vault_propose_move",
       ].sort(),
     );
+    expect(tools.has("vault_propose_edit")).toBe(false);
+  });
+
+  test("with --allow-raw-diff, buildTools registers the 16th tool vault_propose_edit", async () => {
+    const { tools } = await setup({ allowRawDiff: true });
+    expect(tools.size).toBe(16);
+    expect(tools.has("vault_propose_edit")).toBe(true);
+    expect([...tools.keys()].sort()).toEqual(listToolNames(true).sort());
   });
 
   test("listToolNames() stays in sync with the names buildTools registers", async () => {
@@ -216,7 +233,9 @@ describe("buildTools", () => {
   });
 
   test("vault_propose_edit on a trusted note queues an approval", async () => {
-    const { tools } = await setup();
+    // WU-5: vault_propose_edit is off the default surface — exercise it through
+    // a flag-on ctx (--allow-raw-diff).
+    const { tools } = await setup({ allowRawDiff: true });
     const abs = join(vault.vaultDir, "Notes", "trusted.md");
     const before = readFileSync(abs, "utf8");
     const after = before + "\nan appended line\n";
@@ -240,7 +259,7 @@ describe("buildTools", () => {
   });
 
   test("vault_propose_edit on an excluded path returns a structured FORBIDDEN_ZONE error", async () => {
-    const { tools } = await setup();
+    const { tools } = await setup({ allowRawDiff: true });
     const propose = tools.get("vault_propose_edit")!;
 
     const result = await propose.handler({
@@ -315,6 +334,132 @@ describe("buildTools", () => {
     expect(typeof result.approvalId).toBe("string");
   });
 
+  test("vault_propose_delete queues a deletion and returns {queued, approvalId}", async () => {
+    const { tools } = await setup();
+    const expected_hash = hashFile(join(vault.vaultDir, "Notes", "trusted.md"));
+
+    const del = tools.get("vault_propose_delete")!;
+    const result = await del.handler({
+      path: "Notes/trusted.md",
+      expected_hash,
+      reason: "remove the stale note",
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.queued).toBe(true);
+    expect(typeof result.approvalId).toBe("string");
+    // Queued only — the file is still on disk (nothing applied without approval).
+    expect(existsSync(join(vault.vaultDir, "Notes", "trusted.md"))).toBe(true);
+  });
+
+  test("vault_propose_delete on an excluded path returns the SAME NOT_FOUND shape as a missing file (no zone vocabulary)", async () => {
+    const { tools } = await setup();
+    const del = tools.get("vault_propose_delete")!;
+
+    const excluded = await del.handler({
+      path: "Private/secret.md",
+      expected_hash: `sha256:${"0".repeat(64)}`,
+      reason: "attempt to delete an excluded note",
+    });
+
+    expect(excluded.queued).toBeUndefined();
+    const error = excluded.error as { code: string; retriable: boolean; message: string };
+    expect(error.code).toBe("NOT_FOUND");
+    expect(error.retriable).toBe(true);
+    expect(error.message).not.toMatch(/exclud|zone|forbidden/i);
+  });
+
+  test("vault_propose_move queues a move and returns {queued, approvalId}", async () => {
+    const { tools } = await setup();
+    const expected_hash = hashFile(join(vault.vaultDir, "Notes", "trusted.md"));
+
+    const move = tools.get("vault_propose_move")!;
+    const result = await move.handler({
+      from: "Notes/trusted.md",
+      to: "Notes/renamed.md",
+      expected_hash,
+      reason: "rename the note",
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.queued).toBe(true);
+    expect(typeof result.approvalId).toBe("string");
+    // Queued only — source unmoved until approval.
+    expect(existsSync(join(vault.vaultDir, "Notes", "trusted.md"))).toBe(true);
+    expect(existsSync(join(vault.vaultDir, "Notes", "renamed.md"))).toBe(false);
+  });
+
+  test("vault_propose_move to an excluded destination returns FORBIDDEN_ZONE (dest gate)", async () => {
+    const { tools } = await setup();
+    const expected_hash = hashFile(join(vault.vaultDir, "Notes", "trusted.md"));
+
+    const move = tools.get("vault_propose_move")!;
+    const result = await move.handler({
+      from: "Notes/trusted.md",
+      to: "Private/moved.md",
+      expected_hash,
+      reason: "try to move into an excluded zone",
+    });
+
+    expect(result.queued).toBeUndefined();
+    const error = result.error as { code: string; retriable: boolean };
+    expect(error.code).toBe("FORBIDDEN_ZONE");
+  });
+
+  test("vault_list returns directory entries and omits excluded entries (Private/.git/.ledger)", async () => {
+    const { tools } = await setup();
+    const list = tools.get("vault_list")!;
+
+    const root = await list.handler({ path: "." });
+    expect(root.error).toBeUndefined();
+    expect(root.path).toBe(".");
+    const rootNames = (root.entries as Array<{ name: string }>).map((e) => e.name);
+    expect(rootNames).toContain("Notes");
+    // Excluded entries are silently omitted — no marker, no zone vocabulary.
+    expect(rootNames).not.toContain("Private");
+    expect(rootNames).not.toContain(".git");
+    expect(rootNames).not.toContain(".ledger");
+    expect(JSON.stringify(root)).not.toMatch(/exclud|forbidden/i);
+
+    const notes = await list.handler({ path: "Notes" });
+    expect(notes.error).toBeUndefined();
+    const notesEntries = notes.entries as Array<{ name: string; kind: string; size?: number }>;
+    const trusted = notesEntries.find((e) => e.name === "trusted.md");
+    expect(trusted).toBeDefined();
+    expect(trusted!.kind).toBe("file");
+    expect(typeof trusted!.size).toBe("number");
+  });
+
+  test("vault_list on a missing directory returns a structured NOT_FOUND, not a throw", async () => {
+    const { tools } = await setup();
+    const list = tools.get("vault_list")!;
+    const result = await list.handler({ path: "Nope" });
+
+    expect(result.entries).toBeUndefined();
+    const error = result.error as { code: string; retriable: boolean };
+    expect(error.code).toBe("NOT_FOUND");
+    expect(error.retriable).toBe(true);
+  });
+
+  test("vault_search finds a literal match in a trusted note and never surfaces excluded content", async () => {
+    const { tools } = await setup();
+    const search = tools.get("vault_search")!;
+
+    // "Trusted" appears only in Notes/trusted.md (a trusted note).
+    const hit = await search.handler({ query: "trusted" });
+    expect(hit.error).toBeUndefined();
+    const matches = hit.matches as Array<{ path: string; snippet: string; line: number }>;
+    expect(matches.some((m) => m.path === "Notes/trusted.md")).toBe(true);
+
+    // "secret" appears ONLY in Private/secret.md (excluded) — it must be
+    // skipped indistinguishably from a genuine no-match: empty, no signal.
+    const excluded = await search.handler({ query: "secret" });
+    expect(excluded.error).toBeUndefined();
+    expect(excluded.matches).toEqual([]);
+    expect(excluded.truncated).toBe(false);
+    expect(JSON.stringify(excluded)).not.toMatch(/Private|exclud|skip/i);
+  });
+
   test("vault_read returns {path, content, hash, size} with hash covering exactly content, on a seeded trusted note", async () => {
     const { tools } = await setup();
     const read = tools.get("vault_read")!;
@@ -382,12 +527,16 @@ describe("buildTools", () => {
     expect(replace.description).not.toContain("memory_recall / ledger_status");
   });
 
-  test("both new tools appear in the catalog (count 9 -> 12)", async () => {
+  test("the structured vault tools appear in the default catalog (size 15)", async () => {
     const { tools } = await setup();
     expect(tools.has("vault_propose_replace")).toBe(true);
     expect(tools.has("vault_propose_create")).toBe(true);
+    expect(tools.has("vault_propose_delete")).toBe(true);
+    expect(tools.has("vault_propose_move")).toBe(true);
     expect(tools.has("vault_read")).toBe(true);
-    expect(tools.size).toBe(12);
+    expect(tools.has("vault_list")).toBe(true);
+    expect(tools.has("vault_search")).toBe(true);
+    expect(tools.size).toBe(15);
   });
 
   test("memory_promote working->canonical returns an approvalId, surfaced by ledger_status", async () => {

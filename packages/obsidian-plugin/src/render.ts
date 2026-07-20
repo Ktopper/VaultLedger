@@ -71,6 +71,64 @@ export function renderDiff(diffText: string): HTMLElement {
   return container;
 }
 
+/**
+ * Render the body of an approval row, dispatching on the held operation's
+ * type so a destructive op reads unmistakably in the review UI:
+ *
+ *  - propose_delete: a prominent "will be DELETED" banner (`.vl-delete-banner`)
+ *    ABOVE the removal diff — the server already renders the op's current bytes
+ *    as a `DELETE <path>` header + `-` lines (passed in `diff`), which
+ *    renderDiff paints with `.vl-diff-del`, so the reviewer sees the full
+ *    content that is about to vanish, not a bare "delete X" line.
+ *  - propose_move: a `MOVE <from> -> <to>` banner (`.vl-move-banner`). A move is
+ *    byte-preserving, so there's no diff body — the rename itself is the change.
+ *    The from/to are read from the held op directly (robust to the server's
+ *    exact `diff` phrasing).
+ *  - everything else (revise/propose_edit/create/promote/…): the existing
+ *    renderDiff over the server-supplied `diff`.
+ *
+ * SECURITY: like every builder in this file, banner text goes through
+ * `textContent` and the diff through renderDiff (textContent per line) — never
+ * innerHTML. `heldOperationJson` is parsed defensively; a malformed row falls
+ * back to renderDiff so a bad payload never throws out of the render loop.
+ */
+export function renderApprovalBody(heldOperationJson: string, diff: string): HTMLElement {
+  let op: { op?: unknown; from?: unknown; to?: unknown } = {};
+  try {
+    op = JSON.parse(heldOperationJson) as { op?: unknown; from?: unknown; to?: unknown };
+  } catch {
+    // Fall through to the plain diff render below.
+  }
+
+  if (op.op === "propose_delete") {
+    const container = document.createElement("div");
+    container.classList.add("vl-approval-delete");
+
+    const banner = document.createElement("div");
+    banner.classList.add("vl-delete-banner");
+    banner.textContent = "This note will be DELETED — its full content is shown below.";
+    container.appendChild(banner);
+
+    container.appendChild(renderDiff(diff));
+    return container;
+  }
+
+  if (op.op === "propose_move") {
+    const container = document.createElement("div");
+    container.classList.add("vl-approval-move");
+
+    const from = typeof op.from === "string" ? op.from : "(unknown source)";
+    const to = typeof op.to === "string" ? op.to : "(unknown destination)";
+    const banner = document.createElement("div");
+    banner.classList.add("vl-move-banner");
+    banner.textContent = `MOVE ${from} -> ${to}`;
+    container.appendChild(banner);
+    return container;
+  }
+
+  return renderDiff(diff);
+}
+
 const PROVENANCE_FIELDS: ReadonlyArray<[label: string, key: keyof ProvenanceInfo]> = [
   ["Source", "source"],
   ["Reason", "reason"],

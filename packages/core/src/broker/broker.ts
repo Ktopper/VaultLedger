@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import { BrokerError } from "../errors.js";
 import type { PermissionsManifest } from "../schemas/manifest.js";
@@ -9,7 +9,7 @@ import { assertHashFormat, hashBytes, hashFile } from "./hash.js";
 import { applyPatch, assertPatchParseable, patchTargetKind } from "./patch.js";
 import { generateCreatePatch, generateReplacementPatch } from "./replace.js";
 import { assertStructurePreserved, governedProvenanceChanged } from "./lint.js";
-import { assertContainedAndReadable, writeContainedFile } from "./containment.js";
+import { assertContained, assertContainedAndReadable, writeContainedFile } from "./containment.js";
 import { formatMessage, type LedgerGit } from "./git.js";
 import { UNSAFE_NO_LOCK, withVaultLock, type LockDirOption } from "../concurrency/lock.js";
 
@@ -58,6 +58,8 @@ type ReviseOp = Extract<ProposedOperation, { op: "revise" }>;
 type ProposeEditOp = Extract<ProposedOperation, { op: "propose_edit" }>;
 type ProposeReplaceOp = Extract<ProposedOperation, { op: "propose_replace" }>;
 type ProposeCreateOp = Extract<ProposedOperation, { op: "propose_create" }>;
+type ProposeDeleteOp = Extract<ProposedOperation, { op: "propose_delete" }>;
+type ProposeMoveOp = Extract<ProposedOperation, { op: "propose_move" }>;
 
 /**
  * The single gate every vault write passes through (design §5). Every
@@ -112,6 +114,12 @@ export class Broker {
           return this.applyProposeReplace(op);
         case "propose_create":
           return this.applyProposeCreate(op);
+        case "propose_delete":
+          // Dual-mode (like `revise`): unapproved → the propose gate (enqueue);
+          // approved (Approvals.approve re-runs the held op) → the real delete.
+          return opts?.approved ? this.applyDelete(op, approvalId) : this.applyProposeDelete(op);
+        case "propose_move":
+          return opts?.approved ? this.applyMove(op, approvalId) : this.applyProposeMove(op);
         case "promote":
         case "forget":
         case "distill":
@@ -571,13 +579,22 @@ export class Broker {
       assertHashFormat(op.expected_hash);
     }
 
+    // §6 canonical-path fold: store the CANONICAL (realpath-collapsed) zonePath
+    // in the queued op — the same path every zone/containment decision already
+    // ran on — so a `Notes/../Foo.md` propose is held and displayed as `Foo.md`,
+    // matching delete/move. NOTE (intentional, harmless): the patch's own
+    // +++/--- headers still carry the RAW path the agent sent; applyRevise
+    // applies the patch to op.path's CONTENT (a creation to ""), never
+    // re-deriving the target from the header, so the header path never matters.
+    const { zonePath } = assertContained(this.vaultRoot, op.path);
     // Enqueue the normalized op. A creation stores expected_hash: undefined
     // (JSON.stringify drops it). For an edit, normalize the hash to lowercase and
     // store that so an uppercase-but-correct hash still matches at approve-time.
-    const normalizedOp: ProposeEditOp =
-      op.expected_hash != null
-        ? { ...op, expected_hash: assertHashFormat(op.expected_hash) }
-        : op;
+    const normalizedOp: ProposeEditOp = {
+      ...op,
+      path: zonePath,
+      ...(op.expected_hash != null ? { expected_hash: assertHashFormat(op.expected_hash) } : {}),
+    };
 
     const approvalId = this.genId("apr");
     const row: ApprovalRow = {
@@ -646,5 +663,270 @@ export class Broker {
       reason: op.reason,
       session: op.session,
     });
+  }
+
+  /**
+   * The delete/move SOURCE read-oracle (design §3): resolve `relPath` through
+   * the SAME gate `vault_read` uses so an EXCLUDED source is INDISTINGUISHABLE
+   * from a MISSING one — both throw a byte-identical retriable `NOT_FOUND` with
+   * no zone vocabulary. A traversal/symlink escape stays a hard FORBIDDEN_ZONE
+   * (assertContained), never a NOT_FOUND. Returns the canonical `zonePath` (for
+   * the stored op), the raw `abs` (for the unlink/read), and the raw source
+   * bytes (for the hash pin, the governed check, and the move write). Reads raw
+   * bytes rather than delegating to `readVaultFile` deliberately: a delete/move
+   * must work on a note ABOVE the read cap or a non-UTF-8 attachment, which
+   * readVaultFile's FILE_TOO_LARGE / NOT_TEXT guards would wrongly block.
+   */
+  private readSourceOrNotFound(relPath: string): { abs: string; zonePath: string; buf: Buffer } {
+    const { abs, zonePath } = assertContained(this.vaultRoot, relPath);
+    if (resolveZone(zonePath, this.manifest) === "excluded") {
+      throw new BrokerError("NOT_FOUND", `file not found: ${relPath}`, true);
+    }
+    let st;
+    try {
+      st = statSync(abs);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") {
+        throw new BrokerError("NOT_FOUND", `file not found: ${relPath}`, true);
+      }
+      throw e; // EACCES etc. propagate
+    }
+    if (!st.isFile()) {
+      // A directory (or socket/fifo) is not a deletable/movable note; treat as
+      // missing so the oracle stays uniform and readFileSync never EISDIRs.
+      throw new BrokerError("NOT_FOUND", `file not found: ${relPath}`, true);
+    }
+    return { abs, zonePath, buf: readFileSync(abs) };
+  }
+
+  /**
+   * v0.4.7: propose a file DELETION (propose gate). Reads the source THROUGH the
+   * oracle (excluded ≡ missing → NOT_FOUND), pins the hash (drift → STALE_HASH),
+   * and refuses a governed-memory note (LEDGER_GUARD → steer to the memory
+   * tools). Enqueues the FULL op with only `path` canonicalized — mirror
+   * applyProposeEdit's `normalizedOp` (a fresh 3-field object would drop
+   * reason/session/expected_hash, which applyDelete needs).
+   */
+  private applyProposeDelete(op: ProposeDeleteOp): QueuedResult {
+    // Oracle first — an excluded and a missing path must both throw NOT_FOUND
+    // BEFORE the hash-format check, so their payloads are byte-identical.
+    const { zonePath, buf } = this.readSourceOrNotFound(op.path);
+    const expected = assertHashFormat(op.expected_hash);
+    if (hashBytes(buf) !== expected) {
+      throw new BrokerError(
+        "STALE_HASH",
+        `expected_hash does not match the current ${op.path} — recompute and retry`,
+      );
+    }
+    // A note carrying governed provenance (a ledger: block / top-level entity)
+    // is a memory belief; retiring it is memory_retire/memory_forget's job (it
+    // tombstones the note AND updates the journal), never a raw file delete.
+    // `(content, "")` detects the present→absent governed transition.
+    if (governedProvenanceChanged(buf.toString("utf8"), "")) {
+      throw new BrokerError(
+        "LEDGER_GUARD",
+        `${op.path} carries governed provenance (a ledger: block / entity) — ` +
+          `retire it with memory_retire or memory_forget, not a raw vault_propose_delete`,
+        true,
+      );
+    }
+    const normalizedOp: ProposeDeleteOp = { ...op, path: zonePath, expected_hash: expected };
+    const approvalId = this.genId("apr");
+    const row: ApprovalRow = {
+      id: approvalId,
+      held_operation: JSON.stringify(normalizedOp),
+      zone: resolveZone(zonePath, this.manifest),
+      reason: op.reason,
+      session: op.session,
+      state: "pending",
+      created_at: this.now(),
+      resolved_at: null,
+      stale_reason: null,
+    };
+    this.journal.insertApproval(row);
+    return { ok: true, queued: true, approvalId };
+  }
+
+  /**
+   * v0.4.7: apply an approved DELETE, under the caller-held vault lock. Re-reads
+   * + re-hashes (drift → STALE_HASH, gone → NOT_FOUND) — never trusts the queued
+   * snapshot. B1 DATA-LOSS GUARD: baseline-commit an untracked source BEFORE the
+   * destructive unlink so undo's `git revert` can restore the pre-delete bytes.
+   */
+  private async applyDelete(op: ProposeDeleteOp, approvalId: string | null): Promise<AppliedResult> {
+    const { abs, buf } = this.readSourceOrNotFound(op.path);
+    const expected = assertHashFormat(op.expected_hash);
+    const before = hashBytes(buf);
+    if (before !== expected) {
+      throw new BrokerError(
+        "STALE_HASH",
+        `expected_hash does not match the current ${op.path} — recompute and retry`,
+      );
+    }
+    // B1: if the note has never been committed (a synced-in Inbox article on its
+    // first broker touch), commit its CURRENT bytes FIRST — otherwise the delete
+    // commit below is the file's first-ever git appearance, so undo's revert of
+    // it would leave NO content to restore (a data-loss bug). Non-`ledger:`
+    // message = a pure custody snapshot reconcile never treats as a transaction.
+    // Idempotent: skipped once the file is tracked at HEAD. Mirrors applyRevise.
+    if ((await this.git.fileAtHead(op.path)) === null) {
+      await this.git.commitFile(
+        op.path,
+        `VaultLedger baseline: took pre-existing ${basename(op.path)} under ledger custody`,
+      );
+    }
+    unlinkSync(abs);
+    const message = formatMessage({ op: "delete", basename: basename(op.path), session: op.session });
+    const commitSha = await this.git.commitPaths([op.path], message);
+
+    const txnId = this.genId("txn");
+    const txn: TransactionRow = {
+      id: txnId,
+      op: "delete",
+      path: op.path,
+      hash_before: before,
+      hash_after: null,
+      session: op.session,
+      reason: op.reason,
+      memory_id: null,
+      commit_sha: commitSha,
+      approval_id: approvalId,
+      created_at: this.now(),
+      status: "applied",
+    };
+    this.journal.recordTransaction(txn);
+
+    return { ok: true, txnId, commitSha, path: op.path };
+  }
+
+  /**
+   * v0.4.7: propose a file MOVE/rename (propose gate). SOURCE = the delete gate
+   * (excluded ≡ missing → NOT_FOUND; hash pin → STALE_HASH; governed → LEDGER_GUARD).
+   * DESTINATION = the applyProposeEdit create-branch gate, in ORDER (S1): (1)
+   * canonical zone excluded → FORBIDDEN_ZONE, checked BEFORE (2) occupancy
+   * existsSync → DESTINATION_EXISTS — so an excluded destination NEVER leaks
+   * whether it is occupied. Does NOT route through applyCreate/createFile (B2):
+   * those are agent/scratch-only and would reject a trusted `Clients/Brandit` move.
+   */
+  private applyProposeMove(op: ProposeMoveOp): QueuedResult {
+    // SOURCE gate (delete oracle).
+    const { zonePath: canonicalFrom, buf } = this.readSourceOrNotFound(op.from);
+    const expected = assertHashFormat(op.expected_hash);
+    if (hashBytes(buf) !== expected) {
+      throw new BrokerError(
+        "STALE_HASH",
+        `expected_hash does not match the current ${op.from} — recompute and retry`,
+      );
+    }
+    // WU-2 governed-move restriction: a belief can't be relocated by a raw move
+    // (its journal path would drift from its note). `("", sourceContent)` detects
+    // the absent→present governed transition, symmetric with delete's `(content, "")`.
+    if (governedProvenanceChanged("", buf.toString("utf8"))) {
+      throw new BrokerError(
+        "LEDGER_GUARD",
+        `${op.from} carries governed provenance (a ledger: block / entity) — ` +
+          `relocate it with memory_retire or memory_forget, not a raw vault_propose_move`,
+        true,
+      );
+    }
+    // DESTINATION gate — ZONE BEFORE OCCUPANCY (S1).
+    const { abs: toAbs, zonePath: canonicalTo } = assertContained(this.vaultRoot, op.to);
+    if (resolveZone(canonicalTo, this.manifest) === "excluded") {
+      throw new BrokerError("FORBIDDEN_ZONE", `cannot move into an excluded path: ${op.to}`);
+    }
+    if (existsSync(toAbs)) {
+      throw new BrokerError(
+        "DESTINATION_EXISTS",
+        `move destination already exists: ${op.to} — pick a different destination or delete the occupant first`,
+      );
+    }
+    const normalizedOp: ProposeMoveOp = {
+      ...op,
+      from: canonicalFrom,
+      to: canonicalTo,
+      expected_hash: expected,
+    };
+    const approvalId = this.genId("apr");
+    const row: ApprovalRow = {
+      id: approvalId,
+      held_operation: JSON.stringify(normalizedOp),
+      zone: resolveZone(canonicalTo, this.manifest),
+      reason: op.reason,
+      session: op.session,
+      state: "pending",
+      created_at: this.now(),
+      resolved_at: null,
+      stale_reason: null,
+    };
+    this.journal.insertApproval(row);
+    return { ok: true, queued: true, approvalId };
+  }
+
+  /**
+   * v0.4.7: apply an approved MOVE, under the caller-held vault lock. Re-verifies
+   * source (excluded≡missing, hash) AND destination (zone-before-occupancy).
+   * B1: baseline-commit an untracked source BEFORE the destructive write+unlink.
+   * Reuses doArchive's git MECHANICS (mkdir + writeContainedFile + unlink +
+   * commitPaths + journal) but NEVER calls doArchive (its agent/scratch-only
+   * zone gate would reject a trusted move — B2).
+   */
+  private async applyMove(op: ProposeMoveOp, approvalId: string | null): Promise<AppliedResult> {
+    const { abs: fromAbs, buf } = this.readSourceOrNotFound(op.from);
+    const expected = assertHashFormat(op.expected_hash);
+    const sourceHash = hashBytes(buf);
+    if (sourceHash !== expected) {
+      throw new BrokerError(
+        "STALE_HASH",
+        `expected_hash does not match the current ${op.from} — recompute and retry`,
+      );
+    }
+    const { abs: toAbs, zonePath: canonicalTo } = assertContained(this.vaultRoot, op.to);
+    if (resolveZone(canonicalTo, this.manifest) === "excluded") {
+      throw new BrokerError("FORBIDDEN_ZONE", `cannot move into an excluded path: ${op.to}`);
+    }
+    if (existsSync(toAbs)) {
+      throw new BrokerError(
+        "DESTINATION_EXISTS",
+        `move destination already exists: ${op.to} — pick a different destination or delete the occupant first`,
+      );
+    }
+    // B1: baseline an untracked source before the destructive write+unlink.
+    if ((await this.git.fileAtHead(op.from)) === null) {
+      await this.git.commitFile(
+        op.from,
+        `VaultLedger baseline: took pre-existing ${basename(op.from)} under ledger custody`,
+      );
+    }
+    mkdirSync(dirname(toAbs), { recursive: true });
+    // Write via the governed primitive (temp+rename, re-verified containment) —
+    // never a bare writeFileSync. Passes the raw source Buffer so a non-UTF-8
+    // attachment moves byte-for-byte.
+    writeContainedFile(this.vaultRoot, this.manifest, op.to, buf);
+    unlinkSync(fromAbs);
+
+    const message = formatMessage({ op: "move", basename: basename(op.to), session: op.session });
+    const commitSha = await this.git.commitPaths([op.from, op.to], message);
+
+    const txnId = this.genId("txn");
+    const txn: TransactionRow = {
+      id: txnId,
+      op: "move",
+      // The transactions table has no dedicated `to` column (journal/db are out
+      // of this cycle's scope); the destination is recoverable from the commit
+      // and the held-op JSON. hash_before === hash_after: a move preserves bytes.
+      path: op.from,
+      hash_before: sourceHash,
+      hash_after: sourceHash,
+      session: op.session,
+      reason: op.reason,
+      memory_id: null,
+      commit_sha: commitSha,
+      approval_id: approvalId, // S3
+      created_at: this.now(),
+      status: "applied",
+    };
+    this.journal.recordTransaction(txn);
+
+    return { ok: true, txnId, commitSha, path: op.to };
   }
 }

@@ -29,10 +29,16 @@ function makeClock(): { now: () => string; genId: (prefix: string) => string } {
   };
 }
 
-async function setup(): Promise<{ tools: Map<string, ToolDef> }> {
+async function setup(opts?: { allowRawDiff?: boolean }): Promise<{ tools: Map<string, ToolDef> }> {
   vault = await makeTestVault();
   const { now, genId } = makeClock();
-  ctx = await loadServerContext(vault.vaultDir, { ...vault.deps, now, genId, session: "mcp-test-session" });
+  ctx = await loadServerContext(vault.vaultDir, {
+    ...vault.deps,
+    now,
+    genId,
+    session: "mcp-test-session",
+    allowRawDiff: opts?.allowRawDiff,
+  });
   const tools = new Map(buildTools(ctx).map((t) => [t.name, t]));
   return { tools };
 }
@@ -215,7 +221,8 @@ describe("MCP tool input bounds (VL-SEC-S4-05)", () => {
   });
 
   test("vault_propose_edit rejects an over-limit patch", async () => {
-    const { tools } = await setup();
+    // WU-5: vault_propose_edit only registers under --allow-raw-diff.
+    const { tools } = await setup({ allowRawDiff: true });
     const propose = tools.get("vault_propose_edit")!;
 
     const result = await propose.handler({

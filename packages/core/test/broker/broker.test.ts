@@ -1794,4 +1794,492 @@ describe("Broker", () => {
       expect(journal.listApprovals().length).toBe(0);
     });
   });
+
+  // -------------------------------------------------------------------
+  // v0.4.7: vault_propose_delete (Task 3)
+  // -------------------------------------------------------------------
+  describe("propose_delete", () => {
+    // A note carrying a governed `ledger:` block — the memory-belief shape a
+    // raw delete must refuse (LEDGER_GUARD → steer to memory_retire/forget).
+    const GOVERNED_NOTE =
+      "---\nledger:\n  status: working\n  supersedes: null\nentity: alice\n---\n\nAlice prefers dark mode.\n";
+
+    /** Seed a file directly on disk WITHOUT committing it — the untracked
+     * synced-in-Inbox shape B1 is about. */
+    function seedUntracked(vaultRoot: string, rel: string, content: string): void {
+      const abs = join(vaultRoot, rel);
+      mkdirSync(join(abs, ".."), { recursive: true });
+      writeFileSync(abs, content, "utf8");
+    }
+
+    async function proposeDelete(
+      broker: Broker,
+      path: string,
+      content: string,
+    ): Promise<string> {
+      const res = await broker.apply({
+        op: "propose_delete",
+        path,
+        expected_hash: hashBytes(Buffer.from(content, "utf8")),
+        reason: "file the incident article away",
+        session: "s1",
+      });
+      if (!res.ok || !("queued" in res) || !res.queued) throw new Error("expected a queued result");
+      return res.approvalId;
+    }
+
+    test("delete of a plain TRACKED note → queues; approve removes it; undo restores byte-identical", async () => {
+      const { broker, journal, git, vaultRoot, now, genId } = await makeBroker();
+      const content = "# Notes\n\nplain trusted note body.\n";
+      // Tracked source: create+commit via a baseline commit ourselves.
+      seedUntracked(vaultRoot, "Notes/tracked.md", content);
+      await git.commitFile("Notes/tracked.md", "seed tracked");
+
+      const approvalId = await proposeDelete(broker, "Notes/tracked.md", content);
+      expect(journal.listApprovals("pending").length).toBe(1);
+      // File still on disk while the approval is pending.
+      expect(existsSync(join(vaultRoot, "Notes/tracked.md"))).toBe(true);
+
+      const applied = await broker.apply(
+        { op: "propose_delete", path: "Notes/tracked.md", expected_hash: hashBytes(Buffer.from(content, "utf8")), reason: "r", session: "s1" },
+        { approved: true, approvalId },
+      );
+      if (!applied.ok || "queued" in applied) throw new Error("expected an applied result");
+      expect(existsSync(join(vaultRoot, "Notes/tracked.md"))).toBe(false);
+      expect(await git.fileAtHead("Notes/tracked.md")).toBeNull();
+
+      await undoTransaction({ git, journal, now, genId, lockDir: UNSAFE_NO_LOCK }, applied.txnId!);
+      expect(existsSync(join(vaultRoot, "Notes/tracked.md"))).toBe(true);
+      expect(hashFile(join(vaultRoot, "Notes/tracked.md"))).toBe(hashBytes(Buffer.from(content, "utf8")));
+    });
+
+    test("B1 (HOLD 1): delete of an UNTRACKED source baselines, deletes, and undo restores byte-identical", async () => {
+      const { broker, journal, git, vaultRoot, now, genId } = await makeBroker();
+      const content = "# Field incident\n\nsynced in via Obsidian, never committed.\n";
+      const digest = hashBytes(Buffer.from(content, "utf8"));
+      // Untracked: on disk, NOT committed. fileAtHead must be null pre-delete.
+      seedUntracked(vaultRoot, "Inbox/incident.md", content);
+      expect(await git.fileAtHead("Inbox/incident.md")).toBeNull();
+
+      const approvalId = await proposeDelete(broker, "Inbox/incident.md", content);
+      const applied = await broker.apply(
+        { op: "propose_delete", path: "Inbox/incident.md", expected_hash: digest, reason: "r", session: "s1" },
+        { approved: true, approvalId },
+      );
+      if (!applied.ok || "queued" in applied) throw new Error("expected an applied result");
+      expect(existsSync(join(vaultRoot, "Inbox/incident.md"))).toBe(false);
+      expect(await git.fileAtHead("Inbox/incident.md")).toBeNull();
+
+      // The baseline commit fired → undo can restore the pre-delete bytes.
+      await undoTransaction({ git, journal, now, genId, lockDir: UNSAFE_NO_LOCK }, applied.txnId!);
+      expect(existsSync(join(vaultRoot, "Inbox/incident.md"))).toBe(true);
+      expect(hashFile(join(vaultRoot, "Inbox/incident.md"))).toBe(digest);
+      expect(readFileSync(join(vaultRoot, "Inbox/incident.md"), "utf8")).toBe(content);
+    });
+
+    test("delete with a stale hash → STALE_HASH (nothing removed, nothing queued)", async () => {
+      const { broker, journal, vaultRoot } = await makeBroker();
+      const content = "current body\n";
+      seedUntracked(vaultRoot, "Notes/stale.md", content);
+      await expect(
+        broker.apply({
+          op: "propose_delete",
+          path: "Notes/stale.md",
+          expected_hash: hashBytes(Buffer.from("different body\n", "utf8")),
+          reason: "r",
+          session: "s1",
+        }),
+      ).rejects.toMatchObject({ code: "STALE_HASH" });
+      expect(journal.listApprovals("pending").length).toBe(0);
+      expect(existsSync(join(vaultRoot, "Notes/stale.md"))).toBe(true);
+    });
+
+    test("delete of a missing note → NOT_FOUND retriable", async () => {
+      const { broker } = await makeBroker();
+      await expect(
+        broker.apply({
+          op: "propose_delete",
+          path: "Notes/ghost.md",
+          expected_hash: hashBytes(Buffer.from("whatever\n", "utf8")),
+          reason: "r",
+          session: "s1",
+        }),
+      ).rejects.toMatchObject({ code: "NOT_FOUND", retriable: true });
+    });
+
+    test("oracle (HOLD 4): an EXCLUDED source ≡ a MISSING source → byte-identical NOT_FOUND payloads", async () => {
+      const { broker, vaultRoot } = await makeBroker();
+      // An existing note inside the excluded Private/ zone.
+      seedUntracked(vaultRoot, "Private/secret.md", "top secret\n");
+
+      const capture = async (path: string): Promise<BrokerError> => {
+        try {
+          await broker.apply({
+            op: "propose_delete",
+            path,
+            expected_hash: hashBytes(Buffer.from("whatever\n", "utf8")),
+            reason: "r",
+            session: "s1",
+          });
+        } catch (e) {
+          return e as BrokerError;
+        }
+        throw new Error("expected a rejection");
+      };
+
+      const excluded = await capture("Private/secret.md");
+      const missing = await capture("Notes/ghost.md");
+      // Same code + retriable; same message SHAPE (only the path differs), no
+      // zone vocabulary that would out the excluded path as excluded.
+      expect(excluded.code).toBe("NOT_FOUND");
+      expect(missing.code).toBe("NOT_FOUND");
+      expect(excluded.retriable).toBe(missing.retriable);
+      expect(excluded.message).toBe("file not found: Private/secret.md");
+      expect(missing.message).toBe("file not found: Notes/ghost.md");
+      // No zone VOCABULARY (the path segment itself is the caller's own input,
+      // echoed identically for a truly-missing Private path — not a disclosure).
+      for (const m of [excluded.message, missing.message]) {
+        expect(m).not.toMatch(/exclud|forbidden|\bzone\b/i);
+      }
+    });
+
+    test("governed-memory delete (ledger: block) → LEDGER_GUARD naming memory_retire/memory_forget", async () => {
+      const { broker, journal, vaultRoot } = await makeBroker();
+      seedUntracked(vaultRoot, "Agent/Memory/belief.md", GOVERNED_NOTE);
+      let thrown: unknown;
+      try {
+        await broker.apply({
+          op: "propose_delete",
+          path: "Agent/Memory/belief.md",
+          expected_hash: hashBytes(Buffer.from(GOVERNED_NOTE, "utf8")),
+          reason: "r",
+          session: "s1",
+        });
+      } catch (e) {
+        thrown = e;
+      }
+      expect(thrown).toBeInstanceOf(BrokerError);
+      expect((thrown as BrokerError).code).toBe("LEDGER_GUARD");
+      expect((thrown as BrokerError).message).toMatch(/memory_retire/);
+      expect((thrown as BrokerError).message).toMatch(/memory_forget/);
+      expect(journal.listApprovals("pending").length).toBe(0);
+    });
+  });
+
+  // -------------------------------------------------------------------
+  // v0.4.7: vault_propose_move (Task 4)
+  // -------------------------------------------------------------------
+  describe("propose_move", () => {
+    const GOVERNED_NOTE =
+      "---\nledger:\n  status: working\n  supersedes: null\nentity: alice\n---\n\nAlice prefers dark mode.\n";
+
+    function seedUntracked(vaultRoot: string, rel: string, content: string): void {
+      const abs = join(vaultRoot, rel);
+      mkdirSync(join(abs, ".."), { recursive: true });
+      writeFileSync(abs, content, "utf8");
+    }
+
+    async function proposeMove(
+      broker: Broker,
+      from: string,
+      to: string,
+      content: string,
+    ): Promise<string> {
+      const res = await broker.apply({
+        op: "propose_move",
+        from,
+        to,
+        expected_hash: hashBytes(Buffer.from(content, "utf8")),
+        reason: "file the incident article into the client hub",
+        session: "s1",
+      });
+      if (!res.ok || !("queued" in res) || !res.queued) throw new Error("expected a queued result");
+      return res.approvalId;
+    }
+
+    test("B1 (HOLD 1): move of an UNTRACKED source into a NEW subdir — queues; approve relocates; undo restores byte-identical", async () => {
+      const { broker, journal, git, vaultRoot, now, genId } = await makeBroker();
+      const content = "# Field incident\n\nInbox article, synced-in, never committed.\n";
+      const digest = hashBytes(Buffer.from(content, "utf8"));
+      // Untracked source (the real Inbox shape). Destination subdir does NOT exist.
+      seedUntracked(vaultRoot, "Inbox/incident.md", content);
+      expect(await git.fileAtHead("Inbox/incident.md")).toBeNull();
+      expect(existsSync(join(vaultRoot, "Clients/Brandit"))).toBe(false);
+
+      const approvalId = await proposeMove(broker, "Inbox/incident.md", "Clients/Brandit/incident.md", content);
+      expect(journal.listApprovals("pending").length).toBe(1);
+      // Nothing moved while pending.
+      expect(existsSync(join(vaultRoot, "Inbox/incident.md"))).toBe(true);
+      expect(existsSync(join(vaultRoot, "Clients/Brandit/incident.md"))).toBe(false);
+
+      const applied = await broker.apply(
+        { op: "propose_move", from: "Inbox/incident.md", to: "Clients/Brandit/incident.md", expected_hash: digest, reason: "r", session: "s1" },
+        { approved: true, approvalId },
+      );
+      if (!applied.ok || "queued" in applied) throw new Error("expected an applied result");
+      expect(existsSync(join(vaultRoot, "Inbox/incident.md"))).toBe(false);
+      expect(existsSync(join(vaultRoot, "Clients/Brandit/incident.md"))).toBe(true);
+      expect(hashFile(join(vaultRoot, "Clients/Brandit/incident.md"))).toBe(digest);
+
+      // undo → source back byte-identical, destination removed.
+      await undoTransaction({ git, journal, now, genId, lockDir: UNSAFE_NO_LOCK }, applied.txnId!);
+      expect(existsSync(join(vaultRoot, "Clients/Brandit/incident.md"))).toBe(false);
+      expect(existsSync(join(vaultRoot, "Inbox/incident.md"))).toBe(true);
+      expect(readFileSync(join(vaultRoot, "Inbox/incident.md"), "utf8")).toBe(content);
+      expect(hashFile(join(vaultRoot, "Inbox/incident.md"))).toBe(digest);
+    });
+
+    test("move of a TRACKED source (rename in place) → approve; undo restores", async () => {
+      const { broker, journal, git, vaultRoot, now, genId } = await makeBroker();
+      const content = "renamable body\n";
+      const digest = hashBytes(Buffer.from(content, "utf8"));
+      seedUntracked(vaultRoot, "Notes/old.md", content);
+      await git.commitFile("Notes/old.md", "seed tracked");
+
+      const approvalId = await proposeMove(broker, "Notes/old.md", "Notes/new.md", content);
+      const applied = await broker.apply(
+        { op: "propose_move", from: "Notes/old.md", to: "Notes/new.md", expected_hash: digest, reason: "r", session: "s1" },
+        { approved: true, approvalId },
+      );
+      if (!applied.ok || "queued" in applied) throw new Error("expected an applied result");
+      expect(existsSync(join(vaultRoot, "Notes/old.md"))).toBe(false);
+      expect(hashFile(join(vaultRoot, "Notes/new.md"))).toBe(digest);
+
+      await undoTransaction({ git, journal, now, genId, lockDir: UNSAFE_NO_LOCK }, applied.txnId!);
+      expect(existsSync(join(vaultRoot, "Notes/new.md"))).toBe(false);
+      expect(hashFile(join(vaultRoot, "Notes/old.md"))).toBe(digest);
+    });
+
+    test("stale source hash → STALE_HASH (nothing moved, nothing queued)", async () => {
+      const { broker, journal, vaultRoot } = await makeBroker();
+      const content = "current\n";
+      seedUntracked(vaultRoot, "Notes/src.md", content);
+      await expect(
+        broker.apply({
+          op: "propose_move",
+          from: "Notes/src.md",
+          to: "Notes/dst.md",
+          expected_hash: hashBytes(Buffer.from("drifted\n", "utf8")),
+          reason: "r",
+          session: "s1",
+        }),
+      ).rejects.toMatchObject({ code: "STALE_HASH" });
+      expect(journal.listApprovals("pending").length).toBe(0);
+      expect(existsSync(join(vaultRoot, "Notes/src.md"))).toBe(true);
+    });
+
+    test("destination collision on a TRUSTED dest → DESTINATION_EXISTS retriable", async () => {
+      const { broker, journal, vaultRoot } = await makeBroker();
+      const content = "src body\n";
+      seedUntracked(vaultRoot, "Notes/src.md", content);
+      seedUntracked(vaultRoot, "Notes/occupied.md", "already here\n");
+      await expect(
+        broker.apply({
+          op: "propose_move",
+          from: "Notes/src.md",
+          to: "Notes/occupied.md",
+          expected_hash: hashBytes(Buffer.from(content, "utf8")),
+          reason: "r",
+          session: "s1",
+        }),
+      ).rejects.toMatchObject({ code: "DESTINATION_EXISTS", retriable: true });
+      expect(journal.listApprovals("pending").length).toBe(0);
+    });
+
+    test("S1 (HOLD 2): an OCCUPIED excluded dest ≡ an EMPTY excluded dest → byte-identical FORBIDDEN_ZONE (occupancy never leaks)", async () => {
+      const { broker, vaultRoot } = await makeBroker();
+      const content = "movable\n";
+      seedUntracked(vaultRoot, "Notes/src.md", content);
+      // An occupant sitting at an excluded destination.
+      seedUntracked(vaultRoot, "Private/occupied.md", "secret occupant\n");
+
+      const capture = async (to: string): Promise<BrokerError> => {
+        try {
+          await broker.apply({
+            op: "propose_move",
+            from: "Notes/src.md",
+            to,
+            expected_hash: hashBytes(Buffer.from(content, "utf8")),
+            reason: "r",
+            session: "s1",
+          });
+        } catch (e) {
+          return e as BrokerError;
+        }
+        throw new Error("expected a rejection");
+      };
+
+      const occupied = await capture("Private/occupied.md"); // dest exists
+      const empty = await capture("Private/empty.md"); // dest absent
+      // Zone precedes occupancy: BOTH are FORBIDDEN_ZONE — the occupied excluded
+      // dest never returns DESTINATION_EXISTS, so occupancy is never disclosed.
+      expect(occupied.code).toBe("FORBIDDEN_ZONE");
+      expect(empty.code).toBe("FORBIDDEN_ZONE");
+      expect(occupied.retriable).toBe(empty.retriable);
+      expect(occupied.message).toBe("cannot move into an excluded path: Private/occupied.md");
+      expect(empty.message).toBe("cannot move into an excluded path: Private/empty.md");
+    });
+
+    test("oracle (HOLD 4): an EXCLUDED source ≡ a MISSING source → byte-identical NOT_FOUND", async () => {
+      const { broker, vaultRoot } = await makeBroker();
+      seedUntracked(vaultRoot, "Private/secret.md", "shh\n");
+
+      const capture = async (from: string): Promise<BrokerError> => {
+        try {
+          await broker.apply({
+            op: "propose_move",
+            from,
+            to: "Notes/dst.md",
+            expected_hash: hashBytes(Buffer.from("whatever\n", "utf8")),
+            reason: "r",
+            session: "s1",
+          });
+        } catch (e) {
+          return e as BrokerError;
+        }
+        throw new Error("expected a rejection");
+      };
+
+      const excluded = await capture("Private/secret.md");
+      const missing = await capture("Notes/ghost.md");
+      expect(excluded.code).toBe("NOT_FOUND");
+      expect(missing.code).toBe("NOT_FOUND");
+      expect(excluded.retriable).toBe(missing.retriable);
+      expect(excluded.message).toBe("file not found: Private/secret.md");
+      expect(missing.message).toBe("file not found: Notes/ghost.md");
+      for (const m of [excluded.message, missing.message]) {
+        expect(m).not.toMatch(/exclud|forbidden|\bzone\b/i);
+      }
+    });
+
+    test("cross-zone matrix: trusted→trusted ok; trusted→excluded → FORBIDDEN_ZONE; excluded source → NOT_FOUND", async () => {
+      const { broker, journal, vaultRoot } = await makeBroker();
+      const content = "matrix body\n";
+      const digest = hashBytes(Buffer.from(content, "utf8"));
+      seedUntracked(vaultRoot, "Notes/a.md", content);
+
+      // trusted → trusted: queues.
+      const ok = await broker.apply({
+        op: "propose_move",
+        from: "Notes/a.md",
+        to: "Notes/b.md",
+        expected_hash: digest,
+        reason: "r",
+        session: "s1",
+      });
+      expect(ok.ok && "queued" in ok && ok.queued).toBe(true);
+
+      // trusted → excluded dest: FORBIDDEN_ZONE.
+      await expect(
+        broker.apply({
+          op: "propose_move",
+          from: "Notes/a.md",
+          to: "Private/b.md",
+          expected_hash: digest,
+          reason: "r",
+          session: "s1",
+        }),
+      ).rejects.toMatchObject({ code: "FORBIDDEN_ZONE" });
+
+      // excluded source: NOT_FOUND.
+      seedUntracked(vaultRoot, "Private/src.md", "secret\n");
+      await expect(
+        broker.apply({
+          op: "propose_move",
+          from: "Private/src.md",
+          to: "Notes/c.md",
+          expected_hash: hashBytes(Buffer.from("secret\n", "utf8")),
+          reason: "r",
+          session: "s1",
+        }),
+      ).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+      // Only the trusted→trusted move ever queued.
+      expect(journal.listApprovals("pending").length).toBe(1);
+    });
+
+    test("governed-memory move (ledger: source) → LEDGER_GUARD naming memory_retire/memory_forget", async () => {
+      const { broker, journal, vaultRoot } = await makeBroker();
+      seedUntracked(vaultRoot, "Agent/Memory/belief.md", GOVERNED_NOTE);
+      let thrown: unknown;
+      try {
+        await broker.apply({
+          op: "propose_move",
+          from: "Agent/Memory/belief.md",
+          to: "Agent/Archive/belief.md",
+          expected_hash: hashBytes(Buffer.from(GOVERNED_NOTE, "utf8")),
+          reason: "r",
+          session: "s1",
+        });
+      } catch (e) {
+        thrown = e;
+      }
+      expect(thrown).toBeInstanceOf(BrokerError);
+      expect((thrown as BrokerError).code).toBe("LEDGER_GUARD");
+      expect((thrown as BrokerError).message).toMatch(/memory_retire/);
+      expect((thrown as BrokerError).message).toMatch(/memory_forget/);
+      expect(journal.listApprovals("pending").length).toBe(0);
+    });
+
+    test("S3: the applied move transaction carries the approval_id", async () => {
+      const { broker, journal, vaultRoot } = await makeBroker();
+      const content = "audit body\n";
+      const digest = hashBytes(Buffer.from(content, "utf8"));
+      seedUntracked(vaultRoot, "Notes/audit.md", content);
+      const approvalId = await proposeMove(broker, "Notes/audit.md", "Notes/audited.md", content);
+      const applied = await broker.apply(
+        { op: "propose_move", from: "Notes/audit.md", to: "Notes/audited.md", expected_hash: digest, reason: "r", session: "s1" },
+        { approved: true, approvalId },
+      );
+      if (!applied.ok || "queued" in applied) throw new Error("expected an applied result");
+      const txn = journal.getTransaction(applied.txnId!);
+      expect(txn!.op).toBe("move");
+      expect(txn!.path).toBe("Notes/audit.md");
+      expect(txn!.approval_id).toBe(approvalId);
+      expect(txn!.hash_before).toBe(digest);
+      expect(txn!.hash_after).toBe(digest);
+    });
+  });
+
+  // -------------------------------------------------------------------
+  // v0.4.7: canonical-path fold across all propose ops (Task 5)
+  // -------------------------------------------------------------------
+  describe("canonical path fold", () => {
+    test("a Notes/../Foo.md propose stores the canonical Foo.md in the held op", async () => {
+      const { broker, journal } = await makeBroker();
+      // propose_create routes through applyProposeEdit — exercises the fold on
+      // the create branch. The raw path has a `..` segment.
+      const res = await broker.apply({
+        op: "propose_create",
+        path: "Notes/../Foo.md",
+        content: "# Foo\n\nbody\n",
+        reason: "canonicalize me",
+        session: "s1",
+      });
+      expect(res.ok && "queued" in res && res.queued).toBe(true);
+      if (!res.ok || !("queued" in res) || !res.queued) throw new Error("expected queued");
+
+      const held = JSON.parse(
+        journal.getApproval(res.approvalId)!.held_operation,
+      ) as { op: string; path: string };
+      expect(held.op).toBe("propose_edit");
+      expect(held.path).toBe("Foo.md");
+    });
+
+    test("a normal-path propose stores the path unchanged (canonical === raw)", async () => {
+      const { broker, journal } = await makeBroker();
+      const res = await broker.apply({
+        op: "propose_create",
+        path: "Agent/Memory/plain.md",
+        content: "# Plain\n",
+        reason: "r",
+        session: "s1",
+      });
+      if (!res.ok || !("queued" in res) || !res.queued) throw new Error("expected queued");
+      const held = JSON.parse(
+        journal.getApproval(res.approvalId)!.held_operation,
+      ) as { path: string };
+      expect(held.path).toBe("Agent/Memory/plain.md");
+    });
+  });
 });

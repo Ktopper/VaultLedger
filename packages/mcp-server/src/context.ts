@@ -36,6 +36,10 @@ export interface ServerContext {
   /** The MCP server's session id, threaded through every mutating tool call
    * (design: session is server-scoped, not a per-call tool argument). */
   session: string;
+  /** WU-5: when set (via `--allow-raw-diff`), `buildTools` registers the
+   * demoted raw unified-diff `vault_propose_edit` tool for a 16-tool surface.
+   * Default (false) keeps the 15-tool structured-only agent surface. */
+  allowRawDiff: boolean;
   /** The typed as the return of `openJournal` rather than importing
    * `better-sqlite3` directly — the MCP server stays a thin adapter over
    * core's own dependency, with no type dependency of its own to manage. */
@@ -54,6 +58,11 @@ export interface LoadServerContextDeps {
    * scratch as a side effect. Everything else in loadServerContext
    * (ensureJournal's auto-heal, reconcile's crash-recovery) still runs. */
   skipSweep?: boolean;
+  /** WU-5: opt back into the demoted raw-diff `vault_propose_edit` tool
+   * (design: `--allow-raw-diff`, parsed by `parseAllowRawDiff` and threaded in
+   * parallel to `skipSweep`). Defaults to false — the structured tools are the
+   * only agent write path by default. */
+  allowRawDiff?: boolean;
 }
 
 /** Real, collision-safe id generator: `<prefix>_<8 hex chars>`. Tests inject
@@ -195,6 +204,7 @@ export async function loadServerContext(
       now,
       genId,
       session,
+      allowRawDiff: deps?.allowRawDiff ?? false,
       db,
     };
   } catch (e) {

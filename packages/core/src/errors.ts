@@ -84,6 +84,13 @@ export const RejectionCode = {
   // The byte-symmetry invariant requires content to re-encode to exactly the
   // hashed bytes; a non-text file can't. Non-retriable.
   NOT_TEXT: "NOT_TEXT",
+  // v0.4.7 (vault_propose_move): the move destination is already occupied.
+  // RETRIABLE and DELIBERATELY DISTINCT from create's TARGET_EXISTS: TARGET_EXISTS
+  // is non-retriable and steers the caller to `edit` (the file exists; edit it in
+  // place); DESTINATION_EXISTS is retriable and steers the caller to pick a
+  // different `to` (or delete the occupant first) — the source still needs a home,
+  // so retrying against a free destination is the fix.
+  DESTINATION_EXISTS: "DESTINATION_EXISTS",
 } as const;
 
 export type RejectionCode = (typeof RejectionCode)[keyof typeof RejectionCode];
@@ -119,6 +126,9 @@ const RETRIABLE: Record<RejectionCode, boolean> = {
   OVERLAPPING_REPLACEMENTS: true,
   FILE_TOO_LARGE: false,
   NOT_TEXT: false,
+  // Retriable: the same source still needs a destination, so retrying against a
+  // free `to` (or after deleting the occupant) succeeds.
+  DESTINATION_EXISTS: true,
 };
 
 export interface Rejection {

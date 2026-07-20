@@ -1,6 +1,6 @@
 {
   "name": "@vault-ledger/cli",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "type": "module",
   "description": "VaultLedger CLI — set up and govern an AI agent's Obsidian-vault memory (ledger setup/approve/undo)",
   "main": "./dist/index.js",

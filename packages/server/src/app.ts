@@ -1,5 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import matter from "gray-matter";
 import {
@@ -14,7 +14,7 @@ import {
   type RejectionCode,
   type VaultContext,
 } from "@vault-ledger/core";
-import { renderApprovalDiff } from "./render.js";
+import { renderApprovalDiff, type RenderApprovalOpts } from "./render.js";
 
 /**
  * BrokerError.code -> HTTP status (Task 2.4's contract, wired here already
@@ -71,6 +71,10 @@ const BROKER_ERROR_STATUS: Record<RejectionCode, number> = {
   // Too Large; NOT_TEXT → 415 Unsupported Media Type. server stays 0.4.0.
   FILE_TOO_LARGE: 413,
   NOT_TEXT: 415,
+  // v0.4.7 vault_propose_move: destination occupied. Same 409 conflict family as
+  // TARGET_EXISTS (the only new code this cycle). MCP-only today — no server route
+  // reaches propose_move — included for Record<RejectionCode, number> exhaustiveness.
+  DESTINATION_EXISTS: 409,
 };
 
 const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
@@ -227,10 +231,46 @@ export function buildBridge(ctx: VaultContext, token: string): FastifyInstance {
     };
   });
 
+  // Ceiling on how many bytes of a to-be-deleted note we read to render its
+  // removal diff. A propose_delete carries no content, so the current on-disk
+  // bytes are read here — but /approvals renders EVERY pending row, so an
+  // oversized source must be bounded (over-cap → "unavailable" marker) the
+  // same way DIFF_RENDER_LIMIT bounds an oversized patch.
+  const DELETE_RENDER_MAX_BYTES = 64 * 1024;
+
+  // Read the current bytes of a propose_delete's target so renderApprovalDiff
+  // can show them as removal lines. Returns render opts on success; undefined
+  // (→ "unavailable" marker, NEVER a throw) for a non-delete row OR any read
+  // failure: excluded/traversal (assertContainedAndReadable throws), absent,
+  // not-a-file, over-cap, or non-UTF-8 (binary). N1: one unreadable row must
+  // not 500 the whole route.
+  function deleteRenderOpts(heldOperationJson: string): RenderApprovalOpts | undefined {
+    let op: { op?: unknown; path?: unknown };
+    try {
+      op = JSON.parse(heldOperationJson) as { op?: unknown; path?: unknown };
+    } catch {
+      return undefined;
+    }
+    if (op.op !== "propose_delete" || typeof op.path !== "string") return undefined;
+    try {
+      const abs = assertContainedAndReadable(ctx.vaultRoot, ctx.manifest, op.path);
+      const stat = statSync(abs);
+      if (!stat.isFile() || stat.size > DELETE_RENDER_MAX_BYTES) return undefined;
+      const buf = readFileSync(abs);
+      const text = buf.toString("utf8");
+      // Non-UTF-8 (binary) source: the round-trip loses bytes — treat as
+      // unavailable rather than rendering mojibake.
+      if (Buffer.byteLength(text, "utf8") !== buf.length) return undefined;
+      return { deleteContent: text };
+    } catch {
+      return undefined;
+    }
+  }
+
   app.get("/approvals", async () => {
     return ctx.approvals.list().map((row) => ({
       ...row,
-      diff: renderApprovalDiff(row.held_operation),
+      diff: renderApprovalDiff(row.held_operation, deleteRenderOpts(row.held_operation)),
     }));
   });
 
