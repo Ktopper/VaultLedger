@@ -36,15 +36,19 @@ the content you intend to remove, then propose).
 
 ### It is its own op, NOT a diff (design decision)
 
-A whole-file deletion expressed as a `+++ /dev/null` unified diff is the file's
-*entire content* as `-` lines. On any non-trivial note that trips the
-`PATCH_TOO_LARGE` ratio guard — deletion-via-diff would be rejected for exactly
-the files most worth deleting. So `propose_delete` is a **dedicated op carrying
-no patch**: `{op:"propose_delete", path, expected_hash, reason, session}`. This
-also keeps the apply mechanism a clean `git rm` (below) rather than a
-degenerate patch application, and sidesteps the historical
-`applyProposeEdit`-rejects-deletion-diffs rule (0.4.4) entirely — that rule
-stays; deletion goes through a different door.
+`applyProposeEdit` already **rejects every `+++ /dev/null` deletion diff
+outright** (`patchTargetKind === "delete"` → `SYNTAX_BREAK` "file deletion via
+vault_propose_edit is not supported", 0.4.4, broker.ts ~:520) — the primary
+reason deletion can't ride the diff path at all, at any size. (Secondary, for a
+note over the 512-byte `PATCH_RATIO_FLOOR_BYTES`: a whole-file deletion is the
+entire content as `-` lines, which also trips the `PATCH_TOO_LARGE` ratio guard —
+verified, e.g. a 6 KB note → `PATCH_TOO_LARGE`; a sub-512-byte note like the
+Testing fixture is *under* the floor and would not, which is exactly why the
+deletion-*kind* guard, not the size guard, is the load-bearing barrier.) So
+`propose_delete` is a **dedicated op carrying no patch**:
+`{op:"propose_delete", path, expected_hash, reason, session}`. This keeps the
+apply mechanism a clean `git rm` (below), and the 0.4.4 deletion-diff rejection
+**stays** — deletion goes through a different door, not by loosening that rule.
 
 ### Propose gate — `applyProposeDelete` (queues, never applies directly)
 
@@ -75,17 +79,33 @@ Mirrors `applyProposeReplace`'s discipline:
 
 ### Apply — on approve (the `doArchive` template, minus the move)
 
-`Approvals.approve` re-runs the held op through the broker with
-`{approved:true}`. The apply path (a new `applyDelete`, or the approved branch of
-`applyProposeDelete`):
-- Under `withVaultLock`: re-resolve the canonical abs, re-check existence (gone →
-  clean `NOT_FOUND`/`STALE_HASH`, never a half-delete) and re-compare the hash
-  (drift during the queue wait → `STALE_HASH`).
-- `unlinkSync` + `git.commitPaths([path], formatMessage({op:"delete",…}))` — the
-  exact `doArchive` mechanics without a destination path.
-- Journal a **`delete`** transaction: `hash_before` = the content hash,
-  `hash_after: null` (like `forget`). `commit_sha` recorded so reconcile/undo
-  see it as any other mutation.
+**Dual-mode on ONE op string** (delete differs from replace/create here): there
+is no natural `revise`-shaped op to reshape a delete into (no patch), so
+`propose_delete` is used for BOTH propose and apply, and the broker's
+`case "propose_delete"` **branches on `opts.approved`** (mirroring `case "revise"`
+→ `applyRevise(op, approved)`): `approved === false` → `applyProposeDelete`
+(queue); `approved === true` → `applyDelete` (perform). Two wiring points the
+spec-review surfaced, both REQUIRED:
+1. **`Approvals.approve()`'s `switch (op.op)`** (queue.ts ~:149) ends in a
+   `default → INVALID_TRANSITION`; a `propose_delete` would hit it and throw. Add
+   `case "propose_delete": return this.dispatchApply(id, op);` (mirror
+   `create`/`revise`). `dispatchApply` calls `broker.apply(op, {approved:true,
+   approvalId:id})` — which is what stamps the delete txn's `approval_id` for
+   reconcile's id-match close, so wire through it, not a bespoke path.
+2. **`broker.apply()`'s dispatch switch** gets `case "propose_delete"` branching
+   on `opts.approved` as above.
+
+`applyDelete` (the approved branch): under `withVaultLock`, re-resolve the
+canonical abs, re-check existence (gone → clean `NOT_FOUND`/`STALE_HASH`, never a
+half-delete) and re-compare the hash (drift during the queue wait → `STALE_HASH`);
+then `unlinkSync` + `git.commitPaths([path], formatMessage({op:"delete",…}))` —
+the exact `doArchive` mechanics without a destination path; journal a **`delete`**
+transaction: `hash_before` = the content hash, `hash_after: null` (like
+`forget`), `approval_id` from the held approval, `commit_sha` recorded.
+(Confirmed at spec-review: `TransactionRow.op`, `formatMessage.op`, and reconcile
+are all op-string-generic — a new `"delete"` string needs NO schema/enum change;
+and `undoTransaction`/`undoSession` are `commit_sha`-driven with `memory_id:null`
+skipping the memory-status block, so undo restores with no new-op special-casing.)
 
 ### Undo — restores byte-for-byte
 
@@ -99,9 +119,11 @@ restored file hashes to the pre-delete digest.
 
 Delete reuses `NOT_FOUND` (retriable at the call site), `STALE_HASH`, and
 `LEDGER_GUARD`. **The server `Record<RejectionCode, number>` map is unchanged** —
-the only exhaustive tables that grow are the op union + the `apply()`
-exhaustiveness switch, and the catalog-count tables (§ WU-3). A `delete` journal
-txn-op string is added (typing/reconcile), not a rejection code.
+the exhaustive tables that grow are the op union, the broker `apply()`
+exhaustiveness switch, **the `Approvals.approve()` `switch` (new
+`case "propose_delete"`)**, and the catalog-count tables (§WU-3). The `delete`
+journal txn-op is a plain string (`TransactionRow.op` is `string` — no enum/schema
+change), not a rejection code.
 
 ---
 
@@ -110,12 +132,27 @@ txn-op string is added (typing/reconcile), not a rejection code.
 Approve-on-delete is the **highest-consequence click** in the review UI, so it
 must never read as an ordinary edit.
 
-- **`render.ts` (server)** already synthesizes `"" → content` for a create; add
-  the mirror for `propose_delete`: a **`DELETE <path>` header** followed by the
-  **full content being removed** as `-` lines. The `DIFF_RENDER_LIMIT` cap is
-  **raised (or lifted) for a deletion** — a human approving a removal must be
-  able to see everything that goes; truncating the very thing being destroyed is
-  the wrong economy here (bound it generously; justify the number in the plan).
+- **`render.ts` (server) needs the file content, which the held op does NOT
+  carry** (spec-review blocker): `renderApprovalDiff(heldJson)` is a pure
+  function with no fs access; the create branch can synthesize `"" → content`
+  only because the **create op carries `content`** in the held JSON. A
+  `propose_delete` held op is `{path, expected_hash}` — no content (deliberately:
+  storing it would bloat the queue and could drift from `expected_hash`). **Fix:
+  the file still exists on disk at `/approvals` time** (it's removed only on
+  approve), so the `/approvals` handler (`server/src/app.ts`, which already has
+  `ctx.vaultRoot`/`ctx.manifest`) reads the current content via
+  `assertContainedAndReadable` + a bounded read and passes it into a **widened
+  `renderApprovalDiff(heldJson, { deleteContent })`**. Render then synthesizes the
+  **`DELETE <path>` header** + the **full content as `-` lines**. If the file is
+  already absent (deleted out-of-band before approval), render shows a
+  `DELETE <path> — file already absent` marker instead of throwing.
+- **Bound the delete render to the `vault_read` 64 KiB note ceiling**, not
+  unbounded: `/approvals` renders *every* pending row on every call, so an
+  unbounded per-row content render is a DoS foot-gun. 64 KiB matches the largest
+  note `vault_read`/the structured tools will touch, so a deletable note's full
+  content fits; a (pathological) larger file's delete render is capped with the
+  existing truncation marker. (The current `DIFF_RENDER_LIMIT` is 20 000 chars;
+  the plan sets the delete bound explicitly against the 64 KiB read cap.)
 - **Plugin `renderDiff`** gets a **delete banner / distinct styling** so the row
   is visually a deletion, not a red-heavy edit. The full-content removal lines
   render via the existing `-`-line path (XSS-safe `textContent`, per the bundle
@@ -140,9 +177,14 @@ next to `--vault` in the harness's own MCP config block, so a reader of the
 config can see the raw-diff surface is enabled and *why* — an ambient env var is
 invisible there; (2) it's per-invocation, not per-shell/global; (3) it matches
 the codebase's established arg-flag precedent (`--no-sweep`, `--vault`) rather
-than introducing an env-var pattern that exists nowhere else. Threaded through
-`loadServerContext` → `buildTools(ctx, { allowRawDiff })` so `buildTools` includes
-the `vault_propose_edit` `ToolDef` **iff** the flag is set.
+than introducing an env-var pattern that exists nowhere else. **Threading (spec-review correction):** `buildTools(ctx)` is called by
+`createServer(ctx)` (index.ts:68), NOT by `main`/`loadServerContext`. So `main`
+parses `parseAllowRawDiff(argv)` and `loadServerContext` **stashes `allowRawDiff`
+on the `ServerContext`**; `buildTools(ctx)` reads `ctx.allowRawDiff` and includes
+the `vault_propose_edit` `ToolDef` **iff** it is set. Carrying the flag on `ctx`
+(not a new `createServer`/`buildTools` param) means every existing
+`createServer(ctx)`/`buildTools(ctx)` call site — including all tests — keeps
+compiling untouched.
 
 ### Catalog count is now conditional
 
@@ -151,12 +193,22 @@ the `vault_propose_edit` `ToolDef` **iff** the flag is set.
   (`−vault_propose_edit +vault_propose_delete` vs 0.4.6's 12; net unchanged).
 - **With `--allow-raw-diff`: 13** — `+vault_propose_edit`.
 
-**Every count table tests BOTH configs:** `listToolNames()` takes the flag (or a
-default arg) and returns 12 or 13; `mcp-server/test/tools.test.ts`,
-`placeholder.test.ts`, `stdio.smoke.test.ts` assert the default 12 AND a
-flag-on 13 (a new case). The exact tool-name arrays update accordingly.
-`vault_propose_edit` remains fully implemented in core (broker unchanged) — only
-its default *registration* changes.
+**`listToolNames(allowRawDiff = false)` — a DEFAULTED arg** so the smoke sites
+that call it bare keep compiling; returns the 12 default names, or 13 with the
+flag. **Count sites (all four), both configs:** `tools.test.ts` (the exact
+12-name array + a NEW flag-on 13 case), `placeholder.test.ts` (`toHaveLength` →
+12), `stdio.smoke.test.ts` (`.toBe(12)`, spawns bare → default 12),
+`bin.launcher.smoke.test.ts` (calls `listToolNames()` bare → 12).
+
+**Behavioral `propose_edit` tests MUST migrate to a flag-on context** (spec-review
+found these — they fetch `vault_propose_edit` from the DEFAULT `buildTools`/
+`createServer`, which no longer registers it, so `tools.get("vault_propose_edit")!`
+crashes / `callTool` returns unknown-tool): `tools.test.ts` (the
+`tools.get("vault_propose_edit")` sites), `inputBounds.test.ts` (the propose_edit
+byte-bound tests), `v01-gate.e2e.test.ts` (the `callTool("vault_propose_edit", …)`
+gate step) — each rebuilds its ctx with `allowRawDiff:true`. `vault_propose_edit`
+stays fully implemented in core (broker unchanged) — only its default
+*registration* moves behind the flag.
 
 ### Docs
 
@@ -183,6 +235,14 @@ replace / create / delete) rather than delete-only.
   propose tests (which use normal paths) are unaffected; only `..`/symlink inputs
   change, and to the more-truthful value. A test asserts a `Notes/../Foo.md`
   propose stores/display `Foo.md`.
+- **Cosmetic caveat (noted so a future reader isn't alarmed):** for
+  `propose_replace`/`propose_edit`, the queued patch's `---`/`+++` headers are
+  generated from the RAW `op.path`, so after this fold the stored (canonical)
+  `op.path` and the patch's header path can differ for a `..`/symlink input.
+  Harmless — jsdiff applies hunks to the `before` string and ignores header
+  paths, and `patchTargetKind` only inspects for `/dev/null` — but the plan
+  should either regenerate the header from the canonical path too, or leave a
+  one-line comment at the divergence.
 - This retires the 0.4.6 "display-path canonicalization" backlog item.
 
 ---
@@ -235,12 +295,12 @@ restored file re-hashes to `TESTING_NOTE_SHA256`.
 ## 6. Versioning & publish
 
 - **core + mcp-server → 0.4.7.** core: the `propose_delete` op + `applyProposeDelete`
-  + the `delete` apply/txn + the canonicalization fold. mcp-server: the
+  + `applyDelete` + the `delete` txn + the canonicalization fold. mcp-server: the
   `vault_propose_delete` tool, `--allow-raw-diff` + conditional registration,
-  catalog tables. **cli 0.4.1 / server → bumps only if `render.ts` changes ship
-  (it does — the delete render) → server 0.4.1.** Wait: confirm whether the
-  delete render lives in `server` (the bridge `render.ts`) — if so **server →
-  0.4.1** (its first bump since 0.4.0); the plan verifies and versions it.
+  catalog tables.
+- **server → 0.4.1** (its first bump since 0.4.0): confirmed `renderApprovalDiff`
+  lives in `packages/server/src/render.ts`, and the delete-render + the
+  `/approvals` content-read (blocker-1 fix) ship there. cli 0.4.1 unchanged.
 - **plugin → its own bump** (own train, not npm) for the delete render/banner.
 - Ordered publish **core → mcp-server** (+ server if bumped), same runbook.
 
