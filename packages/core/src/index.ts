@@ -10,6 +10,7 @@ export * from "./broker/replace.js";
 export * from "./broker/lint.js";
 export * from "./broker/git.js";
 export * from "./broker/containment.js";
+export * from "./broker/read.js";
 export * from "./native.js";
 export * from "./journal/db.js";
 export * from "./journal/journal.js";
