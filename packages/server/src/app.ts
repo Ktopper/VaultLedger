@@ -66,6 +66,11 @@ const BROKER_ERROR_STATUS: Record<RejectionCode, number> = {
   TEXT_NOT_FOUND: 409,
   AMBIGUOUS_MATCH: 409,
   OVERLAPPING_REPLACEMENTS: 422,
+  // v0.4.6 vault_read codes. MCP-only (no server route today), included for
+  // Record<RejectionCode, number> exhaustiveness. FILE_TOO_LARGE → 413 Payload
+  // Too Large; NOT_TEXT → 415 Unsupported Media Type. server stays 0.4.0.
+  FILE_TOO_LARGE: 413,
+  NOT_TEXT: 415,
 };
 
 const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);

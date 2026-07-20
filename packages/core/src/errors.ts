@@ -75,6 +75,15 @@ export const RejectionCode = {
   // v0.4.5: two replacements' match spans overlap in the one snapshot, so
   // "apply both" is undefined. Retriable — the agent drops/merges one.
   OVERLAPPING_REPLACEMENTS: "OVERLAPPING_REPLACEMENTS",
+  // v0.4.6 (vault_read): file exceeds READ_MAX_BYTES. Non-retriable — the file
+  // can't shrink; retrying the identical read never succeeds. The message tells
+  // the agent the file is out of reach of the structured-edit path and to ask a
+  // human rather than guess bytes (guessing is the failure class vault_read kills).
+  FILE_TOO_LARGE: "FILE_TOO_LARGE",
+  // v0.4.6 (vault_read): file isn't valid round-trippable UTF-8 (binary/attachment).
+  // The byte-symmetry invariant requires content to re-encode to exactly the
+  // hashed bytes; a non-text file can't. Non-retriable.
+  NOT_TEXT: "NOT_TEXT",
 } as const;
 
 export type RejectionCode = (typeof RejectionCode)[keyof typeof RejectionCode];
@@ -108,6 +117,8 @@ const RETRIABLE: Record<RejectionCode, boolean> = {
   TEXT_NOT_FOUND: true,
   AMBIGUOUS_MATCH: true,
   OVERLAPPING_REPLACEMENTS: true,
+  FILE_TOO_LARGE: false,
+  NOT_TEXT: false,
 };
 
 export interface Rejection {
