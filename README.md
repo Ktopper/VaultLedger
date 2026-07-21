@@ -212,10 +212,13 @@ for a static example):
 
 Running straight out of this repo, `node <repo>/packages/mcp-server/dist/index.js`
 is the reliable invocation (the bare `vaultledger-mcp` bin only resolves once the
-package is globally installed/linked). The server exposes 12 tools: `memory_recall`,
-`memory_remember`, `memory_distill`, `memory_revise`, `memory_promote`,
-`memory_forget`, `memory_retire`, `vault_read`, `vault_propose_replace`,
-`vault_propose_create`, `vault_propose_edit`, and `ledger_status`.
+package is globally installed/linked). The server exposes **15 tools by default**:
+`memory_recall`, `memory_remember`, `memory_distill`, `memory_revise`,
+`memory_promote`, `memory_forget`, `memory_retire`, `vault_read`, `vault_search`,
+`vault_list`, `vault_propose_replace`, `vault_propose_create`,
+`vault_propose_delete`, `vault_propose_move`, and `ledger_status`. The raw-diff
+`vault_propose_edit` is a 16th tool behind the `--allow-raw-diff` opt-in flag (see
+**[API surface (frozen v1)](#api-surface-frozen-v1)**).
 
 **4. Remember, then recall**
 

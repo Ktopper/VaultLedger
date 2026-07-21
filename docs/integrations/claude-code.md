@@ -69,8 +69,8 @@ step 2 fails: doctor green + recall broken means the wiring, not VaultLedger.
 
 ## 3. Teach it
 
-The twelve tools are self-describing, so Claude Code *can* call them. The standing
-instruction teaches **when** — six rules, each with its rationale. Read them at
+The fifteen default tools are self-describing, so Claude Code *can* call them. The
+standing instruction teaches **when** — six rules, each with its rationale. Read them at
 [`skills/vaultledger-memory/SNIPPET.md`](../../skills/vaultledger-memory/SNIPPET.md).
 A taste:
 
@@ -78,13 +78,16 @@ A taste:
 > contradicting what's already known, or re-asking what the user already told
 > you.
 
-For vault writes specifically: `vault_propose_replace` (edits) and
-`vault_propose_create` (new files) are the default path — describe the change as
-exact find/replace text or full content and the broker builds the diff;
-`vault_propose_edit` (a raw unified diff) is the advanced surface. Before an edit,
-`vault_read` returns the note's exact bytes and its `hash` — the source of a
-byte-perfect `old_text` and the `expected_hash` a replace needs. Rule 6 carries
-that discipline (read fresh with `vault_read`, copy `old_text` byte-for-byte).
+For vault writes: `vault_propose_replace` (edits), `vault_propose_create` (new
+files), `vault_propose_delete`, and `vault_propose_move` (rename/relocate) are the
+path — describe the change and the broker builds the diff or does the
+git-committed op, all queued for approval; the raw-diff `vault_propose_edit` is a
+16th tool behind the `--allow-raw-diff` opt-in, not the default. For discovery,
+`vault_read` returns a note's exact bytes and `hash` (the source of a byte-perfect
+`old_text` and `expected_hash` a replace needs), `vault_search` greps raw note
+content ("which file says X"), and `vault_list` enumerates a folder. Rule 6 (and
+rule 1) carry that discipline — read fresh with `vault_read`, copy `old_text`
+byte-for-byte; recall first, search on a miss.
 
 Two ways to install it:
 

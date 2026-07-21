@@ -58,25 +58,29 @@ session.
 ## Tool names in Hermes
 
 Hermes registers MCP tools as `mcp_<server>_<tool>`, converting hyphens and dots
-to underscores. Under the `vaultledger` server name above, the twelve tools appear
-as:
+to underscores. Under the `vaultledger` server name above, the fifteen default
+tools appear as:
 
 ```
-mcp_vaultledger_memory_recall      mcp_vaultledger_memory_distill
-mcp_vaultledger_memory_remember    mcp_vaultledger_vault_read
-mcp_vaultledger_memory_revise      mcp_vaultledger_vault_propose_replace
-mcp_vaultledger_memory_promote     mcp_vaultledger_vault_propose_create
-mcp_vaultledger_memory_retire      mcp_vaultledger_vault_propose_edit
-mcp_vaultledger_memory_forget      mcp_vaultledger_ledger_status
+mcp_vaultledger_memory_recall      mcp_vaultledger_vault_read
+mcp_vaultledger_memory_remember    mcp_vaultledger_vault_search
+mcp_vaultledger_memory_revise      mcp_vaultledger_vault_list
+mcp_vaultledger_memory_promote     mcp_vaultledger_vault_propose_replace
+mcp_vaultledger_memory_retire      mcp_vaultledger_vault_propose_create
+mcp_vaultledger_memory_forget      mcp_vaultledger_vault_propose_delete
+mcp_vaultledger_memory_distill     mcp_vaultledger_vault_propose_move
+                                   mcp_vaultledger_ledger_status
 ```
 
-For vault writes, `vault_propose_replace` (edits) and `vault_propose_create` (new
-files) are the default path — describe the change as exact find/replace text or
-full content and the broker builds the diff; `vault_propose_edit` (a raw unified
-diff) is the advanced surface, for a caller that already holds one. Before an edit,
-`vault_read` returns the note's exact bytes and `hash` — the source of a
-byte-perfect `old_text` and the `expected_hash` a replace needs. That read-fresh,
-byte-for-byte-`old_text` discipline is rule 6 of the standing instruction below.
+For vault writes, `vault_propose_replace` (edits), `vault_propose_create` (new
+files), `vault_propose_delete`, and `vault_propose_move` (rename/relocate) are the
+path — the broker builds the diff or does the git-committed op, all queued for
+approval; the raw-diff `vault_propose_edit` is a 16th tool behind the
+`--allow-raw-diff` opt-in, not on the default surface. Before an edit, `vault_read`
+returns the note's exact bytes and `hash` (the source of a byte-perfect `old_text`
+and the `expected_hash` a replace needs); `vault_search` greps raw note content
+and `vault_list` enumerates a folder. That read-fresh, byte-for-byte-`old_text`
+discipline is rule 6 of the standing instruction below.
 
 > **Gotcha:** the optional `tools.include` / `tools.exclude` filters match the
 > **original** tool names — `memory_recall`, `vault_propose_edit` — **not** the
